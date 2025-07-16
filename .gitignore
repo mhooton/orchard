@@ -1,3 +1,4 @@
 src/reporting/.env
 docker/casutools-1.0.43.tar.gz
 docker/orchard-pipeline.tar
+.idea/
