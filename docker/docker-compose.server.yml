@@ -1,0 +1,20 @@
+version: '2.2'
+
+services:
+  orchard-pipeline:
+    image: orchard-pipeline:latest
+    container_name: orchard-server
+    volumes:
+      # Server paths - updated to match your new structure
+      - /appct/data/speculoos/orchard/src:/opt/orchard/src
+      - /appct/data/SPECULOOSPipeline:/data/SPECULOOSPipeline
+      - /appct/data/speculoos/orchard/results:/opt/orchard/results
+      - /appct/data/speculoos/astrometry_index_files:/appct/data/speculoos/astrometry_index_files
+    working_dir: /opt/orchard/src
+    environment:
+      - ORCHARD_PATH=/opt/orchard/src
+      - CONDA_DEFAULT_ENV=pipeline
+    command: bash -c "source /opt/anaconda/bin/activate pipeline && bash"
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
