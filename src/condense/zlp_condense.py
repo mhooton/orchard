@@ -229,14 +229,15 @@ def main(args):
     logger.debug('Allocating memory for catalogue')
     # Construct an ndarray that allows field access using attributes
     #('GMAG', np.float64),('GAIA_ID', '19a'),
-    cat = args.outputdir+'/StackImages/'+args.target+'_stack_catalogue_'+args.filter + "." + args.ext
+    cat = args.outputdir + '/StackImages/' + args.target + '_stack_catalogue_' + args.filter + "." + args.ext
     with fitsio.FITS(cat, 'rw') as catfile:
         gaia = catfile['Gaia_Crossmatch']
-        pmra=gaia['pmra'].read()
-        pmdec=gaia['pmdec'].read()
-        g_rp=gaia['g_rp'].read()
+        pmra = gaia['pmra'].read()
+        pmdec = gaia['pmdec'].read()
+        g_rp = gaia['g_rp'].read()
         bp_rp = gaia['bp_rp'].read()
-        gaia_id = gaia['gaia_dr2_id'].read()
+        gaia_dr2_id = gaia['gaia_dr2_id'].read()  # Keep using DR2 ID for compatibility
+        gaia_dr3_id = gaia['gaia_dr3_id'].read()  # Also read DR3 ID
         parallax = gaia['parallax'].read()
         teff = gaia['teff'].read()
         gmag = gaia['gmag'].read()
@@ -249,12 +250,13 @@ def main(args):
                                  dtype=[('OBJ_ID', '26a'),
                                         ('RA', np.float64),
                                         ('DEC', np.float64),
-                                        ('FLUX_MEAN_'+str(args.date), np.float64),
-                                        ('FLUX_MEDIAN_'+str(args.date), np.float64),
+                                        ('FLUX_MEAN_' + str(args.date), np.float64),
+                                        ('FLUX_MEDIAN_' + str(args.date), np.float64),
                                         ('NPTS', np.int64),
-                                        ('PMRA',np.float64),
+                                        ('PMRA', np.float64),
                                         ('PMDEC', np.float64),
                                         ('GAIA_DR2_ID', 'a19'),
+                                        ('GAIA_DR3_ID', 'a19'),
                                         ('G_RP', np.float64),
                                         ('BP_RP', np.float64),
                                         ('PARALLAX', np.float64),
@@ -269,7 +271,8 @@ def main(args):
     catalogue_data['DEC'] = np.degrees(first.data['dec'])
     catalogue_data['PMRA'] = pmra
     catalogue_data['PMDEC'] = pmdec
-    catalogue_data['GAIA_DR2_ID'] = gaia_id
+    catalogue_data['GAIA_DR2_ID'] = gaia_dr2_id
+    catalogue_data['GAIA_DR3_ID'] = gaia_dr3_id
     catalogue_data['G_RP'] = g_rp
     catalogue_data['BP_RP'] = bp_rp
     catalogue_data['GMAG'] = gmag

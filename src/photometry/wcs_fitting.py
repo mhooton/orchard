@@ -8,7 +8,6 @@ from photometry.vector_plot import wcsf_QCheck
 from photometry.wcs_status import set_wcs_status
 from multiprocessing import Pool as ThreadPool
 from functools import partial
-import photometry.casutools as casutools
 from astropy.io import fits
 import os
 import numpy as np
@@ -42,17 +41,18 @@ def initialise_wcs_cache(fname, outdir, catsrc, thresh, verbose, force=False):
     casutools.wcsfit(fname, catalogue_name, catsrc=catsrc, verbose=verbose)
 
 
-def  m_solve_images(filelist, outfile,
+def m_solve_images(filelist, outfile,
                    nproc=None,
                    thresh=20.0,
                    verbose=False,
-                   catsrc='vizgaia2',
+                   catsrc='vizgaia3',
                    rcore =4,
                     ipix=6,
                     ext='fits'): #catsrc is the source of standard stars to be used in astrometric fit
     # type: (object, object, object, object, object, object, object, object) -> object
     # viz2mass - 2MASS standards are extracted from a VizieR distribution
     # vizgaia2 - Gaia DR2 standards are extracted from a VizieR distribution
+    # vizgaia3 - Gaia DR3 standards are extracted from a VizieR distribution
     # wcsref is the full path to the file if catsrc is defined as a local option
 
     infiles = []
@@ -185,7 +185,7 @@ def casu_solve_old(casuin,
     return 'ok'
 
 
-def casu_solve(casuin, thresh=2, verbose=False, catsrc='vizgaia2', rcore=4, ipix=6, ext='fits'):
+def casu_solve(casuin, thresh=2, verbose=False, catsrc='vizgaia3', rcore=4, ipix=6, ext='fits'):
     # ADD debug output at the start
 
     catpath = os.path.join(os.getcwd(), 'catcache')
@@ -311,18 +311,12 @@ def extract_dist_map(filename):
 
 def reference_catalogue_objects(catalogue, catpath, catsrc):
     cat_name = os.path.join(catpath, catalogue.cat_name)
-    # catfitsio = fitsio.FITS(cat_name)
-    # print catfitsio
-    # print catfitsio[1]
-    # print catfitsio[1].read(rows=[:], columns=['ra','dec','__Gmag_','Source'])
-    # ra = catfitsio[1]['ra'][:]
-    # dec = catfitsio[1]['dec'][:]
-    # gmag = catfitsio[1]['__Gmag_'][:]
-    # source = catfitsio[1]['Source'][:]
     with fits.open(cat_name) as catd:
         catt = catd[1].data.copy()
 
-    if catsrc == 'vizgaia2':
+    if catsrc == 'vizgaia3':
+        return {'ra': catt['ra'], 'dec': catt['dec'], 'Gmag': catt['Gmag']}
+    elif catsrc == 'vizgaia2':
         return {'ra': catt['ra'], 'dec': catt['dec'], 'Gmag': catt['Gmag']}
     elif catsrc == 'viz2mass':
         return {'ra': catt['ra'], 'dec': catt['dec'], 'Jmag': catt['Jmag'], 'Kmag':catt['Kmag'],'Hmag':catt['Hmag']}

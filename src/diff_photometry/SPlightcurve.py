@@ -214,9 +214,10 @@ class Telescope:
         return targ_jd_sub
 
 class LightCurve:
-    def __init__(self, id, gaia_id,nflux, flux, jd,bjd,bjd_tdb, ra, dec,pmra,pmdec,parallax, x,y, g_rp,bp_rp,teff,gmag,ap,ap_size,filt,date,exp,gain,sat,lowflux):
+    def __init__(self, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, jd,bjd,bjd_tdb, ra, dec,pmra,pmdec,parallax, x,y, g_rp,bp_rp,teff,gmag,ap,ap_size,filt,date,exp,gain,sat,lowflux):
         self.id = id
-        self.gaia_id = gaia_id
+        self.gaia_dr2_id = gaia_dr2_id
+        self.gaia_dr3_id = gaia_dr3_id
         self.nflux = nflux
         self.flux= flux
         self.jd = jd
@@ -793,6 +794,7 @@ def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
                                         ('PMRA', np.float64),
                                         ('PMDEC', np.float64),
                                         ('GAIA_DR2_ID', 'a19'),
+                                        ('GAIA_DR3_ID', 'a19'),
                                         ('G_RP', np.float64),
                                         ('BP_RP', np.float64),
                                         ('PARALLAX', np.float64),
@@ -1068,7 +1070,7 @@ def check_blended_stars(lcurves,ap,tel):
             print("BLENDED STAR: ",lcurves[l].id)
 
 
-def init_all_lcurves(tel, id, gaia_id, nflux, flux, peak, jd, bjd, bjd_tdb, ra, dec, pmra, pmdec, parallax, x, y, g_rp,
+def init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, peak, jd, bjd, bjd_tdb, ra, dec, pmra, pmdec, parallax, x, y, g_rp,
                      bp_rp, teff, gmag, ap, filt, date, exp):
     lcurves = []
     ap_size = ap_size_pixels(ap, tel.rcore)[0]
@@ -1132,9 +1134,9 @@ def init_all_lcurves(tel, id, gaia_id, nflux, flux, peak, jd, bjd, bjd_tdb, ra, 
             # print(id[i], gaia_id[i], nflux[i][0], flux[i][0], jd[0], ra[i], dec[i], pmra[i],pmdec[i],parallax[i], x[i][0], y[i][0], g_rp[i],bp_rp[i], teff[i],
             #                gmag[i], ap, ap_size, filt, date, tel.exposure[0], tel.gain[0])
             lcurves.append(
-                LightCurve(id[i], gaia_id[i], nflux[i], flux[i], jd, bjd, bjd_tdb, ra[i], dec[i], pmra[i], pmdec[i],
-                           parallax[i], x[i], y[i], g_rp[i], bp_rp[i], teff[i],
-                           gmag[i], ap, ap_size, filt, date, tel.exposure, tel.gain, saturated, lowflux))
+                LightCurve(id[i], gaia_dr2_id[i], gaia_dr3_id[i], nflux[i], flux[i], jd, bjd, bjd_tdb, ra[i], dec[i],
+                           pmra[i], pmdec[i], parallax[i], x[i], y[i], g_rp[i], bp_rp[i], teff[i], gmag[i], ap, ap_size,
+                           filt, date, tel.exposure, tel.gain, saturated, lowflux))
         except Exception as e:
             print(i, e)
 
@@ -1346,8 +1348,10 @@ def extract(complc,attr):
         return [x.teff for x in complc]
     elif attr == "id":
         return [x.id for x in complc]
-    elif attr == "gaia_id":
-        return [x.gaia_id for x in complc]
+    elif attr == "gaia_dr2_id":
+        return [x.gaia_dr2_id for x in complc]
+    elif attr == "gaia_dr3_id":
+        return [x.gaia_dr3_id for x in complc]
     elif attr == "ra":
         return [x.ra for x in complc]
     elif attr == "dec":
@@ -2629,7 +2633,13 @@ def import_outfits(outfits,goutfits,ap,targ_gaia):
             # print("0")
             with fitsio.FITS(outfits) as gf:
                 cat = gf['catalogue']
-                gaia_id = cat['gaia_dr2_id'].read()
+                gaia_dr2_id = cat['gaia_dr2_id'].read()  # Continue using DR2 ID for compatibility
+                try:
+                    gaia_dr3_id = cat['gaia_dr3_id'].read()  # Also read DR3 ID
+                except:
+                    # Handle case where DR3 ID column doesn't exist yet
+                    gaia_dr3_id = np.empty(len(gaia_dr2_id))
+                    gaia_dr3_id[:] = np.nan
                 g_rp = cat['g_rp'].read()
                 bp_rp = cat['bp_rp'].read()
                 gmag = cat['gmag'].read()
@@ -2638,13 +2648,15 @@ def import_outfits(outfits,goutfits,ap,targ_gaia):
                 pmdec = cat['pmdec'].read()
                 parallax = cat['parallax'].read()
 
+
+
         except Exception as e:
             print(e)
             print("No crossmatch with Gaia DR2")
-            # g_rp, bp_rp,gmag,teff,gaia_id,pmra,pmdec,parallax = [],[],[],[],[],[],[],[]
-
-            gaia_id = np.empty(numstars)
-            gaia_id[:] = np.nan
+            gaia_dr2_id = np.empty(numstars)
+            gaia_dr2_id[:] = np.nan
+            gaia_dr3_id = np.empty(numstars)
+            gaia_dr3_id[:] = np.nan
             g_rp = np.empty(numstars)
             g_rp[:] = np.nan
             bp_rp = np.empty(numstars)
@@ -2807,13 +2819,17 @@ def main(date, targ_gaia, ap, filt, outfits, goutfits, globallc, binning, versio
     bw = False
 
     # IMPORT all the objects from this field
-    intarg, targ_id, no_teff, teff_header, id, gaia_id, nflux, flux,peak, jd, bjd,bjd_tdb, ra, dec,pmra,pmdec,parallax, x,y, g_rp,bp_rp,teff,gmag,tel,exp, targname = import_outfits(outfits,goutfits,ap,targ_gaia)
+    (intarg, targ_id, no_teff, teff_header, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, peak, jd, bjd, bjd_tdb, ra, dec,
+     pmra, pmdec, parallax, x, y, g_rp, bp_rp, teff, gmag, tel, exp, targname) = import_outfits(
+        outfits, goutfits, ap, targ_gaia)
     # INITIALISE ALL LIGHTCURVE OBJECTS
-    lcurves = init_all_lcurves(tel, id, gaia_id, nflux, flux, peak, jd, bjd,bjd_tdb, ra, dec,pmra,pmdec,parallax, x, y, g_rp, bp_rp,teff, gmag, ap, filt, date,exp)
+    lcurves = init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, peak, jd, bjd, bjd_tdb, ra, dec, pmra,
+                               pmdec, parallax, x, y, g_rp, bp_rp, teff, gmag, ap, filt, date, exp)
 
     # GET GAIA IDS from output.fits file and find which objects are in the target list
-    gaia_id = extract(lcurves,'gaia_id')
-    id = extract(lcurves,'id')
+    gaia_dr2_id = extract(lcurves, 'gaia_dr2_id')  # Continue using DR2 for matching
+    gaia_dr3_id = extract(lcurves, 'gaia_dr3_id')  # Also extract DR3 for storage
+    id = extract(lcurves, 'id')
 
     if intarg == False:
         if len(oldtlists)==0:
@@ -2825,7 +2841,8 @@ def main(date, targ_gaia, ap, filt, outfits, goutfits, globallc, binning, versio
             # old_tlist = basedir + "/tests/target_list_ids_201905.txt"
             print("TRY FINDING TARGET IN OLDER TARGET LIST: "+ otlist)
             try:
-                targ_id, match_gaia, multitarg, intarg = find_targ_id(gaia_id,np.nanmedian(flux,axis=1),id,otlist)
+                targ_id, match_gaia, multitarg, intarg = find_targ_id(gaia_dr2_id, np.nanmedian(flux, axis=1), id,
+                                                                      otlist)  # Continue using DR2 for matching
             except Exception as e:
                 print(e)
             if intarg == True:

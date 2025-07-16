@@ -50,10 +50,10 @@ def main(filelist,outname,catname,outdir,reportdir, filter, date,
          verbose= False,
          nfiles= None,
          ipix=6,
-         catsrc='vizgaia2',
+         catsrc='vizgaia3',
          rcore=4,
          ncores=1,
-         ext='fits'): #argv):
+         ext='fits'):
 
 
     stack_filelist = os.path.dirname(filelist) + '/'+filter+'_stacked.dat'

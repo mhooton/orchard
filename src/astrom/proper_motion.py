@@ -12,7 +12,6 @@ import photometry.gaia_dr2_test as gaia_dr2_test
 # and write a new stack catalogue with the new RA and DECs at a given time
 
 def import_stars(cat):
-
     with fitsio.FITS(cat, 'rw') as catfile:
         cat = catfile[1]
         gaia = catfile['Gaia_Crossmatch']
@@ -77,7 +76,7 @@ def generate_new_cat(catfile, date, output_path):
         stars, cat_jd = import_stars(catfile)
     except:
         print("Gaia crossmatch has not been done for this field, crossmatching now...")
-        gaia_dr2_test.crossmatch(catfile, logfile=None, n=8, date=date)
+        gaia_dr2_test.crossmatch(catfile, logfile=None, n=8, ext='fits', date=date)  # Add ext parameter
         stars, cat_jd = import_stars(catfile)
 
     stars = calculate_pm(stars, cat_jd, new_jd)

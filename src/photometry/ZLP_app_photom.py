@@ -64,7 +64,7 @@ def main(argv):
         print("WCS SOLVING TOOK: " + str((afterwcs - beforewcs) / 60.))
 
     # CORRECT FOR PROPER MOTION
-    gaia_date = '20150702'
+    gaia_date = '20160101'  # DR3 epoch is J2016.0
 
     # Create the PM catalogue path in the target output directory
     import os
@@ -122,7 +122,7 @@ if __name__ == '__main__':
                         default=20,
                         help='Detection threshold in sigma')
     parser.add_argument('--catsrc',
-                        default='localfits',
+                        default='vizgaia3',
                         help='Catalogue for wcs solving')
     parser.add_argument('--catpath',
                         default='catcache',

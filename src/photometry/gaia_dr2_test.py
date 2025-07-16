@@ -84,8 +84,9 @@ def crossmatch(fitsfile,
         pool.close()
 
         crossmatch_lists = list(zip(*results))
-        crossmatch_keys = ['source_id','pmra','pmdec','gmag','g_rp','bp_rp','parallax','teff_val','separation']
-        crossmatch = dict([(crossmatch_keys[i],crossmatch_lists[i]) for i in range(len(crossmatch_lists))])
+        crossmatch_keys = ['dr3_id', 'dr2_id', 'pmra', 'pmdec', 'gmag', 'g_rp', 'bp_rp', 'parallax', 'teff_val',
+                           'separation']
+        crossmatch = dict([(crossmatch_keys[i], crossmatch_lists[i]) for i in range(len(crossmatch_lists))])
         print(crossmatch)
 
         elapsed = timeit.default_timer()-start_time
@@ -213,12 +214,28 @@ def twoMASScrossmatch():
     a=0
     return a
 
+def get_dr2_id_from_dr3(dr3_source_id):
+    """Get DR2 source_id from DR3 source_id using cross-match table"""
+    try:
+        query = "SELECT dr2_source_id FROM gaiadr3.dr2_neighbourhood WHERE dr3_source_id = " + str(dr3_source_id)
+        j = Gaia.launch_job(query=query, verbose=False)
+        r = j.get_results()
+
+        if len(r) > 0:
+            return r['dr2_source_id'][0]
+        else:
+            return np.nan
+    except Exception as e:
+        print(f"Error getting DR2 ID for DR3 ID {dr3_source_id}: {e}")
+        return np.nan
+
 def conesearch(id, ra, dec,rad_deg,delta_t):
     # set coordinates using RA and DEC from source in output.fits
     coord = SkyCoord(ra=ra, dec=dec, unit=(u.deg, u.deg), frame='icrs')
     radius = Quantity(rad_deg, u.deg)
 
-    r_sourceid = np.nan
+    r_dr3_id = np.nan  # DR3 ID
+    r_dr2_id = np.nan  # DR2 ID
     r_pmra = np.nan
     r_pmdec = np.nan
     r_gmag = np.nan
@@ -233,7 +250,7 @@ def conesearch(id, ra, dec,rad_deg,delta_t):
 
     # gaia_dr2 = Gaia.load_table('gaiadr2.gaia_source')
 
-    # cross match with gaia:
+    # cross match with gaia DR3:
     ra = coord.ra.deg  # RA already in degrees
     dec = coord.dec.deg  # Dec already in degrees
     if rad_deg is not None:
@@ -243,13 +260,13 @@ def conesearch(id, ra, dec,rad_deg,delta_t):
             # Assume radius is in arcsec if no unit specified
             radiusDeg = (radius * u.arcsec).to(u.deg).value
         query = "SELECT DISTANCE(POINT('ICRS',ra,dec), \
-            POINT('ICRS',"+str(ra)+","+str(dec)+")) AS dist, * \
-            FROM gaiadr2.gaia_source WHERE CONTAINS(\
-            POINT('ICRS',ra,dec),\
-            CIRCLE('ICRS',"+str(ra)+","+str(dec)+", "+str(radiusDeg)+"))=1 \
-            ORDER BY dist ASC"
+                POINT('ICRS'," + str(ra) + "," + str(dec) + ")) AS dist, * \
+                FROM gaiadr3.gaia_source WHERE CONTAINS(\
+                POINT('ICRS',ra,dec),\
+                CIRCLE('ICRS'," + str(ra) + "," + str(dec) + ", " + str(radiusDeg) + "))=1 \
+                ORDER BY dist ASC"
 
-    j = Gaia.launch_job(query=query, verbose = False)
+    j = Gaia.launch_job(query=query, verbose=False)
     r = j.get_results()
 
     # FIX ISSUE WHERE SOURCE_ID COLNAME CASE VARIES DEPENDING ON SEARCH
@@ -258,7 +275,6 @@ def conesearch(id, ra, dec,rad_deg,delta_t):
 
     # isolate the columns we're interested in
     r_sub = r['ra', 'dec', 'pmra', 'pmdec', 'source_id', 'phot_g_mean_mag', 'bp_rp', 'g_rp', 'parallax', 'teff_val']
-
 
     matches = len(r_sub['pmra'])
     # print ra['ra']
@@ -277,7 +293,8 @@ def conesearch(id, ra, dec,rad_deg,delta_t):
 
         print(r_sep)
 
-        r_sourceid = r_sub['source_id'][0]
+        r_dr3_id = r_sub['source_id'][0]  # This is now DR3 ID
+        r_dr2_id = get_dr2_id_from_dr3(r_dr3_id)
         r_pmra = r_sub['pmra'][0]
         r_pmdec = r_sub['pmdec'][0]
         r_gmag = r_sub['phot_g_mean_mag'][0]
@@ -318,7 +335,8 @@ def conesearch(id, ra, dec,rad_deg,delta_t):
 
 
         print(sep[min_sep])
-        r_sourceid = r_sub['source_id'][min_sep]
+        r_dr3_id = r_sub['source_id'][min_sep]  # DR3 ID
+        r_dr2_id = get_dr2_id_from_dr3(r_dr3_id)  # Get corresponding DR2 ID
         r_pmra = r_sub['pmra'][min_sep]
         r_pmdec = r_sub['pmdec'][min_sep]
         r_gmag = r_sub['phot_g_mean_mag'][min_sep]
@@ -330,7 +348,8 @@ def conesearch(id, ra, dec,rad_deg,delta_t):
 
     if r_sep > 0.00001:
         print('hold')
-        r_sourceid = np.nan
+        r_dr3_id = np.nan  # DR3 ID
+        r_dr2_id = np.nan  # DR2 ID
         r_pmra = np.nan
         r_pmdec = np.nan
         r_gmag = np.nan
@@ -343,25 +362,21 @@ def conesearch(id, ra, dec,rad_deg,delta_t):
         r_sep = np.nan
 
 
-    return (r_sourceid,r_pmra,r_pmdec, r_gmag, r_g_rp, r_bp_rp, r_parallax, r_teff,r_sep)
+    return (r_dr3_id,r_dr2_id,r_pmra,r_pmdec, r_gmag, r_g_rp, r_bp_rp, r_parallax, r_teff,r_sep)
 
 def write_to_output(output, dict,outfits):
+    colnames = ['GAIA_DR2_ID', 'GAIA_DR3_ID', 'parallax', 'Gmag', 'G_RP', 'BP_RP', 'Teff', 'pmra', 'pmdec']
 
-    # 'pm_RA', 'pm_DEC',
-    colnames = ['GAIA_DR2_ID','parallax','Gmag','G_RP','BP_RP','Teff','pmra','pmdec']
-    # 'pmra' 'pmdec'
-    colnames_upper = [c.upper() for c in colnames]
+    # Convert both DR2 and DR3 IDs to strings
+    gaia_dr2_id = np.array([str(x) for x in dict['dr2_id']])
+    gaia_dr3_id = np.array([str(x) for x in dict['dr3_id']])
 
-    # gaia_id = dict['source_id']
-    # for g in range(len(gaia_id)):
-    #     if np.isnan(gaia_id[g]):
-    #         gaia_id[g] = 0
-    gaia_id = np.array([str(x) for x in dict['source_id']])
-
-    cols_upper = {'GAIA_DR2_ID':gaia_id,'PMRA':dict['pmra'],'PMDEC':dict['pmdec'],
-            'PARALLAX':dict['parallax'],'GMAG':dict['gmag'],'G_RP':dict['g_rp'],'BP_RP':dict['bp_rp'],'TEFF':dict['teff_val']}
-    cols = {'GAIA_DR2_ID':gaia_id,'pmra':dict['pmra'],'pmdec':dict['pmdec'],
-            'parallax':dict['parallax'],'Gmag':dict['gmag'],'G_RP':dict['g_rp'],'BP_RP':dict['bp_rp'],'Teff':dict['teff_val']}
+    cols_upper = {'GAIA_DR2_ID': gaia_dr2_id, 'GAIA_DR3_ID': gaia_dr3_id, 'PMRA': dict['pmra'], 'PMDEC': dict['pmdec'],
+                  'PARALLAX': dict['parallax'], 'GMAG': dict['gmag'], 'G_RP': dict['g_rp'], 'BP_RP': dict['bp_rp'],
+                  'TEFF': dict['teff_val']}
+    cols = {'GAIA_DR2_ID': gaia_dr2_id, 'GAIA_DR3_ID': gaia_dr3_id, 'pmra': dict['pmra'], 'pmdec': dict['pmdec'],
+            'parallax': dict['parallax'], 'Gmag': dict['gmag'], 'G_RP': dict['g_rp'], 'BP_RP': dict['bp_rp'],
+            'Teff': dict['teff_val']}
 
     for k,v in list(cols.items()):
         cols[k] = np.array(v)
@@ -381,7 +396,7 @@ def write_to_output(output, dict,outfits):
             for c in colnames_upper:
                 # if c not in names:
                 print("Adding " + c + " from new crossmatch")
-                if c == "GAIA_DR2_ID":
+                if c == "GAIA_DR2_ID" or c == "GAIA_DR3_ID":
                     new_col = fits.ColDefs([fits.Column(name=c, format='26A', array=cols_upper[c])])
                     columns = new_col
                 else:
