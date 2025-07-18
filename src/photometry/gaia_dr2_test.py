@@ -47,168 +47,181 @@ def crossmatch(fitsfile,
 
     ##### POOL VERSION #####
 
-    try:
-        with fits.open(fitsfile) as fname:
-            if 'output.' + ext in fitsfile:
-                date = fname[0].header['HISTORY'][0]
-            else:
-                date = fname[0].header['DATE-OBS'][:10].replace("-", "")
-
-        # extract ra and dec of all sources from the appropriate fits file
-        with fitsio.FITS(fitsfile) as infile:
-            if 'output.' + ext in fitsfile:
-                cat = infile['catalogue']
-                outfits = True
-                id = cat['obj_id'].read()
-            elif 'stack_catalogue' in fitsfile:
-                cat = infile[1]
-                id = cat['sequence_number'].read()
-            ra = cat['ra'].read()#[100:120]
-            dec = cat['dec'].read()#[100:120]
-            # ids = cat['obj_id'].read()
-
-        # Set Gaia epoch based on catalog version
-        if catsrc == 'vizgaia3':
-            gaia_epoch = 2457754.5  # J2016.0 for Gaia DR3
-        elif catsrc == 'vizgaia2' or catsrc == 'vizgaia':
-            gaia_epoch = 2457174.5  # J2015.5 for Gaia DR2
-        else:
-            # Default to DR3
-            gaia_epoch = 2457754.5
-
-        obs_epoch = Time(dt.datetime.strptime(date, "%Y%m%d")).jd
-        # convert delta_t into years
-        delta_t = (obs_epoch - gaia_epoch) / 365.
-
-        # show Gaia table columns:
-        # table = Gaia.load_table('gaiadr2.gaia_source')
-        # for column in (table.get_columns()):
-        #     print(column.get_name())
-
-        pool = ThreadPool(int(n))
-
-        # carry out a conesearch for gaia targets around each identified object
-        fn = partial(f_query_gaia,query=conesearch)
-        results = pool.map(fn, zip(id,ra,dec,itertools.repeat(rad_deg),itertools.repeat(delta_t)))
-        pool.close()
-
-        crossmatch_lists = list(zip(*results))
-        crossmatch_keys = ['dr3_id', 'dr2_id', 'pmra', 'pmdec', 'gmag', 'g_rp', 'bp_rp', 'parallax', 'teff_val',
-                           'separation']
-        crossmatch = dict([(crossmatch_keys[i], crossmatch_lists[i]) for i in range(len(crossmatch_lists))])
-        print(crossmatch)
-
-        elapsed = timeit.default_timer()-start_time
-        print('Total time taken: ' + str(elapsed/60.) + ' minutes')
-
-        # print output on terminal again
-        if logfile != None:
-            sys.stdout = oldstdout
-
-        num_match = 0
-        num_temp = 0
-
-        try:
-            for i in range(len(crossmatch['dr2_id'])):
-                if crossmatch['dr2_id'][i] > 0:
-                    num_match = num_match + 1
-                if not np.ma.is_masked(crossmatch['teff_val'][i]):
-                    num_temp = num_temp + 1
-
-            #str(len(crossmatch['pmra']))
-            # str(len(crossmatch['teff_val']))
-            print("\n" + str(num_match) + "/" + str(len(ra)) + ' object matches with Gaia DR2\n')
-            perc = 100 * num_match / float(len(ra))
-            print("\n" + str(num_temp) + "/" + str(len(ra)) + ' object with Teff values from Gaia DR2\n')
-
-            write_to_output(fitsfile, crossmatch,outfits)
-        except Exception as e:
-        #     print "Writing to fits file failed for: " + fitsfile
-        #     print "Because crossmatch with Gaia DR2 failed"
-            print(e)
-            perc = 0
-    except Exception as e:
-        print("Gaia Crossmatch Failed: ")
-        print(e)
-        perc = 0
-        ra = []
-
-
-    ##### DEBUGGING VERSION #####
-    #
-    # # try:
-    # with fits.open(fitsfile) as fname:
-    #     if 'output.' + ext in fitsfile:
-    #         date = fname[0].header['HISTORY'][0]
-    #     else:
-    #         date = fname[0].header['DATE-OBS'][:10].replace("-", "")
-    #
-    # # extract ra and dec of all sources from the appropriate fits file
-    # with fitsio.FITS(fitsfile) as infile:
-    #     if 'output.' + ext in fitsfile:
-    #         cat = infile['catalogue']
-    #         outfits = True
-    #         id = cat['obj_id'].read()
-    #     elif 'stack_catalogue' in fitsfile:
-    #         cat = infile[1]
-    #         id = cat['sequence_number'].read()
-    #     ra = cat['ra'].read()#[100:120]
-    #     dec = cat['dec'].read()#[100:120]
-    #     # ids = cat['obj_id'].read()
-    #
-    # # gaia epoch is J2015.5
-    # gaia_epoch = 2457174.5
-    # obs_epoch = Time(dt.datetime.strptime(date, "%Y%m%d")).jd
-    # # convert delta_t into years
-    # delta_t = (obs_epoch - gaia_epoch) / 365.
-    #
-    # # show Gaia table columns:
-    # # table = Gaia.load_table('gaiadr2.gaia_source')
-    # # for column in (table.get_columns()):
-    # #     print(column.get_name())
-    #
-    # results = [
-    #     f_query_gaia((obj_id, ra, dec, rad_deg, delta_t), conesearch)
-    #     for obj_id, ra, dec in zip(id, ra, dec)
-    # ]
-    #
-    # crossmatch_lists = zip(*results)
-    # crossmatch_keys = ['source_id','pmra','pmdec','gmag','g_rp','bp_rp','parallax','teff_val','separation']
-    # crossmatch = dict([(crossmatch_keys[i],crossmatch_lists[i]) for i in range(len(crossmatch_lists))])
-    # print(crossmatch)
-    #
-    # elapsed = timeit.default_timer()-start_time
-    # print('Total time taken: ' + str(elapsed/60.) + ' minutes')
-    #
-    # # print output on terminal again
-    # if logfile != None:
-    #     sys.stdout = oldstdout
-    #
-    # num_match = 0
-    # num_temp = 0
-    #
     # try:
-    #     for i in range(len(crossmatch['source_id'])):
-    #         if crossmatch['source_id'][i] > 0:
-    #             num_match = num_match + 1
-    #         if not np.ma.is_masked(crossmatch['teff_val'][i]):
-    #             num_temp = num_temp + 1
+    #     with fits.open(fitsfile) as fname:
+    #         if 'output.' + ext in fitsfile:
+    #             date = fname[0].header['HISTORY'][0]
+    #         else:
+    #             date = fname[0].header['DATE-OBS'][:10].replace("-", "")
     #
-    #         # if ids[i] == "SP002336":
-    #         #     print crossmatch['source_id'][i]
+    #     # extract ra and dec of all sources from the appropriate fits file
+    #     with fitsio.FITS(fitsfile) as infile:
+    #         if 'output.' + ext in fitsfile:
+    #             cat = infile['catalogue']
+    #             outfits = True
+    #             id = cat['obj_id'].read()
+    #         elif 'stack_catalogue' in fitsfile:
+    #             cat = infile[1]
+    #             id = cat['sequence_number'].read()
+    #         ra = cat['ra'].read()#[100:120]
+    #         dec = cat['dec'].read()#[100:120]
+    #         # ids = cat['obj_id'].read()
     #
-    #     #str(len(crossmatch['pmra']))
-    #     # str(len(crossmatch['teff_val']))
-    #     print("\n" + str(num_match) + "/" + str(len(ra)) + ' object matches with Gaia DR2\n')
-    #     perc = 100 * num_match / float(len(ra))
-    #     print("\n" + str(num_temp) + "/" + str(len(ra)) + ' object with Teff values from Gaia DR2\n')
+    #     # Set Gaia epoch based on catalog version
+    #     if catsrc == 'vizgaia3':
+    #         gaia_epoch = 2457754.5  # J2016.0 for Gaia DR3
+    #     elif catsrc == 'vizgaia2' or catsrc == 'vizgaia':
+    #         gaia_epoch = 2457174.5  # J2015.5 for Gaia DR2
+    #     else:
+    #         # Default to DR3
+    #         gaia_epoch = 2457754.5
     #
-    #     write_to_output(fitsfile, crossmatch,outfits)
+    #     obs_epoch = Time(dt.datetime.strptime(date, "%Y%m%d")).jd
+    #     # convert delta_t into years
+    #     delta_t = (obs_epoch - gaia_epoch) / 365.
+    #
+    #     # show Gaia table columns:
+    #     # table = Gaia.load_table('gaiadr2.gaia_source')
+    #     # for column in (table.get_columns()):
+    #     #     print(column.get_name())
+    #
+    #     # pool = ThreadPool(int(n))
+    #     #
+    #     # # carry out a conesearch for gaia targets around each identified object
+    #     # fn = partial(f_query_gaia,query=conesearch)
+    #     # results = pool.map(fn, zip(id,ra,dec,itertools.repeat(rad_deg),itertools.repeat(delta_t)))
+    #     # pool.close()
+    #
+    #     # carry out a conesearch for gaia targets around each identified object (linear for debugging)
+    #     results = []
+    #     for i, (obj_id, ra_val, dec_val) in enumerate(zip(id, ra, dec)):
+    #         print(f"Processing object {i + 1}/{len(id)}: ID={obj_id}, RA={ra_val}, DEC={dec_val}")
+    #         result = conesearch(obj_id, ra_val, dec_val, rad_deg, delta_t)
+    #         print(f"  Result: {result}")
+    #         results.append(result)
+    #
+    #     crossmatch_lists = list(zip(*results))
+    #     crossmatch_keys = ['dr3_id', 'dr2_id', 'pmra', 'pmdec', 'gmag', 'g_rp', 'bp_rp', 'parallax', 'teff_val',
+    #                        'separation']
+    #     crossmatch = dict([(crossmatch_keys[i], crossmatch_lists[i]) for i in range(len(crossmatch_lists))])
+    #     print(crossmatch)
+    #
+    #     elapsed = timeit.default_timer()-start_time
+    #     print('Total time taken: ' + str(elapsed/60.) + ' minutes')
+    #
+    #     # print output on terminal again
+    #     if logfile != None:
+    #         sys.stdout = oldstdout
+    #
+    #     num_match = 0
+    #     num_temp = 0
+    #
+    #     try:
+    #         for i in range(len(crossmatch['dr2_id'])):
+    #             if crossmatch['dr2_id'][i] > 0:
+    #                 num_match = num_match + 1
+    #             if not np.ma.is_masked(crossmatch['teff_val'][i]):
+    #                 num_temp = num_temp + 1
+    #
+    #         #str(len(crossmatch['pmra']))
+    #         # str(len(crossmatch['teff_val']))
+    #         print("\n" + str(num_match) + "/" + str(len(ra)) + ' object matches with Gaia DR2\n')
+    #         perc = 100 * num_match / float(len(ra))
+    #         print("\n" + str(num_temp) + "/" + str(len(ra)) + ' object with Teff values from Gaia DR2\n')
+    #
+    #         write_to_output(fitsfile, crossmatch, outfits)
+    #     except Exception as e:
+    #     #     print "Writing to fits file failed for: " + fitsfile
+    #     #     print "Because crossmatch with Gaia DR2 failed"
+    #         print(e)
+    #         perc = 0
     # except Exception as e:
-    # #     print "Writing to fits file failed for: " + fitsfile
-    # #     print "Because crossmatch with Gaia DR2 failed"
+    #     print("Gaia Crossmatch Failed: ")
     #     print(e)
     #     perc = 0
+    #     ra = []
+
+    with fits.open(fitsfile) as fname:
+        if 'output.' + ext in fitsfile:
+            date = fname[0].header['HISTORY'][0]
+        else:
+            date = fname[0].header['DATE-OBS'][:10].replace("-", "")
+
+    # extract ra and dec of all sources from the appropriate fits file
+    with fitsio.FITS(fitsfile) as infile:
+        if 'output.' + ext in fitsfile:
+            cat = infile['catalogue']
+            outfits = True
+            id = cat['obj_id'].read()
+        elif 'stack_catalogue' in fitsfile:
+            cat = infile[1]
+            id = cat['sequence_number'].read()
+        ra = cat['ra'].read()  # [100:120]
+        dec = cat['dec'].read()  # [100:120]
+        # ids = cat['obj_id'].read()
+
+    # Set Gaia epoch based on catalog version
+    if catsrc == 'vizgaia3':
+        gaia_epoch = 2457754.5  # J2016.0 for Gaia DR3
+    elif catsrc == 'vizgaia2' or catsrc == 'vizgaia':
+        gaia_epoch = 2457174.5  # J2015.5 for Gaia DR2
+    else:
+        # Default to DR3
+        gaia_epoch = 2457754.5
+
+    obs_epoch = Time(dt.datetime.strptime(date, "%Y%m%d")).jd
+    # convert delta_t into years
+    delta_t = (obs_epoch - gaia_epoch) / 365.
+
+    # show Gaia table columns:
+    # table = Gaia.load_table('gaiadr2.gaia_source')
+    # for column in (table.get_columns()):
+    #     print(column.get_name())
+
+    # pool = ThreadPool(int(n))
+    #
+    # # carry out a conesearch for gaia targets around each identified object
+    # fn = partial(f_query_gaia,query=conesearch)
+    # results = pool.map(fn, zip(id,ra,dec,itertools.repeat(rad_deg),itertools.repeat(delta_t)))
+    # pool.close()
+
+    # carry out a conesearch for gaia targets around each identified object (linear for debugging)
+    results = []
+    for i, (obj_id, ra_val, dec_val) in enumerate(zip(id, ra, dec)):
+        print(f"Processing object {i + 1}/{len(id)}: ID={obj_id}, RA={ra_val}, DEC={dec_val}")
+        result = conesearch(obj_id, ra_val, dec_val, rad_deg, delta_t)
+        print(f"  Result: {result}")
+        results.append(result)
+
+    crossmatch_lists = list(zip(*results))
+    crossmatch_keys = ['dr3_id', 'dr2_id', 'pmra', 'pmdec', 'gmag', 'g_rp', 'bp_rp', 'parallax', 'teff_val',
+                       'separation']
+    crossmatch = dict([(crossmatch_keys[i], crossmatch_lists[i]) for i in range(len(crossmatch_lists))])
+    print(crossmatch)
+
+    elapsed = timeit.default_timer() - start_time
+    print('Total time taken: ' + str(elapsed / 60.) + ' minutes')
+
+    # print output on terminal again
+    if logfile != None:
+        sys.stdout = oldstdout
+
+    num_match = 0
+    num_temp = 0
+
+    for i in range(len(crossmatch['dr2_id'])):
+        if crossmatch['dr2_id'][i] > 0:
+            num_match = num_match + 1
+        if not np.ma.is_masked(crossmatch['teff_val'][i]):
+            num_temp = num_temp + 1
+
+    # str(len(crossmatch['pmra']))
+    # str(len(crossmatch['teff_val']))
+    print("\n" + str(num_match) + "/" + str(len(ra)) + ' object matches with Gaia DR2\n')
+    perc = 100 * num_match / float(len(ra))
+    print("\n" + str(num_temp) + "/" + str(len(ra)) + ' object with Teff values from Gaia DR2\n')
+
+    write_to_output(fitsfile, crossmatch, outfits)
 
     return perc, len(ra)
 
