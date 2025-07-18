@@ -173,7 +173,7 @@ def main(filelist,outname,catname,outdir,reportdir, filter, date,
                      ellfile = True) #argv['--verbose'])
 
     # print outcatname, outcatname+"_Gaia.log", ncores, ext, date
-    perc,num_sources = gaia_dr2.crossmatch(outcatname,logfile=outcatname+"_Gaia.log", n=ncores, ext=ext, date=date)
+    perc,num_sources = gaia_dr2.crossmatch(outcatname,logfile=outcatname+"_Gaia.log", n=ncores, ext=ext, date=date, catsrc=catsrc)
     dirname=os.path.dirname(filelist)
     dirsplit = dirname.split("/")
     run = dirsplit[-1]

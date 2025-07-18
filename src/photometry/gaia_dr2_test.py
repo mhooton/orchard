@@ -25,12 +25,14 @@ start_time = timeit.default_timer()
 
 
 def crossmatch(fitsfile,
-         logfile=None,
-         n=8,
-         ext='fits',
-         date='20180101'):
+               logfile=None,
+               n=8,
+               ext='fits',
+               date='20180101',
+               catsrc='vizgaia3',
+               ):
     # set the output to a file called queryresults.txt
-    print('\n **Crossmatching sources with Gaia DR2...** \n')
+    print('\n **Crossmatching sources with '+str(catsrc)+'...** \n')
     if logfile != None:
         oldstdout = sys.stdout
         f = open(logfile, 'w')
@@ -65,8 +67,15 @@ def crossmatch(fitsfile,
             dec = cat['dec'].read()#[100:120]
             # ids = cat['obj_id'].read()
 
-        # gaia epoch is J2015.5
-        gaia_epoch = 2457174.5
+        # Set Gaia epoch based on catalog version
+        if catsrc == 'vizgaia3':
+            gaia_epoch = 2457754.5  # J2016.0 for Gaia DR3
+        elif catsrc == 'vizgaia2' or catsrc == 'vizgaia':
+            gaia_epoch = 2457174.5  # J2015.5 for Gaia DR2
+        else:
+            # Default to DR3
+            gaia_epoch = 2457754.5
+
         obs_epoch = Time(dt.datetime.strptime(date, "%Y%m%d")).jd
         # convert delta_t into years
         delta_t = (obs_epoch - gaia_epoch) / 365.
@@ -100,14 +109,11 @@ def crossmatch(fitsfile,
         num_temp = 0
 
         try:
-            for i in range(len(crossmatch['source_id'])):
-                if crossmatch['source_id'][i] > 0:
+            for i in range(len(crossmatch['dr2_id'])):
+                if crossmatch['dr2_id'][i] > 0:
                     num_match = num_match + 1
                 if not np.ma.is_masked(crossmatch['teff_val'][i]):
                     num_temp = num_temp + 1
-
-                # if ids[i] == "SP002336":
-                #     print crossmatch['source_id'][i]
 
             #str(len(crossmatch['pmra']))
             # str(len(crossmatch['teff_val']))
@@ -366,6 +372,7 @@ def conesearch(id, ra, dec,rad_deg,delta_t):
 
 def write_to_output(output, dict,outfits):
     colnames = ['GAIA_DR2_ID', 'GAIA_DR3_ID', 'parallax', 'Gmag', 'G_RP', 'BP_RP', 'Teff', 'pmra', 'pmdec']
+    colnames_upper = colnames.upper()
 
     # Convert both DR2 and DR3 IDs to strings
     gaia_dr2_id = np.array([str(x) for x in dict['dr2_id']])
@@ -398,10 +405,16 @@ def write_to_output(output, dict,outfits):
                 print("Adding " + c + " from new crossmatch")
                 if c == "GAIA_DR2_ID" or c == "GAIA_DR3_ID":
                     new_col = fits.ColDefs([fits.Column(name=c, format='26A', array=cols_upper[c])])
-                    columns = new_col
+                    if columns == []:
+                        columns = new_col
+                    else:
+                        columns = columns + new_col
                 else:
                     new_col = fits.ColDefs([fits.Column(name=c, format='D', array=cols_upper[c])])
-                    columns = columns + new_col
+                    if columns == []:
+                        columns = new_col
+                    else:
+                        columns = columns + new_col
 
             new_cat = fits.BinTableHDU.from_columns(columns, name=name)
             try:
@@ -472,7 +485,10 @@ def write_to_output(output, dict,outfits):
             for c in colnames_upper:
                 if c not in names:
                     print("Adding " + c + " from new crossmatch")
-                    new_col = fits.ColDefs([fits.Column(name=c.upper(), format='D', array=cols_upper[c.upper()])])
+                    if c == "GAIA_DR2_ID" or c == "GAIA_DR3_ID":
+                        new_col = fits.ColDefs([fits.Column(name=c, format='26A', array=cols_upper[c])])
+                    else:
+                        new_col = fits.ColDefs([fits.Column(name=c, format='D', array=cols_upper[c])])
                     columns = columns + new_col
 
             new_cat = fits.BinTableHDU.from_columns(columns, name=name)
