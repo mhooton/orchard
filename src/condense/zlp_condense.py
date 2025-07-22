@@ -490,7 +490,7 @@ def main(args):
 
     tlist = basedir + "/SSO_targetlist_20191104.txt"
     # old_tlist = basedir + "/tests/target_list_nogaia.txt"
-    targ_id, teff, match_gaia, multitarg, intarg = find_targ_id(gaia_id,medflux,obj_ids, args.tlist)
+    targ_id, teff, match_gaia, multitarg, intarg = find_targ_id(gaia_dr2_id,medflux,obj_ids, args.tlist)
     if intarg == False:
         print("TARGET ISN'T IN CURRENT TARGET LIST")
 
@@ -503,25 +503,25 @@ def main(args):
         gaia = gaia_id_from_schedule.read_file(fplan[0])
         if gaia is not None:
             try:
-                g = np.where(np.array(gaia_id) == gaia)[0][0]
+                g = np.where(np.array(gaia_dr2_id) == gaia)[0][0]
                 if gaia not in match_gaia:
                     if intarg:
-                        print("Gaia ID obtained from schedule different to that in target list")
+                        print("Gaia DR2 ID obtained from schedule different to that in target list")
                     else:
-                        print("Gaia ID obtained from schedule")
+                        print("Gaia DR2 ID obtained from schedule")
                     targ_id.append(obj_ids[g])
                     match_gaia.append(gaia)
                 else:
-                    print("Gaia ID in schedule matches that found in target list")
+                    print("Gaia DR2 ID in schedule matches that found in target list")
                 inschedule = True
             except Exception as e:
                 print(e)
-                print("Gaia ID (" + str(gaia) + ") not in this field's catalogue")
+                print("Gaia DR2 ID (" + str(gaia) + ") not in this field's catalogue")
                 inschedule = False
         else:
             inschedule = False
     except:
-        print("Can't get Gaia ID from schedule")
+        print("Can't get Gaia DR2 ID from schedule")
         inschedule = False
 
     if intarg == False and inschedule == False and ('toi' in args.target.lower()):
@@ -533,24 +533,24 @@ def main(args):
         toi_table = Table.read(toi_table_path, format='ascii.csv')
         gaia = str(int(toi_table['GAIA'][np.where(toi_table['TOI'] == toi_no)[0][0]]))
 
-        print('GAIA ID NOT IN PLAN, BUT FOUND IN TOI TABLE')
-        print('GAIA ID IS ' + str(gaia))
+        print('GAIA DR2 ID NOT IN PLAN, BUT FOUND IN TOI TABLE')
+        print('GAIA DR2 ID IS ' + str(gaia))
         if gaia is not None:
             try:
-                g = np.where(np.array(gaia_id) == gaia)[0][0]
+                g = np.where(np.array(gaia_dr2_id) == gaia)[0][0]
                 if gaia not in match_gaia:
                     if intarg:
-                        print("Gaia ID obtained from table different to that in target list")
+                        print("Gaia DR2 ID obtained from table different to that in target list")
                     else:
-                        print("Gaia ID obtained from table")
+                        print("Gaia DR2 ID obtained from table")
                     targ_id.append(obj_ids[g])
                     match_gaia.append(gaia)
                 else:
-                    print("Gaia ID in table matches that found in target list")
+                    print("Gaia DR2 ID in table matches that found in target list")
                 intable = True
             except Exception as e:
                 print(e)
-                print("Gaia ID (" + str(gaia) + ") not in this field's catalogue")
+                print("Gaia DR2 ID (" + str(gaia) + ") not in this field's catalogue")
                 intable = False
         else:
             intable = False
@@ -586,7 +586,7 @@ def main(args):
             print(f"DEBUG: len(teff) = {len(teff)}")
 
             if intarg:
-                hdulist[0].header['GAIA_ID'] = match_gaia[m]
+                hdulist[0].header['GAIA_DR2_ID'] = match_gaia[m]
                 hdulist[0].header['SP_ID'] = targ_id[m]
                 if len(teff) > m:
                     print(f"DEBUG: Setting TEFF = {teff[m]}")
@@ -595,7 +595,7 @@ def main(args):
                     print(f"DEBUG: Setting TEFF = N because len(teff)={len(teff)} <= m={m}")
                     hdulist[0].header['TEFF'] = "N"
             elif intable:
-                hdulist[0].header['GAIA_ID'] = match_gaia[m]
+                hdulist[0].header['GAIA_DR2_ID'] = match_gaia[m]
                 hdulist[0].header['SP_ID'] = targ_id[m]
                 table_teff = toi_table['Teff'][np.where(toi_table['TOI'] == toi_no)[0][0]]
                 if np.isfinite(table_teff):
@@ -603,11 +603,11 @@ def main(args):
                 else:
                     hdulist[0].header['TEFF'] = "N"
             elif inschedule:
-                hdulist[0].header['GAIA_ID'] = match_gaia[m]
+                hdulist[0].header['GAIA_DR2_ID'] = match_gaia[m]
                 hdulist[0].header['SP_ID'] = targ_id[m]
                 hdulist[0].header['TEFF'] = "N"
             else:
-                hdulist[0].header['GAIA_ID'] = "N"
+                hdulist[0].header['GAIA_DR2_ID'] = "N"
                 hdulist[0].header['SP_ID'] = "N"
                 hdulist[0].header['TEFF'] = "N"
             hdulist[0].header['history'] = args.date
@@ -659,14 +659,14 @@ def main(args):
                         header['history'] = args.date
                         header['VERSION'] = args.version
                         if intarg:
-                            header['GAIA_ID'] = match_gaia[m]
+                            header['GAIA_DR2_ID'] = match_gaia[m]
                             header['SP_ID'] = targ_id[m]
                             if len(teff) > m:
                                 header['TEFF'] = teff[m]
                             else:
                                 header['TEFF'] = "N"
                         elif intable:
-                            header['GAIA_ID'] = match_gaia[m]
+                            header['GAIA_DR2_ID'] = match_gaia[m]
                             header['SP_ID'] = targ_id[m]
                             table_teff = toi_table['Teff'][np.where(toi_table['TOI'] == toi_no)[0][0]]
                             if np.isfinite(table_teff):
@@ -674,11 +674,11 @@ def main(args):
                             else:
                                 header['TEFF'] = "N"
                         elif inschedule:
-                            header['GAIA_ID'] = match_gaia[m]
+                            header['GAIA_DR2_ID'] = match_gaia[m]
                             header['SP_ID'] = targ_id[m]
                             header['TEFF'] = "N"
                         else:
-                            header['GAIA_ID'] = "N"
+                            header['GAIA_DR2_ID'] = "N"
                             header['SP_ID'] = "N"
                             header['TEFF'] = "N"
 

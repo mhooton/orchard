@@ -942,7 +942,8 @@ def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
         hdulist.append(fits.BinTableHDU(alc_table, name='ALC_' + str(ap)))
         print('add flags')
         hdulist.append(fits.BinTableHDU(flag_table, name='FLAGS'))
-        hdulist[0].header['GAIA_ID'] = targ.gaia_id
+        hdulist[0].header['DR2ID'] = targ.gaia_dr2_id
+        hdulist[0].header['DR3ID'] = targ.gaia_dr3_id
         hdulist[0].header['PIPE_V'] = version
 
         if ~np.isnan(phot_zp):
@@ -2678,7 +2679,7 @@ def import_outfits(outfits,goutfits,ap,targ_gaia):
             try:
                 print("Use Gaia ID provided by user: " + str(targ_gaia))
                 # print(gaia_id)
-                i = np.where(np.array(gaia_id) == targ_gaia)[0]
+                i = np.where(np.array(gaia_dr2_id) == targ_gaia)[0]
                 # print(i)
                 if len(i)>1:
                     print("WARNING: More than one star with same Gaia ID!")
@@ -2728,7 +2729,7 @@ def import_outfits(outfits,goutfits,ap,targ_gaia):
         #              'psf_b_5', 'skylevel', 'ambtemp','telname','targname','jd','bjd','hjd','date']
 
         tel = Telescope(*tel_args)
-        return intarg, sp_id, no_teff, teff_header, obj_id, gaia_id, nflux, flux, peak, jd,bjd,bjd_tdb, ra, dec, pmra,pmdec,parallax, x,y, g_rp, bp_rp,teff,gmag,tel,exposure, targname
+        return intarg, sp_id, no_teff, teff_header, obj_id, gaia_dr2_id, gaia_dr3_id, nflux, flux, peak, jd,bjd,bjd_tdb, ra, dec, pmra,pmdec,parallax, x,y, g_rp, bp_rp,teff,gmag,tel,exposure, targname
 
 
 def plot_pwv_comparison(tel, targ_jd, targ_gaia, filt, date, savename):
@@ -3079,13 +3080,13 @@ if __name__ == "__main__":
         # goutfits = args.outputdir + "/" + args.gaiaid + "_" + args.filt + "_output.fits"
         # outfits = goutfits
         outfits = args.outfits
-        gaiaid = os.path.basename(outfits).split("_")[0]
+        gaia_dr2_id = os.path.basename(outfits).split("_")[0]
         goutfits = outfits
         outdir = args.outputdir
 
         if args.gaia is not None:
-            gaiaid = args.gaia
-        lcdir = args.lcdir + "/" + gaiaid
+            gaia_dr2_id = args.gaia
+        lcdir = args.lcdir + "/" + gaia_dr2_id
         if not os.path.exists(lcdir):
             os.mkdir(lcdir)
 
@@ -3095,24 +3096,27 @@ if __name__ == "__main__":
         # outfits = args.outputdir + "/" + args.date + "/" + args.targname  + "/" + args.gaiaid + "/" + args.gaiaid + "_" + args.filt + "_" + args.date + "_output.fits"
         outfits = args.outfits
         if len(os.path.basename(outfits).split("_")) == 4:
-            gaiaid = os.path.basename(outfits).split("_")[0]
+            gaia_dr2_id = os.path.basename(outfits).split("_")[0]
         elif len(os.path.basename(outfits).split("_")) == 5:
-            gaiaid = "_".join(os.path.basename(outfits).split("_")[:2])
+            gaia_dr2_id = "_".join(os.path.basename(outfits).split("_")[:2])
         else:
-            gaiaid = "0000000000000000000"
-        goutfits = args.outputdir + "/" + gaiaid + "_" + args.filt + "_output.fits"
-        # outdir = args.outputdir + "/" + args.date + "/" + args.targname  + "/" + args.gaiaid + "/"
+            gaia_dr2_id = "0000000000000000000"
+        goutfits = args.outputdir + "/" + gaia_dr2_id + "_" + args.filt + "_output.fits"
+        # outdir = args.outputdir + "/" + args.date + "/" + args.targname  + "/" + args.gaia_dr2_id + "/"
         outdir = args.outputdir
         lcdir = args.lcdir
 
         if args.gaia is not None:
-            gaiaid = args.gaia
+            gaia_dr2_id = args.gaia
 
         if not os.path.exists(lcdir):
             os.mkdir(lcdir)
 
-    try:
-        lc = main(args.date,gaiaid,int(args.ap), args.filt, outfits, goutfits, globallc, args.bin,version,outdir,lcdir,args.teff,args.targlist,oldtarglists,args.basedir)
+    lc = main(args.date, gaia_dr2_id, int(args.ap), args.filt, outfits, goutfits, globallc, args.bin, version, outdir,
+              lcdir, args.teff, args.targlist, oldtarglists, args.basedir)
 
-    except Exception as e:
-        print(e)
+    # try:
+    #     lc = main(args.date,gaia_dr2_id,int(args.ap), args.filt, outfits, goutfits, globallc, args.bin,version,outdir,lcdir,args.teff,args.targlist,oldtarglists,args.basedir)
+    #
+    # except Exception as e:
+    #     print(e)
