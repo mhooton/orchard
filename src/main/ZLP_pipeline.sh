@@ -139,8 +139,8 @@ if [ -n "${N_CORES:-}" ]; then
     readonly CORES=${N_CORES}
     echo "Using N_CORES environment variable: ${CORES} cores"
 else
-    readonly CORES=$(($(python -c "import multiprocessing; print(multiprocessing.cpu_count())") / 2))
-    echo "Using default (half of available cores): ${CORES} cores"
+    readonly CORES=1
+    echo "Using default of 1 core"
 fi
 readonly APSIZE=4
 readonly NUMSTACK=50
