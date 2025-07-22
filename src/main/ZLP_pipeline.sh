@@ -442,40 +442,35 @@ create_stack_image() {
 #            correct_i="$(python ${SCRIPTDIR}/correct_target_names.py ${IMAGELIST} ${i})"
 #            echo "${correct_i}"
 
-            #check if stack catalogue already exists
-            if [ -e ${OUTPUTDIR}/StackImages/${correct_i}_stack_catalogue_${FILTER}.${OUTEXT} ]; then
-                echo "The stack catalogue for target " ${correct_i} " with filter " ${FILTER} " already exists"
-            else
-#                python ${SCRIPTDIR}/reporting/email_eon.py \
-#                ${DATE} \
-#                -r ${RUNNAME} \
-#                -rep ${report} \
-#                -t ${i} \
-#                -tel ${TEL} \
-#                -e 0
+#            #check if stack catalogue already exists
+#            if [ -e ${OUTPUTDIR}/StackImages/${correct_i}_stack_catalogue_${FILTER}.${OUTEXT} ]; then
+#                echo "The stack catalogue for target " ${correct_i} " with filter " ${FILTER} " already exists"
+#            else
 
-                CMD="python ${SCRIPTDIR}/photometry/ZLP_create_cat.py
-                    $IMAGELIST
-                    ${correct_i}_outstack_${FILTER}.${OUTEXT}
-                    ${correct_i}_stack_catalogue_${FILTER}.${OUTEXT}
-                    ${OUTPUTDIR}/StackImages
-                    ${REPORTDIR}
-                    $FILTER
-                    $DATE
-                    False
-                    $CTHRESH
-                    $STHRESH
-                    False
-                    $NUMSTACK
-                    $IPIX
-                    $XMATCH
-                    $APSIZE
-                    $CORES
-                    $OUTEXT"
-                echo ${CMD}
-                ${CMD}
 
-            fi
+            CMD="python ${SCRIPTDIR}/photometry/ZLP_create_cat.py
+                $IMAGELIST
+                ${correct_i}_outstack_${FILTER}.${OUTEXT}
+                ${correct_i}_stack_catalogue_${FILTER}.${OUTEXT}
+                ${OUTPUTDIR}/${DATE}/${i}
+                ${OUTPUTDIR}/StackImages
+                ${REPORTDIR}
+                $FILTER
+                $DATE
+                False
+                $CTHRESH
+                $STHRESH
+                False
+                $NUMSTACK
+                $IPIX
+                $XMATCH
+                $APSIZE
+                $CORES
+                $OUTEXT"
+            echo ${CMD}
+            ${CMD}
+
+#            fi
         done
 
     else
@@ -531,7 +526,7 @@ single_perform_aperture_photometry() {
             echo "Using Stack Catalogue ${OUTPUTDIR}/StackImages/${2}_stack_catalogue_${FILTER}.${OUTEXT}"
 
             CMD="python ${SCRIPTDIR}/photometry/ZLP_app_photom.py \
-                --catfile ${OUTPUTDIR}/StackImages/${2}_stack_catalogue_${FILTER}.${OUTEXT}\
+                --catfile ${output_directory}/${2}_stack_catalogue_${FILTER}.${OUTEXT}\
                 --filter ${FILTER} \
                 --nproc ${CORES} \
                 --filelist ${filelist} \
@@ -575,7 +570,8 @@ condense_photometry() {
         --filter ${FILTER}
         --ext ${OUTEXT}
         --version ${VERSION}
-        --tlist ${TLIST}"
+        --tlist ${TLIST}
+        --cat ${OUTPUTDIR}/${DATE}/${i}/${correct_i}_stack_catalogue_${FILTER}.${OUTEXT}"
     echo "${CMD}"
 
     # add to global output fits file:

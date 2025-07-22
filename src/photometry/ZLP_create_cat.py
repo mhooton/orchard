@@ -43,7 +43,7 @@ import utils.already_run_targs
 print(os.getcwd())
 
 
-def main(filelist,outname,catname,outdir,reportdir, filter, date,
+def main(filelist,outname,catname,outdir,backupcatdir,reportdir, filter, date,
          no_wcs= False,
          c_thresh= 2,
          s_thresh= 20,
@@ -55,6 +55,8 @@ def main(filelist,outname,catname,outdir,reportdir, filter, date,
          ncores=1,
          ext='fits'):
 
+    # CHANGE TO DATDIR SO CATCACHE IS WRITTEN IN CORRECT PLACE
+    os.chdir(filelist.split("output")[0])
 
     stack_filelist = os.path.dirname(filelist) + '/'+filter+'_stacked.dat'
 
@@ -188,6 +190,56 @@ def main(filelist,outname,catname,outdir,reportdir, filter, date,
     # print dirsplit[-3]
     # print dirsplit[-5]
     dirname= "/".join(dirsplit[:-4])
+
+    # Check if current run was successful and manage backup
+    outstack_path = outstack_name
+    outcat_path = outcatname
+    backup_outstack_path = os.path.join(backupcatdir, os.path.basename(outstack_name))
+    backup_outcat_path = os.path.join(backupcatdir, os.path.basename(outcatname))
+
+    # Function to safely check for Gaia_Crossmatch extension
+    def has_gaia_crossmatch(filepath):
+        try:
+            with fits.open(filepath) as hdul:
+                return 'Gaia_Crossmatch'.upper() in [hdu.name.upper() for hdu in hdul]
+        except:
+            return False
+
+    # Check if current run was successful
+    current_success = (os.path.exists(outcat_path) and has_gaia_crossmatch(outcat_path))
+
+
+    if current_success:
+        print("Current stack catalogue creation successful - checking backup status")
+        # Check if backup needs updating
+        backup_needs_update = (not os.path.exists(backup_outcat_path) or
+                               not has_gaia_crossmatch(backup_outcat_path))
+
+        if backup_needs_update:
+            print("Updating backup catalogue in {}".format(backupcatdir))
+            if not os.path.exists(backupcatdir):
+                os.makedirs(backupcatdir)
+            import shutil
+            shutil.copy2(outstack_path, backup_outstack_path)
+            shutil.copy2(outcat_path, backup_outcat_path)
+            print("Backup updated successfully")
+        else:
+            print("Backup catalogue already exists and is valid")
+
+    else:
+        print("Current stack catalogue creation failed - checking for backup")
+        # Current run failed, try to use backup
+        backup_available = (os.path.exists(backup_outcat_path) and
+                            has_gaia_crossmatch(backup_outcat_path))
+
+        if backup_available:
+            print("Using backup catalogue from {}".format(backupcatdir))
+            import shutil
+            shutil.copy2(backup_outstack_path, outstack_path)
+            shutil.copy2(backup_outcat_path, outcat_path)
+            print("Backup catalogue restored successfully")
+        else:
+            print("No reliable backup catalogue available - you're on your own, mate!")
 
     try:
         QC([0, reportdir + "/QC", date, field, tel, run, 'QC11', perc])
@@ -336,6 +388,7 @@ def create_cat():
     parser.add_argument('outstackname')
     parser.add_argument('outcatname')
     parser.add_argument('outdir')
+    parser.add_argument('backupcatdir')
     parser.add_argument('reportdir')
     parser.add_argument('filter')
     parser.add_argument('date')
@@ -355,6 +408,7 @@ def create_cat():
     outname = args.outstackname
     catname = args.outcatname #'catstack.fts'
     outdir = args.outdir  #'/data/cam217/create_cat_output/'
+    backupcatdir = args.backupcatdir
     reportdir = args.reportdir
     # no_wcs determines whether or not we solve each image for wcs (True - we don't solve)
     no_wcs = args.no_wcs #False
@@ -371,7 +425,7 @@ def create_cat():
     filter=args.filter
     date = args.date
 
-    main(filelist,outname,catname,outdir,reportdir,filter,date,no_wcs,c_thresh,s_thresh,verbose,nfiles, ipix,catsrc, rcore,ncores,ext) #(docopt(__doc__))
+    main(filelist,outname,catname,outdir,backupcatdir,reportdir,filter,date,no_wcs,c_thresh,s_thresh,verbose,nfiles, ipix,catsrc, rcore,ncores,ext) #(docopt(__doc__))
 
 
 if __name__ == '__main__':

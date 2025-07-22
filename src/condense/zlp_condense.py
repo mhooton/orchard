@@ -229,8 +229,8 @@ def main(args):
     logger.debug('Allocating memory for catalogue')
     # Construct an ndarray that allows field access using attributes
     #('GMAG', np.float64),('GAIA_ID', '19a'),
-    cat = args.outputdir + '/StackImages/' + args.target + '_stack_catalogue_' + args.filter + "." + args.ext
-    with fitsio.FITS(cat, 'rw') as catfile:
+    # cat = args.outputdir + '/StackImages/' + args.target + '_stack_catalogue_' + args.filter + "." + args.ext
+    with fitsio.FITS(args.cat, 'rw') as catfile:
         gaia = catfile['Gaia_Crossmatch']
         pmra = gaia['pmra'].read()
         pmdec = gaia['pmdec'].read()
@@ -888,5 +888,6 @@ if __name__ == '__main__':
     parser.add_argument('-e', '--ext', required=True)
     parser.add_argument('-ve', '--version', required=True)
     parser.add_argument('-tl', '--tlist', required=True)
+    parser.add_argument('-c', '--cat', required=True)
     main(parser.parse_args())
 
