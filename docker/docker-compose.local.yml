@@ -18,6 +18,7 @@ services:
     environment:
       - ORCHARD_PATH=/opt/orchard/src
       - CONDA_DEFAULT_ENV=pipeline
+      - N_CORES=1
     command: bash -c "source /opt/anaconda/bin/activate pipeline && bash"
     stdin_open: true
     tty: true

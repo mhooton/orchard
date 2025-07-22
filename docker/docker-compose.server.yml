@@ -9,11 +9,11 @@ services:
       - /appct/data/speculoos/orchard/src:/opt/orchard/src
       - /appct/data/SPECULOOSPipeline:/data/SPECULOOSPipeline
       - /appct/data/speculoos/orchard/results:/opt/orchard/results
-      - /appct/data/speculoos/astrometry_index_files:/appct/data/speculoos/astrometry_index_files
     working_dir: /opt/orchard/src
     environment:
       - ORCHARD_PATH=/opt/orchard/src
       - CONDA_DEFAULT_ENV=pipeline
+      - N_CORES=20
     command: bash -c "source /opt/anaconda/bin/activate pipeline && bash"
     stdin_open: true
     tty: true

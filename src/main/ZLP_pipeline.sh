@@ -134,12 +134,14 @@ readonly WCSFIT_REFERENCE_FRAME=''
 
 # there are ** cores on the server
 echo "$(python -c "import multiprocessing; print(multiprocessing.cpu_count())")"
-#readonly CORES=$(python -c "import multiprocessing; print multiprocessing.cpu_count()"-1)
-readonly CORES=1
-#readonly CORES=$(($(python -c "import multiprocessing; print multiprocessing.cpu_count()") / 2))
-#if
-#readonly CORES=32
-#$(python -c "import multiprocessing; print multiprocessing.cpu_count()")
+# Use N_CORES environment variable if set, otherwise use half of available cores
+if [ -n "${N_CORES:-}" ]; then
+    readonly CORES=${N_CORES}
+    echo "Using N_CORES environment variable: ${CORES} cores"
+else
+    readonly CORES=$(($(python -c "import multiprocessing; print(multiprocessing.cpu_count())") / 2))
+    echo "Using default (half of available cores): ${CORES} cores"
+fi
 readonly APSIZE=4
 readonly NUMSTACK=50
 readonly IPIX=6
