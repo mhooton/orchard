@@ -1,18 +1,17 @@
-FROM --platform=linux/amd64 centos:7.9.2009
+FROM --platform=linux/amd64 ubuntu:20.04
+
+# Set non-interactive mode for apt
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Set environment variables
 ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH:-}"
 ENV PYTHONPATH="/opt/orchard/src:${PYTHONPATH:-}"
 
-# Update yum repositories to use vault mirrors and install dependencies
-RUN sed -i 's|mirrorlist=|#mirrorlist=|g' /etc/yum.repos.d/CentOS-Base.repo \
-    && sed -i 's|#baseurl=http|baseurl=http|g' /etc/yum.repos.d/CentOS-Base.repo \
-    && sed -i 's|http://mirror.centos.org|http://vault.centos.org|g' /etc/yum.repos.d/CentOS-Base.repo \
-    && yum clean all \
-    && yum update -y \
-    && yum install -y wget curl gcc gcc-c++ make perl zlib-devel \
-    && yum groupinstall -y "Development Tools" \
-    && yum clean all
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    wget curl gcc g++ make perl zlib1g-dev \
+    build-essential autoconf automake libtool pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install Miniconda with Python 3.9
 WORKDIR /opt
