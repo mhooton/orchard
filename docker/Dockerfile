@@ -4,19 +4,15 @@ FROM --platform=linux/amd64 centos:7.9.2009
 ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH:-}"
 ENV PYTHONPATH="/opt/orchard/src:${PYTHONPATH:-}"
 
-# Install EPEL repository first (needed for astrometry.net)
-RUN yum install -y epel-release
-
-# Install system dependencies with retry logic
-RUN for i in 1 2 3; do \
-        yum install -y \
-            wget curl gcc gcc-c++ make perl zlib-devel \
-            autoconf automake libtool pkgconfig \
-            libX11 libXext libXrender libXtst libXft libXpm \
-            astrometry.net \
-        && break || sleep 5; \
-    done && \
-    yum clean all
+# Update yum repositories to use vault mirrors and install dependencies
+RUN sed -i 's|mirrorlist=|#mirrorlist=|g' /etc/yum.repos.d/CentOS-Base.repo \
+    && sed -i 's|#baseurl=http|baseurl=http|g' /etc/yum.repos.d/CentOS-Base.repo \
+    && sed -i 's|http://mirror.centos.org|http://vault.centos.org|g' /etc/yum.repos.d/CentOS-Base.repo \
+    && yum clean all \
+    && yum update -y \
+    && yum install -y wget curl gcc gcc-c++ make perl zlib-devel \
+    && yum groupinstall -y "Development Tools" \
+    && yum clean all
 
 # Install Miniconda with Python 3.9
 WORKDIR /opt
@@ -30,16 +26,39 @@ ENV PATH="/opt/anaconda/bin:$PATH"
 RUN /opt/anaconda/bin/conda init bash \
     && /bin/bash -c "source /opt/anaconda/bin/activate && conda create --name pipeline python=3.9"
 
-# Copy requirements and install Python packages
-COPY docker/requirements.txt /opt/requirements.txt
-RUN /bin/bash -c "source /opt/anaconda/bin/activate && conda activate pipeline && pip install numpy==1.26.4"
-RUN /bin/bash -c "source /opt/anaconda/bin/activate && conda activate pipeline && pip install --no-cache-dir -r /opt/requirements.txt"
+# Install conda-forge packages (matching your environment)
+RUN /bin/bash -c "source /opt/anaconda/bin/activate pipeline && conda install -c conda-forge \
+    numpy=1.26.4 \
+    scipy=1.13.1 \
+    matplotlib=3.9.4 \
+    pandas=2.3.0 \
+    astropy=6.0.1 \
+    scikit-learn=1.6.1 \
+    photutils=1.11.0 \
+    fitsio=1.2.6 \
+    cfitsio=4.6.2 \
+    wcslib=8.2.2 \
+    tqdm=4.67.1 \
+    pyyaml=6.0.2 \
+    requests=2.32.4"
 
-# Set environment variables
+# Install pip packages (matching your environment)
+RUN /bin/bash -c "source /opt/anaconda/bin/activate pipeline && pip install \
+    twirl==0.4.2 \
+    astroquery==0.4.10 \
+    scikit-image==0.21.0 \
+    tabulate==0.9.0 \
+    progressbar2==4.5.0 \
+    psutil==7.0.0 \
+    python-dotenv==1.1.0 \
+    tifffile==2024.8.30 \
+    pexpect==4.9.0"
+
+# Set conda environment as default
 ENV CONDA_DEFAULT_ENV=pipeline
 ENV PATH="/opt/anaconda/envs/pipeline/bin:$PATH"
 
-# Install Autoconf, Automake, and dependencies
+# Install Autoconf, Automake for casutools
 WORKDIR /usr/local/src
 RUN wget http://ftp.gnu.org/gnu/autoconf/autoconf-2.69.tar.gz \
     && tar xf autoconf-2.69.tar.gz \
@@ -58,10 +77,7 @@ RUN wget http://ftp.gnu.org/gnu/autoconf/autoconf-2.69.tar.gz \
     && cd .. \
     && rm -rf automake-1.16.1 automake-1.16.1.tar.gz
 
-# Verify installation
-RUN aclocal --version && automake --version && autoconf --version
-
-# Install cfitsio and wcslib
+# Install cfitsio and wcslib from source
 WORKDIR /usr/local/src
 RUN wget https://heasarc.gsfc.nasa.gov/FTP/software/fitsio/c/cfitsio-4.2.0.tar.gz \
     && tar xzf cfitsio-4.2.0.tar.gz \
@@ -80,34 +96,22 @@ RUN wget https://heasarc.gsfc.nasa.gov/FTP/software/fitsio/c/cfitsio-4.2.0.tar.g
     && cd .. \
     && rm -rf wcslib-8.4*
 
-# Set library path
-ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH:-}"
-
-# Install casutools 1.0.43
+# Install casutools 1.0.44pre
 WORKDIR /opt
-COPY docker/casutools-1.0.43.tar.gz ./
-RUN tar xzf casutools-1.0.43.tar.gz \
-    && cd casutools-1.0.43 \
+COPY docker/casutools-1.0.44pre.tar.gz ./
+RUN tar xzf casutools-1.0.44pre.tar.gz \
+    && cd casutools-1.0.44pre \
     && ./configure --prefix=/opt/casutools --with-cfitsio=/usr/local --with-wcs=/usr/local \
     && make \
     && make install \
     && cd .. \
-    && rm -rf casutools-1.0.43*
+    && rm -rf casutools-1.0.44pre*
 
 # Set environment variables for casutools
 ENV PATH="/opt/casutools/bin:$PATH"
 
-# Create astrometry.net data directory and copy index files
-RUN mkdir -p /usr/share/astrometry
-COPY docker/astrometry-data/ /usr/share/astrometry/
-
-# Configure astrometry.net to use the index files
-RUN echo "add_path /usr/share/astrometry" > /etc/astrometry.cfg \
-    && echo "autoindex" >> /etc/astrometry.cfg
-
 # Set up pipeline environment
 ENV ORCHARD_PATH="/opt/orchard/src"
-ENV PYTHONPATH="/opt/orchard/src:${PYTHONPATH:-}"
 WORKDIR /opt/orchard
 
 # Copy pipeline code
