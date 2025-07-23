@@ -1,0 +1,18 @@
+services:
+  orchard-pipeline:
+    image: orchard-pipeline:latest
+    pull_policy: never
+    container_name: orchard-pipeline-pycharm
+    volumes:
+      # PyCharm will override project mounts, but keep data mounts
+      - /Users/matthewhooton/data/SPECULOOSPipeline:/data/SPECULOOSPipeline
+      - /Users/matthewhooton/PycharmProjects/orchard/results:/opt/project/results
+    working_dir: /opt/project/src
+    environment:
+      - ORCHARD_PATH=/opt/project/src
+      - PYTHONPATH=/opt/project/src:/opt/project
+      - N_CORES=1
+    command: bash
+    stdin_open: true
+    tty: true
+    platform: linux/amd64

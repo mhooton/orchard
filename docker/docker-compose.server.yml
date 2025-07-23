@@ -12,9 +12,12 @@ services:
     working_dir: /opt/orchard/src
     environment:
       - ORCHARD_PATH=/opt/orchard/src
-      - CONDA_DEFAULT_ENV=pipeline
+      - PYTHONPATH=/opt/orchard/src
       - N_CORES=20
-    command: bash -c "source /opt/anaconda/bin/activate pipeline && bash"
+      # Threading fixes for CentOS 7 compatibility
+      - OMP_NUM_THREADS=20
+      - OPENBLAS_NUM_THREADS=20
+    command: bash
     stdin_open: true
     tty: true
     restart: unless-stopped
