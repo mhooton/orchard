@@ -5,7 +5,6 @@ services:
     image: orchard-pipeline:latest
     container_name: orchard-server
     volumes:
-      # Server paths - updated to match your new structure
       - /appct/data/speculoos/orchard/src:/opt/orchard/src
       - /appct/data/SPECULOOSPipeline:/data/SPECULOOSPipeline
       - /appct/data/speculoos/orchard/results:/opt/orchard/results
@@ -14,9 +13,12 @@ services:
       - ORCHARD_PATH=/opt/orchard/src
       - PYTHONPATH=/opt/orchard/src
       - N_CORES=20
-      # Threading fixes for CentOS 7 compatibility
-      - OMP_NUM_THREADS=20
-      - OPENBLAS_NUM_THREADS=20
+    # Relax container security to allow more threading
+    security_opt:
+      - seccomp:unconfined
+    ulimits:
+      nproc: 65536
+      nofile: 65536
     command: bash
     stdin_open: true
     tty: true
