@@ -4,6 +4,7 @@ services:
   orchard-pipeline:
     image: orchard-pipeline:latest
     container_name: orchard-server
+    user: "886:20"
     volumes:
       - /appct/data/speculoos/orchard/src:/opt/orchard/src
       - /appct/data/SPECULOOSPipeline:/data/SPECULOOSPipeline
@@ -13,6 +14,9 @@ services:
       - ORCHARD_PATH=/opt/orchard/src
       - PYTHONPATH=/opt/orchard/src
       - N_CORES=20
+      - MPLCONFIGDIR=/tmp/matplotlib-config
+      - FONTCONFIG_CACHEDIR=/tmp/fontconfig-cache
+      - HOME=/tmp
     # Relax container security to allow more threading
     security_opt:
       - seccomp:unconfined
