@@ -509,8 +509,11 @@ def main(args):
     for i, field in enumerate(fnames):
         # if there are less than 5 science images for a field then don't create list file
         if len(scilists[i]) > 4:
+            # Convert spaces to double hyphens for filename consistency
+            field_filename = field.replace(' ', '--')
             # for each object write list of science image filenames to file "(run)_image_(object).list"
-            result = write_liste(scilists[i], "%s_image_%s.list" % (run, field), outputroot, run, runnumber, date)
+            result = write_liste(scilists[i], "%s_image_%s.list" % (run, field_filename), outputroot, run, runnumber,
+                                 date)
         else:
             print("Less than 5 science images for " + field)
 
