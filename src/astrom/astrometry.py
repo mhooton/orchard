@@ -12,11 +12,12 @@ import fnmatch
 import shutil
 from astrom.twirl_speculoos import twirl_wcs
 
+
 def main(args):
     import sys
     sys.stdout.flush()
     print("*************************", flush=True)
-    print("Starting astrom.py", flush=True)
+    print("Starting plate solving", flush=True)
     print("*************************", flush=True)
     start_time = timeit.default_timer()
     print(f"Input file: {args.filelist}", flush=True)
@@ -54,10 +55,11 @@ def main(args):
     # except Exception as e:
     #     print("Astrometry failed: " + str(e))
 
-    for infile in infiles:
-        print(f"Processing: {infile}")
-        add_astrometry(infile, args.ext)
-        print(f"Completed: {infile}")
+    total_files = len(infiles)
+    for i, infile in enumerate(infiles, 1):
+        # print(f"Processing: {infile}")
+        add_astrometry(infile, args.ext, file_num=i, total_files=total_files)
+        # print(f"Completed: {infile}")
 
     keywords = ['CTYPE1', 'CTYPE2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2', 'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2']
 
@@ -77,10 +79,10 @@ def main(args):
                 hdr_old = hdulist_old[0].header
                 data = hdulist_old[0].data
                 hdulist_new = fits.open(new_f)
-                hdr_new  = hdulist_new[0].header
+                hdr_new = hdulist_new[0].header
                 pa, jd, solve = find_pa.pa(new_f)
 
-                hdr_old.set('PA',pa)
+                hdr_old.set('PA', pa)
                 # hdr_old.set('CTYPE1',hdr_new['CTYPE1']) #'RA---TAN')
                 # hdr_old.set('CTYPE2', hdr_new['CTYPE2']) #'DEC--TAN')
                 # hdr_old.set('CRVAL1',hdr_new['CRVAL1'])
@@ -93,35 +95,56 @@ def main(args):
                 # hdr_old.set('CD2_2',hdr_new['CD2_2'])
                 for k in keywords:
                     if hdr_old.get(k) == None:
-                        hdr_old.set(k,hdr_new[k])
+                        hdr_old.set(k, hdr_new[k])
                 # if hdr_old.get('RA') == None:
                 #     hdr_old.set('RA', '21 31 48.113')
                 #     hdr_old.set('DEC', '48 26 29.330')
-                hdr_old.set('ASTSOLVE','T')
-                fits.writeto(f,data,hdr_old,overwrite=True)
+                hdr_old.set('ASTSOLVE', 'T')
+                fits.writeto(f, data, hdr_old, overwrite=True)
 
-                for fname in [new_f,f1,f2,f3,f4,f5,f6,f7]:
+                for fname in [new_f, f1, f2, f3, f4, f5, f6, f7]:
                     os.remove(fname)
 
         elapsed = timeit.default_timer() - start_time
-        print('Total time taken for astrom: ' + str(elapsed/60.) + ' minutes')
+        print('Total time taken for astrom: ' + str(elapsed / 60.) + ' minutes')
 
     except Exception as e:
         print("Replacing Astrometry failed: " + str(e))
         print("on file: " + f)
 
 
-def add_astrometry(f, ext):
+def add_astrometry(f, ext, file_num=None, total_files=None):
     if fnmatch.fnmatch(f, '*.' + ext):
         file = f
-        print("Add astrom.net data to header of file: " + file)
+        # print("Add astrometry.net data to header of file: " + file)
 
-        # # Find solve-field command
-        # solve_field_cmd = shutil.which('solve-field')
-        # if not solve_field_cmd:
-        #     raise RuntimeError("solve-field not found in PATH")
+        # Attempt WCS solving
+        result = twirl_wcs(str(file), verbose=False)
 
-        twirl_wcs(str(file),verbose=True)
+        # Create summary line
+        filename = os.path.basename(file)
+        if file_num is not None and total_files is not None:
+            prefix = f"[{file_num}/{total_files}]"
+        else:
+            prefix = ""
+
+        if result['success']:
+            crpix1, crpix2 = result['crpix']
+            crval1, crval2 = result['crval']
+            summary = (f"{prefix} {filename} SUCCESS - "
+                       f"Sources: {result['sources_detected']}→{result['sources_used']} "
+                       f"Gaia: {result['gaia_queried']}→{result['gaia_used']} "
+                       f"Matches: {result['matches']} "
+                       f"CRPIX=({crpix1:.2f},{crpix2:.2f}) "
+                       f"CRVAL=({crval1:.6f},{crval2:.6f})")
+        else:
+            summary = (f"{prefix} {filename} FAILED - "
+                       f"Sources: {result['sources_detected']}→{result['sources_used']} "
+                       f"Gaia: {result['gaia_queried']}→{result['gaia_used']} "
+                       f"Matches: {result['matches']} "
+                       f"Error: {result['error']}")
+
+        print(summary)
 
         #
         # hdulist = fits.open(file)
@@ -168,9 +191,10 @@ def add_astrometry(f, ext):
         # else:
         #     print(f"Warning: Missing RA and/or DEC in {file}, skipping astrom")
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('filelist')
-    parser.add_argument('-n','--nproc')
+    parser.add_argument('-n', '--nproc')
     parser.add_argument('-e', '--ext')
     main(parser.parse_args())

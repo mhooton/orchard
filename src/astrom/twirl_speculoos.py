@@ -198,167 +198,223 @@ def gaia_radecs(
 
 
 def twirl_wcs(filepath, verbose=False):
+    """
+    Perform WCS solving on a FITS file using twirl.
+
+    Returns
+    -------
+    dict
+        Dictionary containing results:
+        - success: bool, whether WCS solving succeeded
+        - error: str or None, error message if failed
+        - crpix: tuple or None, (CRPIX1, CRPIX2) if successful
+        - crval: tuple or None, (CRVAL1, CRVAL2) if successful
+        - sources_detected: int, number of sources detected in image
+        - sources_used: int, number of sources used for WCS (after limiting)
+        - gaia_queried: int, number of Gaia sources returned from query
+        - gaia_used: int, number of Gaia sources used for WCS (after limiting)
+        - matches: int, number of successful star matches
+    """
+
+    # Initialize return dictionary
+    result = {
+        'success': False,
+        'error': None,
+        'crpix': None,
+        'crval': None,
+        'sources_detected': 0,
+        'sources_used': 0,
+        'gaia_queried': 0,
+        'gaia_used': 0,
+        'matches': 0
+    }
+
     if verbose:
         print(f"[VERBOSE] Starting twirl_wcs for file: {filepath}")
 
-    with fits.open(filepath, mode='update') as hdu:
-        header = hdu[0].header
-        data = hdu[0].data
+    try:
+        with fits.open(filepath, mode='update') as hdu:
+            header = hdu[0].header
+            data = hdu[0].data
 
-        if verbose:
-            print(f"[VERBOSE] FITS file opened successfully")
-            print(f"[VERBOSE] Data shape: {data.shape}")
-            print(f"[VERBOSE] IMAGETYP: {header.get('IMAGETYP', 'NOT_FOUND')}")
-
-        if header['IMAGETYP'] == 'Light Frame':
             if verbose:
-                print(f"[VERBOSE] Confirmed Light Frame, starting image cleaning...")
+                print(f"[VERBOSE] FITS file opened successfully")
+                print(f"[VERBOSE] Data shape: {data.shape}")
+                print(f"[VERBOSE] IMAGETYP: {header.get('IMAGETYP', 'NOT_FOUND')}")
 
-            # clean image
-            sigma_clip = SigmaClip(sigma=3.0)
-            bkg_estimator = MedianBackground()
-            if verbose:
-                print(f"[VERBOSE] Creating background estimator...")
+            if header['IMAGETYP'] == 'Light Frame':
+                if verbose:
+                    print(f"[VERBOSE] Confirmed Light Frame, starting image cleaning...")
 
-            bkg = Background2D(data, (32, 32), filter_size=(3, 3), sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
-            if verbose:
-                print(f"[VERBOSE] Background estimation complete")
+                # clean image
+                sigma_clip = SigmaClip(sigma=3.0)
+                bkg_estimator = MedianBackground()
+                if verbose:
+                    print(f"[VERBOSE] Creating background estimator...")
 
-            bkg_clean = data - bkg.background
-            med_clean = ndimage.median_filter(bkg_clean, size=5, mode='mirror')
-            band_corr = np.median(med_clean, axis=1).reshape(-1, 1)
-            image_clean = med_clean - band_corr
-            if verbose:
-                print(f"[VERBOSE] Image cleaning complete, cleaned image shape: {image_clean.shape}")
+                bkg = Background2D(data, (32, 32), filter_size=(3, 3), sigma_clip=sigma_clip,
+                                   bkg_estimator=bkg_estimator)
+                if verbose:
+                    print(f"[VERBOSE] Background estimation complete")
 
-            # get RA and DEC from header
-            ra = header['RA']
-            dec = header['DEC']
-            if verbose:
-                print(f"[VERBOSE] Header RA: {ra}, DEC: {dec}")
-            if header['TELESCOP'] == 'Artemis':
-                center = SkyCoord(ra, dec, unit=[u.hourangle, u.deg])
+                bkg_clean = data - bkg.background
+                med_clean = ndimage.median_filter(bkg_clean, size=5, mode='mirror')
+                band_corr = np.median(med_clean, axis=1).reshape(-1, 1)
+                image_clean = med_clean - band_corr
+                if verbose:
+                    print(f"[VERBOSE] Image cleaning complete, cleaned image shape: {image_clean.shape}")
+
+                # get RA and DEC from header
+                ra = header['RA']
+                dec = header['DEC']
+                if verbose:
+                    print(f"[VERBOSE] Header RA: {ra}, DEC: {dec}")
+                if header['TELESCOP'] == 'Artemis':
+                    center = SkyCoord(ra, dec, unit=[u.hourangle, u.deg])
+                else:
+                    center = SkyCoord(ra, dec, unit=[u.deg, u.deg])
+                if verbose:
+                    print("COORDINATES AFTER SKYCOORD")
+                    print(center.ra.deg)
+                    print(center.dec.deg)
+                    print(f"[VERBOSE] Center coordinates: RA={center.ra.deg:.6f} deg, DEC={center.dec.deg:.6f} deg")
+
+                # image fov
+                shape = image_clean.shape
+                plate_scale = np.arctan((header['XPIXSZ'] * 1e-6) / (header['FOCALLEN'] * 1e-3)) * (180 / np.pi)
+                fovx = (1 / np.abs(np.cos(center.dec.rad))) * shape[0] * plate_scale
+                fovy = shape[1] * plate_scale
+                if verbose:
+                    print(f"[VERBOSE] Plate scale: {plate_scale * 3600:.3f} arcsec/pixel")
+                    print(f"[VERBOSE] FOV: X={fovx * 60:.2f} arcmin, Y={fovy * 60:.2f} arcmin")
+                    print(f"[VERBOSE] Search FOV: X={1.2 * fovx * 60:.2f} arcmin, Y={1.2 * fovy * 60:.2f} arcmin")
+
+                # detect and match stars
+                if verbose:
+                    print(f"[VERBOSE] Starting star detection...")
+
+                stars = twirl.find_peaks(image_clean, threshold=5)
+                result['sources_detected'] = len(stars)
+
+                if verbose:
+                    print(f"[VERBOSE] Found {len(stars)} stars in image")
+                    if len(stars) > 0:
+                        print(f"[VERBOSE] First few stars: {stars[:min(5, len(stars))]}")
+
+                if len(stars) < 4:
+                    result['error'] = "Not enough stars detected for plate solve"
+                    return result
+
+                # Limit number of stars to prevent memory issues
+                star_limit = min(10, len(stars))  # increased from 12 but still limited
+                stars = stars[0:star_limit]
+                result['sources_used'] = len(stars)
+
+                if verbose:
+                    print(f"[VERBOSE] Using {len(stars)} stars (limited from {result['sources_detected']})")
+
+                # Limit number of Gaia stars too
+                if verbose:
+                    print(f"[VERBOSE] Querying Gaia catalog...")
+                    print(f"[VERBOSE] Query center: {center}")
+                    print(f"[VERBOSE] Query FOV: {1.2 * np.array([fovx, fovy])}")
+
+                gaias = gaia_radecs(center, 1.2 * np.array([fovx, fovy]), verbose=verbose)
+                result['gaia_queried'] = len(gaias)
+
+                if verbose:
+                    print(f"[VERBOSE] Gaia query returned {len(gaias)} stars")
+                    if len(gaias) > 0:
+                        print(f"[VERBOSE] First few Gaia stars: {gaias[:min(5, len(gaias))]}")
+
+                gaia_limit = min(20, len(gaias))  # roughly 2x star_limit
+                gaias = gaias[0:gaia_limit]
+                result['gaia_used'] = len(gaias)
+
+                if verbose:
+                    print(f"[VERBOSE] Using {len(gaias)} Gaia stars (limited from {result['gaia_queried']})")
+                    print(f"Using {len(stars)} image stars and {len(gaias)} Gaia stars for WCS solution...")
+
+                if verbose:
+                    print(f"[VERBOSE] Starting WCS computation...")
+
+                wcs = twirl.compute_wcs(stars, gaias)
+                if verbose:
+                    print(f"[VERBOSE] WCS computation complete")
+                    print(f"[VERBOSE] WCS object: {wcs}")
+
+                # convert gaia stars to pixel coordinates for validation
+                if verbose:
+                    print(f"[VERBOSE] Converting Gaia stars to pixel coordinates for validation...")
+
+                gaias_pixel = np.array(SkyCoord(gaias, unit="deg").to_pixel(wcs)).T
+                if verbose:
+                    print(f"[VERBOSE] Converted {len(gaias_pixel)} Gaia stars to pixel coordinates")
+                    if len(gaias_pixel) > 0:
+                        print(f"[VERBOSE] First few Gaia pixel coords: {gaias_pixel[:min(5, len(gaias_pixel))]}")
+
+                # validate star matching
+                if verbose:
+                    print(f"[VERBOSE] Validating star matches...")
+
+                count = 0
+                matches = []
+                for x, y in gaias_pixel:
+                    for i, j in stars:
+                        distance = np.sqrt((x - i) ** 2 + (y - j) ** 2)
+                        if distance < 10:  # if within 10 pixels
+                            count += 1
+                            matches.append((x, y, i, j, distance))
+                            break  # Only count first match for each Gaia star
+
+                result['matches'] = count
+
+                if verbose:
+                    print(f"[VERBOSE] Found {count} star matches within 10 pixels")
+                    if matches:
+                        print(f"[VERBOSE] Match examples (gaia_x, gaia_y, star_x, star_y, distance):")
+                        for match in matches[:min(5, len(matches))]:
+                            print(f"[VERBOSE]   {match}")
+
+                if count < 4:
+                    result['error'] = "Plate solve failed, not enough stars matched"
+                    return result
+
+                # Update header with WCS information
+                if verbose:
+                    print(f"[VERBOSE] Updating FITS header with WCS information...")
+
+                wcs_header = wcs.to_header()
+                if verbose:
+                    print(f"[VERBOSE] Generated WCS header with {len(wcs_header)} keywords")
+                    for key in wcs_header:
+                        print(f"[VERBOSE]   {key}: {wcs_header[key]}")
+
+                header.update(wcs_header)
+
+                # Extract WCS values for return
+                result['crpix'] = (header['CRPIX1'], header['CRPIX2'])
+                result['crval'] = (header['CRVAL1'], header['CRVAL2'])
+                result['success'] = True
+
+                # Create diagnostic plots if verbose
+                if verbose:
+                    print(f"[VERBOSE] Creating diagnostic plots...")
+                    _create_diagnostic_plots(filepath, data, image_clean, stars, gaias_pixel, wcs)
+
+                if verbose:
+                    print(f"[VERBOSE] WCS solution completed successfully!")
             else:
-                center = SkyCoord(ra, dec, unit=[u.deg, u.deg])
-            print("COORDINATES AFTER SKYCOORD")
-            print(center.ra.deg)
-            print(center.dec.deg)
-            if verbose:
-                print(f"[VERBOSE] Center coordinates: RA={center.ra.deg:.6f} deg, DEC={center.dec.deg:.6f} deg")
+                result['error'] = f"Not a Light Frame (IMAGETYP={header.get('IMAGETYP')})"
+                if verbose:
+                    print(f"[VERBOSE] Skipping - not a Light Frame (IMAGETYP={header.get('IMAGETYP')})")
 
-            # image fov
-            shape = image_clean.shape
-            plate_scale = np.arctan((header['XPIXSZ'] * 1e-6) / (header['FOCALLEN'] * 1e-3)) * (180 / np.pi)
-            fovx = (1 / np.abs(np.cos(center.dec.rad))) * shape[0] * plate_scale
-            fovy = shape[1] * plate_scale
-            if verbose:
-                print(f"[VERBOSE] Plate scale: {plate_scale * 3600:.3f} arcsec/pixel")
-                print(f"[VERBOSE] FOV: X={fovx * 60:.2f} arcmin, Y={fovy * 60:.2f} arcmin")
-                print(f"[VERBOSE] Search FOV: X={1.2 * fovx * 60:.2f} arcmin, Y={1.2 * fovy * 60:.2f} arcmin")
+    except Exception as e:
+        result['error'] = str(e)
+        if verbose:
+            print(f"[VERBOSE] ERROR in twirl_wcs: {e}")
 
-            # detect and match stars
-            if verbose:
-                print(f"[VERBOSE] Starting star detection...")
-
-            stars = twirl.find_peaks(image_clean, threshold=5)
-            if verbose:
-                print(f"[VERBOSE] Found {len(stars)} stars in image")
-                if len(stars) > 0:
-                    print(f"[VERBOSE] First few stars: {stars[:min(5, len(stars))]}")
-
-            if len(stars) < 4:
-                raise Exception("Not enough stars detected for plate solve")
-
-            # Limit number of stars to prevent memory issues
-            star_limit = min(20, len(stars))  # increased from 12 but still limited
-            stars = stars[0:star_limit]
-            if verbose:
-                print(
-                    f"[VERBOSE] Using {len(stars)} stars (limited from {len(twirl.find_peaks(image_clean, threshold=5))})")
-
-            # Limit number of Gaia stars too
-            if verbose:
-                print(f"[VERBOSE] Querying Gaia catalog...")
-                print(f"[VERBOSE] Query center: {center}")
-                print(f"[VERBOSE] Query FOV: {1.2 * np.array([fovx, fovy])}")
-
-            gaias = gaia_radecs(center, 1.2 * np.array([fovx, fovy]), verbose=verbose)
-            if verbose:
-                print(f"[VERBOSE] Gaia query returned {len(gaias)} stars")
-                if len(gaias) > 0:
-                    print(f"[VERBOSE] First few Gaia stars: {gaias[:min(5, len(gaias))]}")
-
-            gaia_limit = min(20, len(gaias))  # roughly 2x star_limit
-            gaias = gaias[0:gaia_limit]
-            if verbose:
-                print(f"[VERBOSE] Using {len(gaias)} Gaia stars (limited from {len(gaia_radecs(center, 1.2 * np.array([fovx, fovy]))) if len(gaia_radecs(center, 1.2 * np.array([fovx, fovy]))) <= gaia_limit else 'original query'})")
-
-            print(f"Using {len(stars)} image stars and {len(gaias)} Gaia stars for WCS solution...")
-
-            if verbose:
-                print(f"[VERBOSE] Starting WCS computation...")
-
-            wcs = twirl.compute_wcs(stars, gaias)
-            if verbose:
-                print(f"[VERBOSE] WCS computation complete")
-                print(f"[VERBOSE] WCS object: {wcs}")
-
-            # convert gaia stars to pixel coordinates for validation
-            if verbose:
-                print(f"[VERBOSE] Converting Gaia stars to pixel coordinates for validation...")
-
-            gaias_pixel = np.array(SkyCoord(gaias, unit="deg").to_pixel(wcs)).T
-            if verbose:
-                print(f"[VERBOSE] Converted {len(gaias_pixel)} Gaia stars to pixel coordinates")
-                if len(gaias_pixel) > 0:
-                    print(f"[VERBOSE] First few Gaia pixel coords: {gaias_pixel[:min(5, len(gaias_pixel))]}")
-
-            # validate star matching
-            if verbose:
-                print(f"[VERBOSE] Validating star matches...")
-
-            count = 0
-            matches = []
-            for x, y in gaias_pixel:
-                for i, j in stars:
-                    distance = np.sqrt((x - i) ** 2 + (y - j) ** 2)
-                    if distance < 10:  # if within 10 pixels
-                        count += 1
-                        matches.append((x, y, i, j, distance))
-                        break  # Only count first match for each Gaia star
-
-            if verbose:
-                print(f"[VERBOSE] Found {count} star matches within 10 pixels")
-                if matches:
-                    print(f"[VERBOSE] Match examples (gaia_x, gaia_y, star_x, star_y, distance):")
-                    for match in matches[:min(5, len(matches))]:
-                        print(f"[VERBOSE]   {match}")
-
-            if count < 4:
-                raise Exception("Plate solve failed, not enough stars matched")
-
-            # Update header with WCS information
-            if verbose:
-                print(f"[VERBOSE] Updating FITS header with WCS information...")
-
-            wcs_header = wcs.to_header()
-            if verbose:
-                print(f"[VERBOSE] Generated WCS header with {len(wcs_header)} keywords")
-                for key in wcs_header:
-                    print(f"[VERBOSE]   {key}: {wcs_header[key]}")
-
-            header.update(wcs_header)
-
-            # Create diagnostic plots if verbose
-            if verbose:
-                print(f"[VERBOSE] Creating diagnostic plots...")
-                _create_diagnostic_plots(filepath, data, image_clean, stars, gaias_pixel, wcs)
-
-            if verbose:
-                print(f"[VERBOSE] WCS solution completed successfully!")
-        else:
-            if verbose:
-                print(f"[VERBOSE] Skipping - not a Light Frame (IMAGETYP={header.get('IMAGETYP')})")
+    return result
 
 
 def _create_diagnostic_plots(filepath, data, image_clean, stars, gaias_pixel, wcs):
@@ -391,8 +447,8 @@ def _create_diagnostic_plots(filepath, data, image_clean, stars, gaias_pixel, wc
 
     # Create plot with cleaned data
     fig, ax = plt.subplots(figsize=(12, 10))
-    correction = np.median(data-image_clean)
-    ax.imshow(image_clean, vmin=400-correction, vmax=700-correction, cmap="Greys_r")
+    correction = np.median(data - image_clean)
+    ax.imshow(image_clean, vmin=400 - correction, vmax=700 - correction, cmap="Greys_r")
 
     # Plot detected stars (yellow circles, radius 10)
     if len(stars) > 0:

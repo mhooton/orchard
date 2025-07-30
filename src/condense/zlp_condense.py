@@ -200,6 +200,23 @@ def find_targ_id(gaia_ids,fluxes,sp_ids,fname_ids):
     return targ_id, teff, match_gaia, multitarg, intarg
 
 
+def check_wcs_headers(source_header, filename):
+    """Check if all required WCS headers are present"""
+    # Critical WCS headers required for valid photometry
+    required_wcs_headers = {'TC3_3', 'TC3_5', 'TC5_3', 'TC5_5', 'TCTYP3', 'TCTYP5', 'TCRPX3', 'TCRPX5', 'TCRVL3',
+                            'TCRVL5'}
+
+    missing_headers = []
+    for header in required_wcs_headers:
+        if header not in source_header:
+            missing_headers.append(header)
+
+    if missing_headers:
+        logger.warning(f"File {filename} missing WCS headers: {missing_headers}")
+        logger.warning(f"Excluding {filename} from processing (likely wcsfit failure)")
+        return False
+    return True
+
 def main(args):
     if args.verbose:
         logger.setLevel('DEBUG')
@@ -210,14 +227,40 @@ def main(args):
     # with fits.open(args.filename) as hdulist:
     #     print(hdulist.info())
 
-    #logger.info('Sorting images by mjd')
+    # logger.info('Sorting images by mjd')
     # we only have JD stored in headers
     logger.info('Sorting images by jd')
     sorted_images = sort_by_jd(args.filename)
 
+    # Filter out images with missing WCS headers
+    logger.info('Checking for required WCS headers')
+    valid_images = []
+    excluded_images = []
+
+    for filename in sorted_images:
+        try:
+            with fits.open(filename) as hdulist:
+                if check_wcs_headers(hdulist[1].header, filename):
+                    valid_images.append(filename)
+                else:
+                    excluded_images.append(filename)
+        except Exception as e:
+            logger.warning(f"Error reading {filename}: {e}")
+            logger.warning(f"Excluding {filename} from processing")
+            excluded_images.append(filename)
+
+    if excluded_images:
+        logger.warning(f"Excluded {len(excluded_images)} files due to missing WCS headers:")
+        for excluded_file in excluded_images:
+            logger.warning(f"  - {excluded_file}")
+
+    if not valid_images:
+        logger.error("No valid images remaining after WCS header check")
+        return
+
+    sorted_images = valid_images
     # number of images = nimages
     nimages = len(sorted_images)
-    # first file
     print(nimages)
     print(sorted_images[0])
     first = SourceFile.open_file(sorted_images[0])
@@ -386,7 +429,8 @@ def main(args):
 
     # Don't error if these keys are missing
     optional_keys = {
-        'frame_sn', 'decpos', 'dec_move', 'dec_s', 'focuspos', 'rapos', 'ra_move', 'ra_s', 'pa', #, 'numbrms', 'stdcrms',
+        'frame_sn', 'decpos', 'dec_move', 'dec_s', 'focuspos', 'rapos', 'ra_move', 'ra_s', 'pa',
+        # , 'numbrms', 'stdcrms',
         'fwhm', 'seeing', 'shift', 't', 'wcscompl', 'vi_plus', 'vi_minus',
     }
 
@@ -438,7 +482,7 @@ def main(args):
                     print("Missing Keyword!: {}".format(str(err)),
                           file=sys.stderr)
 
-        # WCS headers that have been renamed
+        # WCS headers that have been renamed (now guaranteed to exist)
         imagelist_data['CTYPE1'][i] = source.header['TCTYP3']
         imagelist_data['CTYPE2'][i] = source.header['TCTYP5'] #6
         imagelist_data['CRPIX1'][i] = source.header['TCRPX3']
@@ -449,11 +493,6 @@ def main(args):
         imagelist_data['CD1_2'][i] = source.header['TC3_5'] #6
         imagelist_data['CD2_1'][i] = source.header['TC5_3']
         imagelist_data['CD2_2'][i] = source.header['TC5_5'] #6
-        # we don't have these as we are not running MCMC distortion code:
-        # imagelist_data['PV2_1'][i] = source.header['TV6_1']
-        # imagelist_data['PV2_3'][i] = source.header['TV6_3']
-        # imagelist_data['PV2_5'][i] = source.header['TV6_5']
-        # imagelist_data['PV2_7'][i] = source.header['TV6_7']
 
         imagelist_data['NSOURCES'][i] = len(source_extract)
 
@@ -479,6 +518,9 @@ def main(args):
         del source
 
     logger.info('Post processing')
+    logger.info(f'Successfully processed {nimages} images')
+    if excluded_images:
+        logger.info(f'Excluded {len(excluded_images)} images due to WCS failures')
     imagelist_data['LOCOUNT'] = np.zeros(nimages)
     imagelist_data['HICOUNT'] = np.zeros(nimages)
     catalogue_data['FLUX_MEAN_'+str(args.date)] = np.nanmean(image_map['FLUX'].data, axis=1)
