@@ -811,7 +811,8 @@ def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
     catalogue_data['DEC'] = extract(lcurves,'dec')
     catalogue_data['PMRA'] = extract(lcurves,'pmra')
     catalogue_data['PMDEC'] = extract(lcurves,'pmdec')
-    catalogue_data['GAIA_DR2_ID'] = extract(lcurves,'gaia_id')
+    catalogue_data['GAIA_DR2_ID'] = extract(lcurves,'gaia_dr2_id')
+    catalogue_data['GAIA_DR3_ID'] = extract(lcurves, 'gaia_dr3_id')
     catalogue_data['G_RP'] = extract(lcurves,'g_rp')
     catalogue_data['BP_RP'] = extract(lcurves,'bp_rp')
     catalogue_data['GMAG'] = extract(lcurves,'gmag')
@@ -3031,7 +3032,7 @@ def main(date, targ_gaia, ap, filt, outfits, goutfits, globallc, binning, versio
 
         # Add PWV comparison plot
         if hasattr(tel, 'pwv') or hasattr(tel, 'pwv_original'):
-            plot_pwv_comparison(tel, target_lcurve.jd, gaiaid, filt, date,
+            plot_pwv_comparison(tel, target_lcurve.jd, targ_gaia, filt, date,
                                 orig_pltname + "_pwv_comparison")
 
 
