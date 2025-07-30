@@ -147,7 +147,7 @@ readonly NUMSTACK=50
 readonly IPIX=6
 readonly XMATCH='vizgaia3'
 readonly OUTEXT="fits"
-readonly VERSION='v2'
+readonly VERSION='v3'
 #readonly TLIST="/appct/data/SPECULOOSPipeline/tests/target_list_ids_201905.txt"
 readonly TLIST=$(abspath ${2})/ml_40pc.txt
 #readonly EXT='fts'
@@ -785,6 +785,7 @@ setup_directory_structure() {
         local dirpath=${subdir}
         ensure_directory ${subdir}
     done
+    ensure_directory ${DATDIR}/logs
 }
 
 #run_lightcurves_detrending() {
@@ -981,6 +982,7 @@ do
     REPORTDIR=${DATDIR}/reports
     ensure_directory "${REPORTDIR}"
     ensure_directory "${OUTPUTDIR}"
+    ensure_directory "${DATDIR}/logs"
 
     BIASLIST=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_bias.list
     DARKLIST=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_dark.list
