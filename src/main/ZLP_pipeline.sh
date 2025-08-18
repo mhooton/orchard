@@ -21,8 +21,9 @@ T7="1" # check if each fits image has astrom in it's header, default:1
 T8="1" # create stack image, default: 1
 T9="1" # perform photometry, default: 1
 T10="1" # find SPXXXXXX ID of target star and plot diff LC of target
-#readonly T11="0" # water vapour correction
-T12="1" # generate PDF report for the night
+T11="1" # generate PDF report for the night
+T12="1" # sweep from v3 to v2
+
 
 # Parse and remove task control arguments, leaving positional args intact
 filtered_args=()
@@ -39,6 +40,7 @@ while [[ $# -gt 0 ]]; do
         --no_T8) T8="0"; shift ;;
         --no_T9) T9="0"; shift ;;
         --no_T10) T10="0"; shift ;;
+        --no_T11) T11="0"; shift ;;
         --no_T12) T12="0"; shift ;;
         --only_T1) only_task="1"; shift ;;
         --only_T2) only_task="2"; shift ;;
@@ -49,6 +51,7 @@ while [[ $# -gt 0 ]]; do
         --only_T8) only_task="8"; shift ;;
         --only_T9) only_task="9"; shift ;;
         --only_T10) only_task="10"; shift ;;
+        --only_T11) only_task="11"; shift ;;
         --only_T12) only_task="12"; shift ;;
         *) filtered_args+=("$1"); shift ;; # Keep non-task arguments
     esac
@@ -56,7 +59,7 @@ done
 
 # Handle --only_TX logic
 if [[ -n "$only_task" ]]; then
-    T1="0"; T2="0"; T3="0"; T5="0"; T6="0"; T7="0"; T8="0"; T9="0"; T10="0"; T12="0"
+    T1="0"; T2="0"; T3="0"; T5="0"; T6="0"; T7="0"; T8="0"; T9="0"; T10="0"; T11="0"; T12="0"
     case $only_task in
         1) T1="1" ;;
         2) T2="1" ;;
@@ -67,6 +70,7 @@ if [[ -n "$only_task" ]]; then
         8) T8="1" ;;
         9) T9="1" ;;
         10) T10="1" ;;
+        11) T11="1" ;;
         12) T12="1" ;;
     esac
 fi
@@ -75,7 +79,7 @@ fi
 set -- "${filtered_args[@]}"
 
 # Make variables readonly after parsing
-readonly T1 T2 T3 T5 T6 T7 T8 T9 T10 T12
+readonly T1 T2 T3 T5 T6 T7 T8 T9 T10 T11 T12
 
 #if [[ $# -ne 8 ]] && [[ $# -ne 8 ]]; then
 #    cat >&2 <<-EOF
@@ -162,15 +166,6 @@ fi
 
 echo "Using ${CORES} cores"
 #echo "$(ldd /appct/data/SPECULOOSPipeline/miniconda2/bin/solve-field)"
-
-#readonly T8="0" # run image subtraction, default: 0
-#readonly T9="0" # detrend, default: 1
-#readonly T10="0" # detrend with lightcurves, default: 1c
-#readonly T11="0" # Make qa plots, default: 1
-#readonly T13="0" # create lightcurve plotting data for each image, default: 1
-#readonly T15="0" # correct the shape of the master flat, default: 0
-#readonly T16="0" # QC on bias and dark images, default: 0
-#readonly T18="0" #  plot differential LC of target
 
 
 # Zero Level Pipeline
@@ -715,6 +710,155 @@ pdf_report(){
     echo "${CMD}"
     eval "${CMD}"
 }
+
+# Perform version migration from v3 to v2
+perform_version_migration(){
+    echo "START T12"
+    echo "Perform version migration from ${VERSION} to v2"
+
+    # Construct base paths for different versions
+    local BASEDIR_PATH=$(dirname $(dirname ${DATDIR}))
+    local V2_DATDIR="${BASEDIR_PATH}/v2/${TEL}"
+    local V2_OLD_DATDIR="${BASEDIR_PATH}/v2_old/${TEL}"
+    local V3_DATDIR="${DATDIR}"
+
+    local V2_OUTPUTDIR="${V2_DATDIR}/output"
+    local V2_OLD_OUTPUTDIR="${V2_OLD_DATDIR}/output"
+    local V3_OUTPUTDIR="${OUTPUTDIR}"
+
+    # Track if we've processed the reduction directory for this date
+    local reduction_processed=false
+    local any_moves_performed=false
+
+    echo "Checking targets for 4_diff.fits files: ${TARGET[*]}"
+
+    for target in ${TARGET[*]}; do
+        local target_path="${V3_OUTPUTDIR}/${DATE}/${target}"
+
+        if [ ! -d "${target_path}" ]; then
+            echo "  Target directory does not exist: ${target_path}"
+            continue
+        fi
+
+        # Check if target directory contains 4_diff.fits files
+        local diff_files=$(find "${target_path}" -name "*4_diff.fits" 2>/dev/null | wc -l)
+
+        if [ ${diff_files} -gt 0 ]; then
+            echo "  Target '${target}' contains 4_diff.fits files"
+            echo "  >>> PROCESSING MOVES FOR: telescope=${TEL}, date=${DATE}, target=${target}"
+
+            any_moves_performed=true
+
+            # Handle reduction directory on first target with diff files
+            if [ "${reduction_processed}" = false ]; then
+                # Move v2 reduction to v2_old (if exists)
+                local v2_reduction_src="${V2_OUTPUTDIR}/${DATE}/reduction"
+                local v2_reduction_dst="${V2_OLD_OUTPUTDIR}/${DATE}/reduction"
+                if [ -d "${v2_reduction_src}" ]; then
+                    ensure_directory "$(dirname ${v2_reduction_dst})"
+                    echo "    MOVING: ${v2_reduction_src} -> ${v2_reduction_dst}"
+                    mv "${v2_reduction_src}" "${v2_reduction_dst}"
+                fi
+
+                # Copy v3 reduction to v2
+                local v3_reduction_src="${V3_OUTPUTDIR}/${DATE}/reduction"
+                local v3_reduction_dst="${V2_OUTPUTDIR}/${DATE}/reduction"
+                if [ -d "${v3_reduction_src}" ]; then
+                    ensure_directory "$(dirname ${v3_reduction_dst})"
+                    echo "    COPYING: ${v3_reduction_src} -> ${v3_reduction_dst}"
+                    cp -r "${v3_reduction_src}" "${v3_reduction_dst}"
+                fi
+
+                reduction_processed=true
+            fi
+
+            # 1. Move v2 target_dir to v2_old
+            local v2_target_src="${V2_OUTPUTDIR}/${DATE}/${target}"
+            local v2_target_dst="${V2_OLD_OUTPUTDIR}/${DATE}/${target}"
+            if [ -d "${v2_target_src}" ]; then
+                ensure_directory "$(dirname ${v2_target_dst})"
+                echo "    MOVING: ${v2_target_src} -> ${v2_target_dst}"
+                mv "${v2_target_src}" "${v2_target_dst}"
+            fi
+
+            # 3. Move v2 log file to v2_old
+            local v2_log_file=$(find "${V2_DATDIR}/logs" -name "${DATE}_1*" 2>/dev/null | head -1)
+            if [ -n "${v2_log_file}" ]; then
+                local v2_log_dst="${V2_OLD_DATDIR}/logs/$(basename ${v2_log_file})"
+                ensure_directory "$(dirname ${v2_log_dst})"
+                echo "    MOVING: ${v2_log_file} -> ${v2_log_dst}"
+                mv "${v2_log_file}" "${v2_log_dst}"
+            fi
+
+            # 4. Move v2 report file to v2_old
+            local v2_report_file=$(find "${V2_DATDIR}/reports" -name "*${TEL}_${DATE}*" 2>/dev/null | head -1)
+            if [ -n "${v2_report_file}" ]; then
+                local v2_report_dst="${V2_OLD_DATDIR}/reports/$(basename ${v2_report_file})"
+                ensure_directory "$(dirname ${v2_report_dst})"
+                echo "    MOVING: ${v2_report_file} -> ${v2_report_dst}"
+                mv "${v2_report_file}" "${v2_report_dst}"
+            fi
+
+            # 5. Move v3 target_dir to v2
+            local v3_target_src="${V3_OUTPUTDIR}/${DATE}/${target}"
+            local v3_target_dst="${V2_OUTPUTDIR}/${DATE}/${target}"
+            if [ -d "${v3_target_src}" ]; then
+                ensure_directory "$(dirname ${v3_target_dst})"
+                echo "    MOVING: ${v3_target_src} -> ${v3_target_dst}"
+                mv "${v3_target_src}" "${v3_target_dst}"
+            fi
+
+            # 7. Move v3 log file to v2
+            local v3_log_file=$(find "${V3_DATDIR}/logs" -name "${DATE}_1*" 2>/dev/null | head -1)
+            if [ -n "${v3_log_file}" ]; then
+                local v3_log_dst="${V2_DATDIR}/logs/$(basename ${v3_log_file})"
+                ensure_directory "$(dirname ${v3_log_dst})"
+                echo "    MOVING: ${v3_log_file} -> ${v3_log_dst}"
+                mv "${v3_log_file}" "${v3_log_dst}"
+            fi
+
+            # 8. Move v3 report file to v2
+            local v3_report_file=$(find "${V3_DATDIR}/reports" -name "*${TEL}_${DATE}*" 2>/dev/null | head -1)
+            if [ -n "${v3_report_file}" ]; then
+                local v3_report_dst="${V2_DATDIR}/reports/$(basename ${v3_report_file})"
+                ensure_directory "$(dirname ${v3_report_dst})"
+                echo "    MOVING: ${v3_report_file} -> ${v3_report_dst}"
+                mv "${v3_report_file}" "${v3_report_dst}"
+            fi
+
+            echo "  >>> COMPLETED MOVES FOR: telescope=${TEL}, date=${DATE}, target=${target}"
+        else
+            echo "  Target '${target}' does not contain 4_diff.fits files"
+        fi
+    done
+
+    # Clean up v3 directories after processing all targets
+    if [ "${any_moves_performed}" = true ]; then
+        local v3_date_dir="${V3_OUTPUTDIR}/${DATE}"
+        if [ -d "${v3_date_dir}" ]; then
+            local remaining_items=$(ls -1 "${v3_date_dir}" 2>/dev/null | wc -l)
+            local reduction_only=$(ls -1 "${v3_date_dir}" 2>/dev/null | grep -c "^reduction$" || echo 0)
+
+            # If only reduction directory remains, delete it
+            if [ ${remaining_items} -eq 1 ] && [ ${reduction_only} -eq 1 ]; then
+                echo "  DELETING: v3 reduction directory ${v3_date_dir}/reduction"
+                rm -rf "${v3_date_dir}/reduction"
+
+                # Check if date directory is now empty and delete if so
+                if [ $(ls -1 "${v3_date_dir}" 2>/dev/null | wc -l) -eq 0 ]; then
+                    echo "  DELETING: empty v3 date directory ${v3_date_dir}"
+                    rmdir "${v3_date_dir}"
+                fi
+            elif [ ${remaining_items} -eq 0 ]; then
+                echo "  DELETING: empty v3 date directory ${v3_date_dir}"
+                rmdir "${v3_date_dir}"
+            fi
+        fi
+    fi
+
+    echo "END T12"
+}
+
 # Some helper functions
 ensure_directory() {
     DIR=${1}
@@ -938,7 +1082,9 @@ main() {
                 ${CMD}
             done
 
-            [ "$T12" = "1" ] && pdf_report
+            [ "$T11" = "1" ] && pdf_report
+            [ "$T12" = "1" ] && perform_version_migration
+
         fi
     else
         if [[ "${EXT}" == *"output"* ]]; then
@@ -955,8 +1101,6 @@ main() {
 #    [ "$T9" = "1" ] && run_detrending
 #
 #    [ "$T10" = "1" ] && run_lightcurves_detrending
-#
-#    [ "$T11" = "1" ] && generate_qa_plots
 
     date
     echo "PIPELINE COMPLETE"
