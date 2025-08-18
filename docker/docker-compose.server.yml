@@ -7,8 +7,7 @@ services:
     user: "886:20"
     volumes:
       - /appct/data/speculoos/orchard/src:/opt/orchard/src
-      - /appct/data/SPECULOOSPipeline:/data/SPECULOOSPipeline
-      - /appct/data/speculoos/orchard/results:/opt/orchard/results
+      - /export/data/SPECULOOSPipeline:/data/SPECULOOSPipeline
     working_dir: /opt/orchard/src
     environment:
       - ORCHARD_PATH=/opt/orchard/src
