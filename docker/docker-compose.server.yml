@@ -8,6 +8,7 @@ services:
     volumes:
       - /appct/data/speculoos/orchard/src:/opt/orchard/src
       - /export/data/SPECULOOSPipeline:/data/SPECULOOSPipeline
+      - /appct/data/speculoos:/gaia_database
     working_dir: /opt/orchard/src
     environment:
       - ORCHARD_PATH=/opt/orchard/src
@@ -16,6 +17,7 @@ services:
       - MPLCONFIGDIR=/tmp/matplotlib-config
       - FONTCONFIG_CACHEDIR=/tmp/fontconfig-cache
       - HOME=/tmp
+      - GAIADATABASEPATH=/gaia_database/gaia_tmass_16_jm_cut.db
     # Relax container security to allow more threading
     security_opt:
       - seccomp:unconfined

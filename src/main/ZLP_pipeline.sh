@@ -28,6 +28,7 @@ T12="1" # sweep from v3 to v2
 # Parse and remove task control arguments, leaving positional args intact
 filtered_args=()
 only_task=""
+FORCE_PLATESOLVE="0"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -53,6 +54,7 @@ while [[ $# -gt 0 ]]; do
         --only_T10) only_task="10"; shift ;;
         --only_T11) only_task="11"; shift ;;
         --only_T12) only_task="12"; shift ;;
+        --force-platesolve) FORCE_PLATESOLVE="1"; shift ;;
         *) filtered_args+=("$1"); shift ;; # Keep non-task arguments
     esac
 done
@@ -79,7 +81,7 @@ fi
 set -- "${filtered_args[@]}"
 
 # Make variables readonly after parsing
-readonly T1 T2 T3 T5 T6 T7 T8 T9 T10 T11 T12
+readonly T1 T2 T3 T5 T6 T7 T8 T9 T10 T11 T12 FORCE_PLATESOLVE
 
 #if [[ $# -ne 8 ]] && [[ $# -ne 8 ]]; then
 #    cat >&2 <<-EOF
@@ -383,8 +385,15 @@ reduce_science_images() {
 check_astrometry(){
     echo "START T7"
     printf "\n**Check if astrometry in header of images**\n"
-#    for i in ${TARGET[*]}
-#    do
+
+    if [ -n "${GAIADATABASEPATH:-}" ]; then
+        readonly DATABASEPATH=${GAIADATABASEPATH}
+        echo "Gaia database path: ${DATABASEPATH}"
+    else
+        readonly DATABASEPATH=/gaia_database/gaia_tmass_16_jm_cut.db
+        echo "Using default Gaia database path: ${DATABASEPATH}"
+    fi
+
     printf "For Target = ${i}\n"
     IMAGELISTS=${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}/*_processed.dat
 
@@ -396,7 +405,15 @@ check_astrometry(){
                 CMD="python ${SCRIPTDIR}/astrom/astrometry.py
                     $IMAGELIST
                     --nproc=${CORES}\
-                    --ext=${OUTEXT}"
+                    --ext=${OUTEXT}\
+                    --db_path=${DATABASEPATH}\
+                    --raw-list ${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_image_${i}.list"
+
+                if [ "${FORCE_PLATESOLVE:-}" = "1" ]; then
+                    CMD="${CMD} --force-platesolve"
+                    echo "Force plate solving enabled"
+                fi
+
                  echo ${CMD}
                 ${CMD}
             else
