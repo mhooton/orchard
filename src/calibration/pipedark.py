@@ -7,7 +7,32 @@ from astropy.io import fits as pyfits
 from astropy.stats import sigma_clip
 from calibration.pipeutils import extract_overscan, image_trim, open_fits_file
 from reporting.QC import main as QC
+import pipeutils
+import fnmatch
 
+def get_exptimes(outdir):
+    """
+    Get target names and exp times for matching darks
+    """
+    date = outdir.split("/")[-3]
+    image_dir = "/SPECULOOSPipeline/Telescopes/Callisto/images/"+date+"/"
+
+    target_names, frames, exposure_times = [], [], []
+    for file in glob.glob(outdir):
+        if fnmatch.fnmatch(file, "image"):
+            with open(file) as f:
+                frame = f.readline()
+                frames.append(frame)
+
+    for name in frames:
+        with open_fits_file(image_dir+name) as hdulist:
+            exposure_time = hdulist[0].header['exptime']
+            target_name = hdulist[0].header['object']
+        
+        target_names.append(target_name)
+        exposure_times.append(exposure_time)
+
+    return target_names, exposure_times
 
 def darkmaker(inlist, biasname, darkname, outdir, reportdir, gain, run, targ):
     biasname = outdir + biasname
@@ -75,6 +100,7 @@ def darkmaker(inlist, biasname, darkname, outdir, reportdir, gain, run, targ):
                     #     data = hdulist[0].data[2:2046, 2:2048]
 
                     exposure = hdulist[0].header['exptime']
+                        
                 # subtract master bias image from the dark
                 # sigma clip the overscan
                 # print("Master Dark dimensions: ",np.shape(data))
@@ -135,6 +161,87 @@ def darkmaker(inlist, biasname, darkname, outdir, reportdir, gain, run, targ):
     # dirname = "/".join(dirsplit[:-4])
     QC([0, reportdir + "/QC", date, field, tel, run, 'QC7', darkc])
 
+def matching_darkmaker(inlist, biasname, darkname, outdir, reportdir, gain, run):
+    """
+    Create a master dark from matching darks based on exposure time
+    """
+    target_list, exptimes = get_exptimes(outdir)
+
+    # load master bias 
+    with open_fits_file(os.path.join(outdir, biasname)) as hdul:
+        bias = hdul[0].data
+
+    for target, exp_time in zip(target_list, exptimes):
+        for f in glob.glob(os.path.join(outdir, "dsorted*")):
+            os.remove(f)
+
+        position, i, lines = 0, 1, []
+        for line in open(inlist):
+            lines.append(line)
+            fname = os.path.join(outdir, f"dsorted{position:03d}")
+            with open(fname, "a") as f:
+                f.write(line)
+            if i == 50:
+                i, position = 0, position + 1
+            i += 1
+
+        with open(os.path.join(outdir, "removeindexlist.dat"), "w") as rem:
+            for fn in glob.glob(os.path.join(outdir, "dsorted*")):
+                rem.write(fn + "\n")
+
+        if not lines:
+            print(f"WARNING: No darks found for {target}")
+            darkc = 0
+            continue
+
+        mastermatrix = []
+
+        for listfile in open(os.path.join(outdir, "removeindexlist.dat")):
+            datamatrix = []
+            for fname in open(listfile.strip()):
+                fname = fname.strip()
+                with open_fits_file(fname) as hdul:
+                    data = image_trim(hdul)
+                    overscan = extract_overscan(hdul)
+                    medoverscan = np.ma.median(sigma_clip(overscan))
+                    exposure = hdul[0].header["exptime"]
+
+                if np.round(exposure) != np.round(exp_time):
+                    continue
+
+                if bias.shape == data.shape:
+                    corrected = data - medoverscan - bias
+                else:
+                    print("WARNING: Bias and dark dimensions mismatch! Using uncorrected dark.")
+                    corrected = (data - medoverscan) / exposure
+
+                datamatrix.append(corrected)
+
+            if np.ndim(datamatrix) == 3:
+                master = np.ma.median(sigma_clip(datamatrix, axis=0), axis=0)
+                mastermatrix.append(master)
+
+        if not mastermatrix:
+            print(f"WARNING: No matching darks for {target} ({exp_time}s)")
+            darkc = 0
+            continue
+
+        dark = np.float32(np.mean(mastermatrix, axis=0))
+        outname = os.path.join(outdir, f"{darkname}{target}")
+        if os.path.exists(outname):
+            os.remove(outname)
+        pyfits.PrimaryHDU(dark).writeto(outname)
+
+        for f in glob.glob(os.path.join(outdir, "dsorted*")):
+            os.remove(f)
+        os.remove(os.path.join(outdir, "removeindexlist.dat"))
+
+        darkc = float(gain) * np.ma.median(sigma_clip(dark))
+
+        dirsplit = outdir.split("/")
+        date, tel = dirsplit[-3], dirsplit[-5]
+        QC.main([0, f"{reportdir}/QC", date, target, tel, run, "QC7", darkc])
+
 
 def main():
     inlist = str(sys.argv[1])
@@ -146,7 +253,12 @@ def main():
     run = sys.argv[7]
     targ = sys.argv[8]
 
-    darkmaker(inlist, biasname, darkname, outdir, reportdir, gain, run, targ)
+    if pipeutils.detect_instrument(pyfits.open(biasname)) == 'spirit':
+        print("Using matching darks")
+        matching_darkmaker(inlist, biasname, darkname, outdir, reportdir, gain, run, targ)
+    
+    else:
+        darkmaker(inlist, biasname, darkname, outdir, reportdir, gain, run, targ)
 
 
 if __name__ == '__main__':
