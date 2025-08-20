@@ -13,6 +13,7 @@ import pandas as pd
 from itertools import compress
 import warnings
 from astropy.io.fits.verify import VerifyWarning
+import pipeutils
 warnings.filterwarnings('ignore', category=VerifyWarning, message=".*Invalid 'BLANK' keyword.*")
 
 def reduce_file(filename, outdir,biasname,darkname, bias, dark, flat, gain, ron, overscan, version):
@@ -61,7 +62,11 @@ def reduce_file(filename, outdir,biasname,darkname, bias, dark, flat, gain, ron,
                     print("WARNING: Flat not corrected for bias!")
                     biasname = "N/A"
 
-                corrected = (data-overscan-bias-(dark*exposure))/flat[filter]
+                if pipeutils.detect_instrument(data) == 'spirit':
+                    corrected = (data - bias - dark) / flat[filter]
+                    corrected = pipeutils.clean_bad_pixels(corrected, dark) #HAVE TO CHANGE THIS
+                else:
+                    corrected = (data-overscan-bias-(dark*exposure))/flat[filter]
 
                 corrected = np.float32(corrected)
 
@@ -73,7 +78,11 @@ def reduce_file(filename, outdir,biasname,darkname, bias, dark, flat, gain, ron,
                     hdulist[0].header['RON'] = (float(ron), 'Read out noise (e-s)')
                 if np.median(dark)!=0 or np.ptp(dark)!=0:
                     hdulist[0].header.add_history('Dark subtracted using '+str(darkname))
-                    hdulist[0].header['DARKCUR'] = (float(gain) * np.median(dark), 'Dark current (e-s per second)')
+                    if pipeutils.detect_instrument(dark) == 'spirit':
+                        dark_for_err = pipeutils.clean_bad_pixels(dark, dark) #HAVE TO CHANGE THIS
+                        hdulist[0].header['DARKCUR'] = (float(gain) * np.nanmedian(dark_for_err), 'Dark current (e-s per second)')
+                    else:
+                        hdulist[0].header['DARKCUR'] = (float(gain) * np.median(dark), 'Dark current (e-s per second)')
                 # hdulist[0].header.add_history('Flat corrected using '+str(flatname))
 
                 hdulist[0].header['GAIN'] = (float(gain), 'Gain used to calculate RON/Dark Cur')

@@ -74,14 +74,14 @@ def image_trim(hdul):
         return hdul[0].data
     
 
-def find_bad_pixels(hdul, sigma=5):
+def find_bad_pixels(dark, sigma=5):
     """
     Find bad pixels in the image based on a given threshold
     
     Args:
-        hdul: FITS HDU list
+        dark: Matching dark image
     """
-    image = hdul[0].data
+    image = dark[0].data
     hot_threshold = np.median(image) + sigma*np.std(image) #Hot pixels
     cold_threshold = np.median(image) - sigma*np.std(image) #Stuck/inverse pixels
 
@@ -104,14 +104,14 @@ def interpolate_pixels(frame):
 
     return result_frame
     
-def clean_bad_pixels(hdul):
+def clean_bad_pixels(hdul, dark):
     """
     Clean bad pixels in the SPIRIT data
 
     Args:
         hdul: FITS HDU list
     """
-    instrument = detect_instrument(hdul)
+    instrument = detect_instrument(dark)
     if instrument == 'spirit':
         # SPIRIT-specific bad pixel cleaning
         bad_pixel_map = find_bad_pixels(hdul)
@@ -124,7 +124,6 @@ def clean_bad_pixels(hdul):
         return hdul[0].data  # No specific cleaning for Moana
     else:
         return hdul[0].data  
-
 
 @contextmanager
 def open_fits_file(filename):

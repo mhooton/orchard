@@ -227,7 +227,7 @@ def matching_darkmaker(inlist, biasname, darkname, outdir, reportdir, gain, run)
             continue
 
         dark = np.float32(np.mean(mastermatrix, axis=0))
-        outname = os.path.join(outdir, f"{darkname}{target}")
+        outname = outdir + exposure + "_" + darkname
         if os.path.exists(outname):
             os.remove(outname)
         pyfits.PrimaryHDU(dark).writeto(outname)
