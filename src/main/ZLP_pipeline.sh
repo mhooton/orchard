@@ -14,7 +14,7 @@ abspath() {
 T1="1" # create input lists, default: 1
 T2="1" # create masterbias, default: 1
 T3="1" # create masterdark, default: 1
-#T4="1" # copy temporary shutter map, default: 1
+#T4=1" # copy temporary shutter map, default: 1
 T5="1" # create masterflat, default: 1
 T6="1" # reduce science images, default: 1
 T7="1" # check if each fits image has astrom in it's header, default:1
@@ -341,12 +341,26 @@ reduce_images() {
         fi
     done
 
+    # Handle master darks
+    MASTERDARKS=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_MasterDark*.fits
+    MASTERDARK=""
+    for D in ${MASTERDARKS}
+    do
+        MDARK=${D#${OUTPUTDIR}/${DATE}/reduction/}
+        echo ${MDARK}
+        if [ -z "$MASTERDARK" ]; then
+            MASTERDARK="$MDARK"
+        else
+            MASTERDARK="$MASTERDARK $MDARK"
+        fi
+    done
+
     # Use target name directly since files are created with underscores
     IMAGELIST=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_image_${i}.list
 
     printf "For target = ${i}\n"
     ensure_directory "${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}" #${IMAGELIST%.*}
-    CMD="python ${SCRIPTDIR}/calibration/pipered.py ${IMAGELIST} --biasname ${RUNNAME}_MasterBias.fits --darkname ${RUNNAME}_MasterDark.fits --flatname $MASTERFLAT --caldir ${OUTPUTDIR}/${DATE}/reduction --outdir ${OUTPUTDIR}/${DATE}/${i}/${RUNNAME} --gain ${GAIN} --version ${VERSION} --usebias 1 --usedark 1"
+    CMD="python ${SCRIPTDIR}/calibration/pipered.py ${IMAGELIST} --biasname ${RUNNAME}_MasterBias.fits --darkname $MASTERDARK --flatname $MASTERFLAT --caldir ${OUTPUTDIR}/${DATE}/reduction --outdir ${OUTPUTDIR}/${DATE}/${i}/${RUNNAME} --gain ${GAIN} --version ${VERSION} --usebias 1 --usedark 1"
     echo ${CMD}
     ${CMD}
 }
