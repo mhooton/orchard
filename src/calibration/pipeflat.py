@@ -6,6 +6,7 @@ import numpy as np
 from astropy.io import fits as pyfits
 from astropy.stats import sigma_clip
 from calibration.pipeutils import extract_overscan, image_trim, open_fits_file
+import pipeutils
 
 
 def render_total_file(data, fname, nfiles):
@@ -132,7 +133,10 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
                 corrected1 = data - np.ma.median(medoverscan)
 
             if np.shape(dark) == np.shape(data):
-                corrected1 = corrected1 - (dark * exposure)
+                if pipeutils.detect_instrument(hdulist) == 'spirit':
+                    corrected1 = corrected1 - dark
+                else:
+                    corrected1 = corrected1 - (dark * exposure)
             else:
                 print("WARNING: Dark and Flat dimensions do NOT match! Using UNCORRECTED Flat images!")
                 print("Master Dark dimensions: ", np.shape(dark))

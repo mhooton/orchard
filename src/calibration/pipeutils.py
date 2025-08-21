@@ -1,6 +1,8 @@
 from contextlib import contextmanager
 import bz2
 from astropy.io import fits
+import numpy as np
+from astropy.convolution import interpolate_replace_nans
 
 def detect_instrument(hdul):
     """
@@ -70,7 +72,58 @@ def image_trim(hdul):
         return hdul[0].data[1:-1, 1:-1]
     else:
         return hdul[0].data
+    
 
+def find_bad_pixels(dark, sigma=5):
+    """
+    Find bad pixels in the image based on a given threshold
+    
+    Args:
+        dark: Matching dark image
+    """
+    image = dark[0].data
+    hot_threshold = np.median(image) + sigma*np.std(image) #Hot pixels
+    cold_threshold = np.median(image) - sigma*np.std(image) #Stuck/inverse pixels
+
+    bad_pixel_map = (abs(image) > (hot_threshold)) | (image <= cold_threshold)
+
+    return bad_pixel_map
+
+
+def interpolate_pixels(frame):
+    """
+    Interpolate bad pixels in the frame using a kernel
+
+    Args:
+        frame: 2D numpy array representing the image frame
+    """
+    kernel = np.array([[1, 1, 1],
+                       [1, 0, 1],
+                       [1, 1, 1]])
+    result_frame = interpolate_replace_nans(frame, kernel)
+
+    return result_frame
+    
+def clean_bad_pixels(hdul, dark):
+    """
+    Clean bad pixels in the SPIRIT data
+
+    Args:
+        hdul: FITS HDU list
+    """
+    instrument = detect_instrument(dark)
+    if instrument == 'spirit':
+        # SPIRIT-specific bad pixel cleaning
+        bad_pixel_map = find_bad_pixels(hdul)
+        hdul[0].data[bad_pixel_map] = np.nan  # Set bad pixels to NaN
+        hdul[0].data = interpolate_pixels(hdul[0].data)  # Interpolate NaNs
+        return hdul[0].data
+    elif instrument == 'andor':
+        return hdul[0].data  # No specific cleaning for Andor
+    elif instrument == 'moana':
+        return hdul[0].data  # No specific cleaning for Moana
+    else:
+        return hdul[0].data  
 
 @contextmanager
 def open_fits_file(filename):
