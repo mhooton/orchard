@@ -9,238 +9,204 @@ from calibration.pipeutils import extract_overscan, image_trim, open_fits_file
 from reporting.QC import main as QC
 import pipeutils
 import fnmatch
+from collections import defaultdict
 
-def get_exptimes(outdir):
+
+def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, gain=None, run=None, targ=None):
     """
-    Get target names and exp times for matching darks
+    Create master dark frame(s) from a list of dark images.
+
+    Args:
+        inlist (str): Path to file containing list of dark image filenames
+        biasname (str): Filename of master bias
+        darkname (str): Output filename for master dark
+        outdir (str): Output directory for master dark(s)
+        gain (float): Gain value for QC calculations (optional)
+        reportdir (str): Report directory for QC (optional)
+        run (str): Run identifier for QC (optional)
+        targ (str): Target name for QC (optional)
+
+    Returns:
+        list: List of created master dark filenames
     """
-    date = outdir.split("/")[-3]
-    image_dir = "/SPECULOOSPipeline/Telescopes/Callisto/images/"+date+"/"
 
-    target_names, frames, exposure_times = [], [], []
-    for file in glob.glob(outdir):
-        if fnmatch.fnmatch(file, "image"):
-            with open(file) as f:
-                frame = f.readline()
-                frames.append(frame)
+    # Clean up any existing sorted files
+    for dsorted_fn in glob.glob(outdir + 'dsorted*'):
+        os.remove(dsorted_fn)
 
-    for name in frames:
-        with open_fits_file(image_dir+name) as hdulist:
-            exposure_time = hdulist[0].header['exptime']
-            target_name = hdulist[0].header['object']
-        
-        target_names.append(target_name)
-        exposure_times.append(exposure_time)
-
-    return target_names, exposure_times
-
-def darkmaker(inlist, biasname, darkname, outdir, reportdir, gain, run, targ):
-    biasname = outdir + biasname
-
+    # Read and chunk input files (50 files per chunk)
     position = 0
     i = 1
     lines = []
 
-    for dsorted_fn in glob.glob(outdir + 'dsorted*'):
-        os.remove(dsorted_fn)
-
-    # find all darks
     for line in open(inlist):
-        lines.append(line)
+        lines.append(line.strip())
         fname = outdir + 'dsorted' + "{0:03d}".format(position)
-        f = open(fname, 'a')
-        f.write(line)
-        f.close()
+        with open(fname, 'a') as f:
+            f.write(line)
         if i == 50:
             i = 0
             position += 1
         i += 1
 
+    # Create list of chunk files
     with open(outdir + 'removeindexlist.dat', 'w') as rem:
-        for fn in glob.glob(outdir + ('dsorted*')):
+        for fn in glob.glob(outdir + 'dsorted*'):
             rem.write(fn + "\n")
-
-    i = 1
 
     if len(lines) == 0:
         print("WARNING: No dark images!")
-        darkc = 0
+        return []
+
+    # Detect instrument from first file
+    first_filename = lines[0]
+    with open_fits_file(first_filename) as hdulist:
+        inst = pipeutils.detect_instrument(hdulist)
+
+    print(f"Detected instrument: {inst}")
+
+    # Load master bias
+    bias_path = outdir + biasname
+    with open_fits_file(bias_path) as hdulist:
+        bias = hdulist[0].data
+
+    # Group all dark files by exposure time
+    exposure_groups = defaultdict(list)
+
+    for line in open(outdir + 'removeindexlist.dat'):
+        call = line.strip()
+        for filename in open(call):
+            filename = filename.strip()
+            try:
+                with open_fits_file(filename) as hdulist:
+                    exposure_time = hdulist[0].header['exptime']
+                    exposure_groups[exposure_time].append((call, filename))
+            except Exception as e:
+                print(f"Warning: Could not read exposure time from {filename}: {e}")
+                continue
+
+    # Determine which exposure times to process
+    if inst == 'spirit':
+        groups_to_process = {exp_time: files for exp_time, files in exposure_groups.items()}
     else:
-        # import master bias to correct dark images
-        with open_fits_file(biasname) as hdulist:
-            bias = hdulist[0].data
+        # Combine all exposure times into one group
+        all_files = []
+        for files in exposure_groups.values():
+            all_files.extend(files)
+        groups_to_process = {'combined': all_files}
 
-        for line in open(outdir + 'removeindexlist.dat'):
-            datamatrix = []
-            mastermatrix = []
-            call = line.strip('\n')
-            for line in open(call):
-                line = line.strip()
-                print(line)
-                with open_fits_file(line) as hdulist:
-                    overscan = extract_overscan(hdulist)
-                    overscan = sigma_clip(overscan)
-                    medoverscan = np.ma.median(overscan)
-                    data = image_trim(hdulist)
+    output_files = []
 
-                    # if np.shape(hdulist[0].data)[0] > 2048:
-                    #     overscan = extract_overscan(hdulist)
-                    #     overscan = sigma_clip(overscan)
-                    #     medoverscan = np.ma.median(overscan)
-                    #     #why is the shape of this 2048x2028?
-                    #     #data = hdulist[0].data[0:2048,20:2068]
-                    #     data = hdulist[0].data[22:2066,2:2048]
-                    # elif np.shape(hdulist[0].data)[0] < 2000:
-                    #     medoverscan = 0
-                    #     data = hdulist[0].data
-                    # else:
-                    #     with open(outdir + "overscan.dat", "r") as f:
-                    #         medoverscan = float(f.read())
-                    #         # print("Extracted Overscan from median bias!: ",medoverscan)
-                    #     data = hdulist[0].data[2:2046, 2:2048]
+    # Process each group
+    for group_key, file_pairs in groups_to_process.items():
+        print(f"Processing {len(file_pairs)} dark files for group: {group_key}")
 
-                    exposure = hdulist[0].header['exptime']
-                        
-                # subtract master bias image from the dark
-                # sigma clip the overscan
-                # print("Master Dark dimensions: ",np.shape(data))
-                if np.shape(bias) == np.shape(data):
-                    corrected = (data - medoverscan - bias) / exposure
-                else:
-                    print("WARNING: Bias and Dark dimensions do NOT match! Using UNCORRECTED dark images!")
-                    print("Master Bias dimensions: ", np.shape(bias))
-                    print("Master Dark dimensions: ", np.shape(data))
-                    corrected = (data - medoverscan) / exposure
-                # datamatrix is an array of the new corrected data with overscan and residual bias removed for every file
-                datamatrix.append(corrected)
-                # print np.shape(corrected)
-            # shape of datamatrix: number of files x size of each file (2048x2048)
-            # master = the median of the data over all files creating an image of median at every pixel
-            # print np.shape(datamatrix)
-            # print type(datamatrix)
-            # clip_datamatrix = sigma_clip(datamatrix,iters=None,axis=0)
-            # print np.shape(clip_datamatrix)
-            master = np.ma.median(sigma_clip(datamatrix, axis=0), axis=0)
-            # print i
-            mastermatrix.append(master)
-            i += 1
-
-        print('averaging')
-        # average all dark medians over all files to create a master dark image
-        dark = np.float32(np.mean(mastermatrix, axis=0))
-
-        phdu = pyfits.PrimaryHDU(dark)
-        outname = outdir + darkname
-        # command = 'rm -f '+outname
-        # os.system(command)
-        if os.path.exists(outname):
-            os.remove(outname)
-
-        phdu.writeto(outname)
-
-        for dsorted_fn in glob.glob(outdir + 'dsorted*'):
-            os.remove(dsorted_fn)
-
-        # os.system('rm -f removeindexlist.dat '+outdir+'dsorted*')
-        os.remove(outdir + 'removeindexlist.dat')
-
-        # print np.shape(sigma_clip(dark))
-        # print np.ma.median(sigma_clip(dark))
-        # print np.shape(dark)
-        # print gain
-        # print type(gain)
-        # print np.ma.median(dark)
-        # print type(np.ma.median(dark))
-        darkc = float(gain) * np.ma.median(sigma_clip(dark))
-
-    # QC update dark current
-    dirsplit = outdir.split("/")
-    date = dirsplit[-3]
-    field = targ
-    tel = dirsplit[-5]
-    # dirname = "/".join(dirsplit[:-4])
-    QC([0, reportdir + "/QC", date, field, tel, run, 'QC7', darkc])
-
-def matching_darkmaker(inlist, biasname, darkname, outdir, reportdir, gain, run):
-    """
-    Create a master dark from matching darks based on exposure time
-    """
-    target_list, exptimes = get_exptimes(outdir)
-
-    # load master bias 
-    with open_fits_file(os.path.join(outdir, biasname)) as hdul:
-        bias = hdul[0].data
-
-    for target, exp_time in zip(target_list, exptimes):
-        for f in glob.glob(os.path.join(outdir, "dsorted*")):
-            os.remove(f)
-
-        position, i, lines = 0, 1, []
-        for line in open(inlist):
-            lines.append(line)
-            fname = os.path.join(outdir, f"dsorted{position:03d}")
-            with open(fname, "a") as f:
-                f.write(line)
-            if i == 50:
-                i, position = 0, position + 1
-            i += 1
-
-        with open(os.path.join(outdir, "removeindexlist.dat"), "w") as rem:
-            for fn in glob.glob(os.path.join(outdir, "dsorted*")):
-                rem.write(fn + "\n")
-
-        if not lines:
-            print(f"WARNING: No darks found for {target}")
-            darkc = 0
-            continue
+        # Group files by chunk file for this exposure time
+        chunk_groups = defaultdict(list)
+        for chunk_file, filename in file_pairs:
+            chunk_groups[chunk_file].append(filename)
 
         mastermatrix = []
 
-        for listfile in open(os.path.join(outdir, "removeindexlist.dat")):
+        # Process each chunk
+        for chunk_file, filenames in chunk_groups.items():
             datamatrix = []
-            for fname in open(listfile.strip()):
-                fname = fname.strip()
-                with open_fits_file(fname) as hdul:
-                    data = image_trim(hdul)
-                    overscan = extract_overscan(hdul)
-                    medoverscan = np.ma.median(sigma_clip(overscan))
-                    exposure = hdul[0].header["exptime"]
 
-                if np.round(exposure) != np.round(exp_time):
+            for filename in filenames:
+                try:
+                    with open_fits_file(filename) as hdulist:
+                        overscan = extract_overscan(hdulist)
+                        overscan = sigma_clip(overscan)
+                        medoverscan = np.ma.median(overscan)
+                        data = image_trim(hdulist)
+                        exposure = hdulist[0].header['exptime']
+
+                        # Bias correction then scale to ADU/s
+                        if np.shape(bias) == np.shape(data):
+                            corrected = (data - medoverscan - bias) / exposure
+                        else:
+                            print("WARNING: Bias and Dark dimensions do NOT match! Using UNCORRECTED dark images!")
+                            print("Master Bias dimensions: ", np.shape(bias))
+                            print("Master Dark dimensions: ", np.shape(data))
+                            corrected = (data - medoverscan) / exposure
+
+                        datamatrix.append(corrected)
+
+                except Exception as e:
+                    print(f"Warning: Could not process {filename}: {e}")
                     continue
 
-                if bias.shape == data.shape:
-                    corrected = data - medoverscan - bias
-                else:
-                    print("WARNING: Bias and dark dimensions mismatch! Using uncorrected dark.")
-                    corrected = (data - medoverscan) / exposure
-
-                datamatrix.append(corrected)
-
-            if np.ndim(datamatrix) == 3:
+            # Create master for this chunk if we have data
+            if len(datamatrix) > 0:
                 master = np.ma.median(sigma_clip(datamatrix, axis=0), axis=0)
                 mastermatrix.append(master)
 
-        if not mastermatrix:
-            print(f"WARNING: No matching darks for {target} ({exp_time}s)")
-            darkc = 0
+        if len(mastermatrix) == 0:
+            print(f"WARNING: No valid dark files for group {group_key}")
             continue
 
+        # Average all chunk masters to create final master dark
         dark = np.float32(np.mean(mastermatrix, axis=0))
-        outname = outdir + exposure + "_" + darkname
+
+        # Determine output filename
+        if inst == 'spirit':
+            # Individual exposure time master
+            base_name = (outdir + darkname).split('.')[0]
+            outname = f"{base_name}_{int(round(group_key))}s.fits"
+        else:
+            # Combined master
+            outname = outdir + darkname
+
+        # Write master dark
         if os.path.exists(outname):
             os.remove(outname)
-        pyfits.PrimaryHDU(dark).writeto(outname)
 
-        for f in glob.glob(os.path.join(outdir, "dsorted*")):
-            os.remove(f)
-        os.remove(os.path.join(outdir, "removeindexlist.dat"))
+        phdu = pyfits.PrimaryHDU(dark)
+        phdu.header.add_history(f'Master dark created from {sum(len(chunk) for chunk in chunk_groups.values())} images')
+        if inst == 'spirit':
+            phdu.header.add_history(f'Exposure time: {group_key}s')
+            phdu.header['EXPTIME'] = group_key
+        else:
+            phdu.header.add_history('Combined from all exposure times')
+            exp_times = list(exposure_groups.keys())
+            phdu.header.add_history(f'Exposure times ranged from {min(exp_times)}s to {max(exp_times)}s')
+            phdu.header['EXPTIME'] = 1.0
+        phdu.header['DARKUNIT'] = 'ADU/s'
+        phdu.writeto(outname)
 
-        darkc = float(gain) * np.ma.median(sigma_clip(dark))
+        output_files.append(outname)
+        print(f"Created master dark: {outname}")
 
-        dirsplit = outdir.split("/")
-        date, tel = dirsplit[-3], dirsplit[-5]
-        QC.main([0, f"{reportdir}/QC", date, target, tel, run, "QC7", darkc])
+        # QC calculations if parameters provided
+        if gain is not None and reportdir is not None:
+            darkc = float(gain) * np.ma.median(sigma_clip(dark))
+
+            if inst == 'spirit':
+                # Individual exposure time QC
+                dirsplit = outdir.split("/")
+                date = dirsplit[-3]
+                field = targ if targ else f"exp_{int(round(group_key))}s"
+                tel = dirsplit[-5]
+                QC([0, reportdir + "/QC", date, field, tel, run, 'QC7', darkc])
+            else:
+                # Combined QC
+                dirsplit = outdir.split("/")
+                date = dirsplit[-3]
+                field = targ if targ else "combined"
+                tel = dirsplit[-5]
+                QC([0, reportdir + "/QC", date, field, tel, run, 'QC7', darkc])
+
+    #Assign final group to outname
+    phdu.writeto(outdir + darkname, overwrite=True)
+
+
+    # Clean up temporary files
+    for dsorted_fn in glob.glob(outdir + 'dsorted*'):
+        os.remove(dsorted_fn)
+    if os.path.exists(outdir + 'removeindexlist.dat'):
+        os.remove(outdir + 'removeindexlist.dat')
+
+    return output_files
 
 
 def main():
@@ -253,12 +219,7 @@ def main():
     run = sys.argv[7]
     targ = sys.argv[8]
 
-    if pipeutils.detect_instrument(pyfits.open(biasname)) == 'spirit':
-        print("Using matching darks")
-        matching_darkmaker(inlist, biasname, darkname, outdir, reportdir, gain, run, targ)
-    
-    else:
-        darkmaker(inlist, biasname, darkname, outdir, reportdir, gain, run, targ)
+    darkmaker(inlist, biasname, darkname, outdir, reportdir, gain, run, targ)
 
 
 if __name__ == '__main__':
