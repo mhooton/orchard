@@ -6,7 +6,6 @@ import numpy as np
 from astropy.io import fits as pyfits
 from astropy.stats import sigma_clip
 from calibration.pipeutils import extract_overscan, image_trim, open_fits_file
-import pipeutils
 
 
 def render_total_file(data, fname, nfiles):
@@ -115,8 +114,8 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
                 else:  # ACP flats do not have JD-OBS, so revert to JD (rounded to 10 decimal places rather than 7 for JD-OBS)
                     jd = header['jd']
 
-            # why are we removing 40 more pixels? Just for robustness to remove the chance of bleeding?
-            median_data = np.median(data[20:-20, :])
+            # # why are we removing 40 more pixels? Just for robustness to remove the chance of bleeding?
+            # median_data = np.median(data[20:-20, :])
 
             # write exposure times to a file called expdata.dat
             f = open(expfile, 'a')
@@ -133,10 +132,7 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
                 corrected1 = data - np.ma.median(medoverscan)
 
             if np.shape(dark) == np.shape(data):
-                if pipeutils.detect_instrument(hdulist) == 'spirit':
-                    corrected1 = corrected1 - dark
-                else:
-                    corrected1 = corrected1 - (dark * exposure)
+                corrected1 = corrected1 - (dark * exposure)
             else:
                 print("WARNING: Dark and Flat dimensions do NOT match! Using UNCORRECTED Flat images!")
                 print("Master Dark dimensions: ", np.shape(dark))
