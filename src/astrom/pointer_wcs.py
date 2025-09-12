@@ -289,7 +289,7 @@ def gaia_db_query(
     else:
         table = table.sort_values(by=["phot_g_mean_mag"]).reset_index(drop=True)
 
-    table.replace("", np.nan, inplace=True)
+    table = table.replace("", np.nan).infer_objects(copy=False)
     table.dropna(inplace=True)
 
     # limit number of stars
@@ -512,7 +512,35 @@ def _create_diagnostic_plots(filepath, data, image_clean, stars, gaias_pixel, wc
         print(f"Error creating diagnostic plots: {e}")
 
 
-def pointer_wcs(filepath, db_path, verbose=False):
+def clear_wcs_headers(header, wcs_keywords, verbose=False):
+    """
+    Remove all existing WCS headers from a FITS header.
+
+    Parameters
+    ----------
+    header : astropy.io.fits.Header
+        FITS header to clean
+    wcs_keywords : list
+        List of WCS keyword names to remove
+    verbose : bool, optional
+        If True, print which headers are being removed
+
+    Returns
+    -------
+    int
+        Number of headers removed
+    """
+    removed_count = 0
+    for keyword in wcs_keywords:
+        if keyword in header:
+            if verbose:
+                print(f"Removing existing WCS header: {keyword} = {header[keyword]}")
+            del header[keyword]
+            removed_count += 1
+    return removed_count
+
+
+def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, verbose=False):
     """
     Perform WCS solving on a FITS file using local Gaia database and multiscale star detection.
 
@@ -525,6 +553,12 @@ def pointer_wcs(filepath, db_path, verbose=False):
     ----------
     filepath : str
         Path to the FITS file to plate solve
+    db_path : str
+        Path to the Gaia database file
+    wcs_keywords : list, optional
+        List of WCS keywords for header operations
+    clear_existing_wcs : bool, optional
+        If True, remove existing WCS headers before plate solving
     verbose : bool, optional
         Whether to print verbose debugging information
 
@@ -567,6 +601,16 @@ def pointer_wcs(filepath, db_path, verbose=False):
                 print(f"FITS file opened successfully")
                 print(f"Data shape: {data.shape}")
                 print(f"IMAGETYP: {header.get('IMAGETYP', 'NOT_FOUND')}")
+
+            # Clear existing WCS headers if requested
+            if clear_existing_wcs and wcs_keywords:
+                if verbose:
+                    print("Clearing any existing WCS headers...")
+                removed = clear_wcs_headers(header, wcs_keywords, verbose=verbose)
+                if verbose and removed > 0:
+                    print(f"Removed {removed} existing WCS headers")
+                elif verbose:
+                    print("No existing WCS headers found to remove")
 
             if header['IMAGETYP'] == 'Light Frame':
                 if verbose:

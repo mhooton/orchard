@@ -98,10 +98,6 @@ def main(args):
         else:
             failed_solve += 1
 
-    keywords = ['CTYPE1', 'CTYPE2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2', 'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2',\
-                    'CUNIT1', 'CUNIT2', 'WCSAXES', 'PC1_1', 'PC1_2', 'PC2_1', 'PC2_2', 'CDELT1', 'CDELT2', 'LONPOLE',\
-                    'LATPOLE', 'RADESYS']
-
     try:
         for f in infiles:
             new_f = f.replace(args.ext, 'new')
@@ -132,7 +128,7 @@ def main(args):
                 # hdr_old.set('CD2_1',hdr_new['CD2_1'])
                 # hdr_old.set('CD1_2',hdr_new['CD1_2'])
                 # hdr_old.set('CD2_2',hdr_new['CD2_2'])
-                for k in keywords:
+                for k in WCS_KEYWORDS:
                     if hdr_old.get(k) == None:
                         hdr_old.set(k, hdr_new[k])
                 # if hdr_old.get('RA') == None:
@@ -229,6 +225,14 @@ def get_trim_offsets(instrument):
     else:
         return (0, 0)  # Unknown instrument, no adjustment
 
+
+# Define WCS keywords once at module level
+WCS_KEYWORDS = ['CTYPE1', 'CTYPE2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2',
+                'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2', 'CUNIT1', 'CUNIT2',
+                'WCSAXES', 'PC1_1', 'PC1_2', 'PC2_1', 'PC2_2', 'CDELT1',
+                'CDELT2', 'LONPOLE', 'LATPOLE', 'RADESYS']
+
+
 def copy_wcs_to_raw(processed_path, raw_path):
     """
     Copy WCS headers from processed image to raw image.
@@ -240,10 +244,10 @@ def copy_wcs_to_raw(processed_path, raw_path):
     raw_path : str
         Path to raw image to update
     """
-    # WCS keywords to copy
-    wcs_keywords = ['CTYPE1', 'CTYPE2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2', 'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2',\
-                    'CUNIT1', 'CUNIT2', 'WCSAXES', 'PC1_1', 'PC1_2', 'PC2_1', 'PC2_2', 'CDELT1', 'CDELT2', 'LONPOLE',\
-                    'LATPOLE', 'RADESYS']
+    from calibration.pipeutils import detect_instrument
+
+    # Use module-level WCS keywords
+    wcs_keywords = WCS_KEYWORDS
 
     # Read WCS headers from processed image
     with fits.open(processed_path) as processed_hdu:
@@ -286,7 +290,7 @@ def add_astrometry(f, ext, db_path, raw_images, file_num=None, total_files=None)
 
         # Attempt WCS solving
         # result = twirl_wcs(str(file), verbose=False)
-        result = pointer_wcs(str(file), db_path, verbose=False)
+        result = pointer_wcs(str(file), db_path, wcs_keywords=WCS_KEYWORDS, clear_existing_wcs=True, verbose=False)
 
         # If successful and raw images provided, update raw image with WCS
         if result['success'] and raw_images:

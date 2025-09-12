@@ -135,10 +135,9 @@ def main(filelist,outname,catname,outdir,backupcatdir,reportdir, filter, date,
                     # print 'TARGET:' + str(field)
 
                 status_check = ['ok', 'ok']
-                # REMOVE THIS BLOCK, IT BARELY MATTERS WHETHER OR NOT CASUTOOLS RUNS
-                # if wcs_succeeded(image) == False:
-                #     status_check.append('not_ok')
-                #     print image + ' could not be WCS fit and will not be included in stacked image'
+                if wcs_succeeded(image) == False:
+                    status_check.append('not_ok')
+                    print(image + ' could not be WCS fit and will not be included in stacked image')
 
                 if all([status == 'ok' for status in status_check]):
                     if count==1:
