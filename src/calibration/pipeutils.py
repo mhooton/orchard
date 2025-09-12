@@ -104,7 +104,7 @@ def interpolate_pixels(frame):
 
     return result_frame
     
-def clean_bad_pixels(hdul, dark):
+def clean_bad_pixels(hdul, dark, flat):
     """
     Clean bad pixels in the SPIRIT data
 
@@ -115,7 +115,8 @@ def clean_bad_pixels(hdul, dark):
     if instrument == 'spirit':
         # SPIRIT-specific bad pixel cleaning
         bad_pixel_map = find_bad_pixels(hdul)
-        hdul[0].data[bad_pixel_map] = np.nan  # Set bad pixels to NaN
+        hdul[0].data[bad_pixel_map] = np.nan  # Set bad pixels from the darks to NaN
+        hdul[0].data[flat < 0.1] = np.nan  # Set dead/inverse pixels from the flats to NaN
         hdul[0].data = interpolate_pixels(hdul[0].data)  # Interpolate NaNs
         return hdul[0].data
     elif instrument == 'andor':
