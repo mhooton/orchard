@@ -64,7 +64,7 @@ def reduce_file(filename, outdir,biasname,darkname, bias, dark, flat, gain, ron,
 
                 if pipeutils.detect_instrument(data) == 'spirit':
                     corrected = (data - bias - dark) / flat[filter]
-                    corrected = pipeutils.clean_bad_pixels(corrected, dark) #HAVE TO CHANGE THIS
+                    corrected = pipeutils.clean_bad_pixels(corrected, dark, flat[filter]) 
                 else:
                     corrected = (data-overscan-bias-(dark*exposure))/flat[filter]
 
@@ -79,7 +79,7 @@ def reduce_file(filename, outdir,biasname,darkname, bias, dark, flat, gain, ron,
                 if np.median(dark)!=0 or np.ptp(dark)!=0:
                     hdulist[0].header.add_history('Dark subtracted using '+str(darkname))
                     if pipeutils.detect_instrument(dark) == 'spirit':
-                        dark_for_err = pipeutils.clean_bad_pixels(dark, dark) #HAVE TO CHANGE THIS
+                        dark_for_err = pipeutils.clean_bad_pixels(dark, dark) 
                         hdulist[0].header['DARKCUR'] = (float(gain) * np.nanmedian(dark_for_err), 'Dark current (e-s per second)')
                     else:
                         hdulist[0].header['DARKCUR'] = (float(gain) * np.median(dark), 'Dark current (e-s per second)')
