@@ -165,8 +165,9 @@ def main(filelist,outname,catname,outdir,backupcatdir,reportdir, filter, date,
     #TEST
     # median_filter_stack(outstack_name)
 
-    trim_stack(outstack_name)
-    trim_stack(outstackconf_name)
+    # REMOVE TRIMMING OF STACKS -- I DON'T KNOW WHAT BENEFIT THIS CONVEYS
+    # trim_stack(outstack_name)
+    # trim_stack(outstackconf_name)
     casutools.imcore(outstack_name, outcatname, #argv['--outname'],
                      threshold= c_thresh, #argv['--c_thresh'],
                      confidence_map=outstackconf_name,
