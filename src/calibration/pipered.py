@@ -66,7 +66,7 @@ def reduce_file(filename, outdir, biasname, bias, dark_dict, flat, gain, ron, ov
                     corrected = (data - overscan - bias) / flat[filter]
 
                 if pipeutils.detect_instrument(hdulist) == 'spirit':
-                    corrected = pipeutils.clean_bad_pixels(corrected, dark)
+                    corrected = pipeutils.clean_bad_pixels(corrected, dark, flat[filter])
 
                 corrected = np.float32(corrected)
 
