@@ -289,7 +289,9 @@ def gaia_db_query(
     else:
         table = table.sort_values(by=["phot_g_mean_mag"]).reset_index(drop=True)
 
-    table = table.replace("", np.nan).infer_objects(copy=False)
+    # Fix for pandas FutureWarning - separate replace and infer_objects calls
+    table = table.replace("", np.nan)
+    table = table.infer_objects(copy=False)
     table.dropna(inplace=True)
 
     # limit number of stars
@@ -305,7 +307,6 @@ def gaia_db_query(
         table["dec"] += years * table["pmdec"] / 1000 / 3600
 
     return np.array([table["ra"].values, table["dec"].values]).T
-
 
 def clean_image(data: np.ndarray) -> np.ndarray:
     """
