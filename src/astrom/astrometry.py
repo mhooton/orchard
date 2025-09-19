@@ -14,6 +14,39 @@ from astrom.twirl_speculoos import twirl_wcs
 from astrom.pointer_wcs import pointer_wcs
 
 
+def has_valid_wcs(header):
+    """
+    Check if header contains valid WCS data, not just WCS keywords.
+
+    Parameters
+    ----------
+    header : astropy.io.fits.Header
+        FITS header to check
+
+    Returns
+    -------
+    bool
+        True if header contains valid WCS data, False otherwise
+    """
+    # Check if CTYPE1 exists and has valid value
+    ctype1 = header.get('CTYPE1', '')
+    if ctype1 in ['nan', '', None] or str(ctype1).lower() == 'nan':
+        return False
+
+    # Check if reference values are reasonable (not zero/nan)
+    crval1 = header.get('CRVAL1', 0.0)
+    crval2 = header.get('CRVAL2', 0.0)
+    if crval1 == 0.0 or crval2 == 0.0:
+        return False
+
+    # Check if reference pixels are reasonable (not zero)
+    crpix1 = header.get('CRPIX1', 0.0)
+    crpix2 = header.get('CRPIX2', 0.0)
+    if crpix1 == 0.0 or crpix2 == 0.0:
+        return False
+
+    return True
+
 def main(args):
     import sys
     sys.stdout.flush()
@@ -45,7 +78,7 @@ def main(args):
                 hdulist = fits.open(f)
                 # print(f"FITS file opened: {f}", flush=True)
 
-                has_wcs = 'CTYPE1' in hdulist[0].header
+                has_wcs = has_valid_wcs(hdulist[0].header)
 
                 if args.force_platesolve:
                     # Force mode: process all Light Frames
