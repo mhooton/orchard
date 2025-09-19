@@ -158,6 +158,15 @@ readonly VERSION='v3'
 readonly TLIST=$(abspath ${2})/ml_40pc.txt
 #readonly EXT='fts'
 
+# Add this with other readonly declarations
+if [ -n "${GAIADATABASEPATH:-}" ]; then
+    readonly DATABASEPATH=${GAIADATABASEPATH}
+    echo "Gaia database path: ${DATABASEPATH}"
+else
+    readonly DATABASEPATH=/gaia_database/gaia_tmass_16_jm_cut.db
+    echo "Using default Gaia database path: ${DATABASEPATH}"
+fi
+
 if [ "$TEL" = "ARTEMIS" ]; then
   readonly GAIN=1.1
 elif [ "$TEL" = "SAINT-EX" ]; then
@@ -399,14 +408,6 @@ reduce_science_images() {
 check_astrometry(){
     echo "START T7"
     printf "\n**Check if astrometry in header of images**\n"
-
-    if [ -n "${GAIADATABASEPATH:-}" ]; then
-        readonly DATABASEPATH=${GAIADATABASEPATH}
-        echo "Gaia database path: ${DATABASEPATH}"
-    else
-        readonly DATABASEPATH=/gaia_database/gaia_tmass_16_jm_cut.db
-        echo "Using default Gaia database path: ${DATABASEPATH}"
-    fi
 
     printf "For Target = ${i}\n"
     IMAGELISTS=${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}/*_processed.dat
