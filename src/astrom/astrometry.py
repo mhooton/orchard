@@ -7,12 +7,11 @@ from functools import partial
 import argparse
 import timeit
 import astrom.find_pa
-from calibration.pipeutils import detect_instrument
+from calibration.pipeutils import detect_instrument, get_instrument_parameters, open_fits_file
 import fnmatch
 import shutil
 from astrom.twirl_speculoos import twirl_wcs
 from astrom.pointer_wcs import pointer_wcs
-
 
 def has_valid_wcs(header):
     """
@@ -121,9 +120,23 @@ def main(args):
         with open(args.raw_list) as f:
             raw_images = [line.strip() for line in f if line.strip()]
 
+    # Get parameters once from the first file in the list
+    with open(args.filelist) as filel:
+        first_filename = filel.readline().strip()
+
+    with open_fits_file(first_filename) as hdul:
+        params = get_instrument_parameters(hdul)
+
+    # Extract trim offsets once
+    trim_offsets = (0, 0)  # default
+    if 'trim' in params:
+        trim_config = params['trim']
+        trim_offsets = (trim_config.get('left_col', 0), trim_config.get('top_row', 0))
+
     files_to_process = len(infiles)
     for i, infile in enumerate(infiles, 1):
-        result = add_astrometry(infile, args.ext, args.db_path, raw_images, file_num=i, total_files=files_to_process)
+        result = add_astrometry(infile, args.ext, args.db_path, raw_images, trim_offsets, file_num=i,
+                                total_files=files_to_process)
 
         # Count results
         if result and result.get('success', False):
@@ -266,7 +279,7 @@ WCS_KEYWORDS = ['CTYPE1', 'CTYPE2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2',
                 'CDELT2', 'LONPOLE', 'LATPOLE', 'RADESYS']
 
 
-def copy_wcs_to_raw(processed_path, raw_path):
+def copy_wcs_to_raw(processed_path, raw_path, trim_offsets):
     """
     Copy WCS headers from processed image to raw image.
 
@@ -292,11 +305,7 @@ def copy_wcs_to_raw(processed_path, raw_path):
             if keyword in processed_header:
                 wcs_headers[keyword] = processed_header[keyword]
 
-    # Detect instrument and get trim offsets
-    with fits.open(raw_path) as raw_hdu:
-        instrument = detect_instrument(raw_hdu)
-
-    x_offset, y_offset = get_trim_offsets(instrument)
+    x_offset, y_offset = trim_offsets
 
     # Adjust CRPIX values for trimming
     if 'CRPIX1' in wcs_headers:
@@ -314,9 +323,9 @@ def copy_wcs_to_raw(processed_path, raw_path):
 
         # Log the adjustment for debugging
         if x_offset != 0 or y_offset != 0:
-            print(f"Debug: Adjusted CRPIX for {instrument} instrument by ({x_offset}, {y_offset})")
+            print(f"Debug: Adjusted CRPIX by ({x_offset}, {y_offset}) using config-based trim offsets")
 
-def add_astrometry(f, ext, db_path, raw_images, file_num=None, total_files=None):
+def add_astrometry(f, ext, db_path, raw_images, trim_offsets, file_num=None, total_files=None):
     if fnmatch.fnmatch(f, '*.' + ext):
         file = f
         # print("Add astrometry.net data to header of file: " + file)
@@ -330,7 +339,7 @@ def add_astrometry(f, ext, db_path, raw_images, file_num=None, total_files=None)
             raw_file = find_raw_image(file, raw_images)
             if raw_file:
                 try:
-                    copy_wcs_to_raw(file, raw_file)
+                    copy_wcs_to_raw(file, raw_file, trim_offsets)
                 except Exception as e:
                     print(f"Warning: Failed to update raw image {raw_file}: {e}")
 

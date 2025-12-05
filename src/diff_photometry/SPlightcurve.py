@@ -21,6 +21,7 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.optimize import least_squares
 import warnings
 import matplotlib
+from calibration.pipeutils import get_instrument_parameters, open_fits_file
 matplotlib.use('Agg')
 
 # Suppress specific numpy warnings that clutter output during large aperture processing
@@ -1073,7 +1074,7 @@ def check_blended_stars(lcurves,ap,tel):
 
 
 def init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, peak, jd, bjd, bjd_tdb, ra, dec, pmra, pmdec, parallax, x, y, g_rp,
-                     bp_rp, teff, gmag, ap, filt, date, exp):
+                     bp_rp, teff, gmag, ap, filt, date, exp, saturation_limit):
     lcurves = []
     ap_size = ap_size_pixels(ap, tel.rcore)[0]
     zero_weight = 0
@@ -1096,7 +1097,7 @@ def init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, peak, jd, b
         # Use numpy max to avoid potential read-only issues
         peak_max = np.max(peak[i])
 
-        if peak_max > 62000:
+        if peak_max > saturation_limit:
             # print("REMOVED SATURATED STAR: " + id[i])
             saturated = True
             zero_weight = zero_weight + 1
@@ -2792,7 +2793,7 @@ def plot_pwv_comparison(tel, targ_jd, targ_gaia, filt, date, savename):
     print(f"PWV comparison plot saved: {savename}")
 
 def main(date, targ_gaia, ap, filt, outfits, goutfits, globallc, binning, version, outdir, lcdir, targ_teff, tlist,
-             oldtlists, basedir=None):
+             oldtlists, basedir, saturation_limit):
     if basedir is not None:
         # Use the basedir passed from the pipeline
         print(f"Using basedir from pipeline: {basedir}")
@@ -2826,7 +2827,7 @@ def main(date, targ_gaia, ap, filt, outfits, goutfits, globallc, binning, versio
         outfits, goutfits, ap, targ_gaia)
     # INITIALISE ALL LIGHTCURVE OBJECTS
     lcurves = init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, peak, jd, bjd, bjd_tdb, ra, dec, pmra,
-                               pmdec, parallax, x, y, g_rp, bp_rp, teff, gmag, ap, filt, date, exp)
+                               pmdec, parallax, x, y, g_rp, bp_rp, teff, gmag, ap, filt, date, exp, saturation_limit)
 
     # GET GAIA IDS from output.fits file and find which objects are in the target list
     gaia_dr2_id = extract(lcurves, 'gaia_dr2_id')  # Continue using DR2 for matching
@@ -3064,6 +3065,7 @@ if __name__ == "__main__":
     parser.add_argument('-b', '--bin', required=True)
     parser.add_argument('-v', '--version', required=True)
     parser.add_argument('-targ', '--targlist', help="Current Target list",required=True)
+    parser.add_argument('-i', '--imagelist', help="Imagelist for params", required=True)
     parser.add_argument('-oldtarg', '--oldtarglists', help="Older Target lists to check, separated by spaces", required=False)
     parser.add_argument('--no_fits',help="Don't produce any fits files",action='store_true')
     parser.add_argument('--basedir', help="Base directory path", required=False)
@@ -3075,6 +3077,13 @@ if __name__ == "__main__":
         oldtarglists = args.oldtarglists.split(" ")
     else:
         oldtarglists = []
+
+    with open(args.imagelist) as infile:
+        first_filename = infile.readline().strip()
+
+    with open_fits_file(first_filename) as hdul:
+        params = get_instrument_parameters(hdul)
+        saturation_limit = params['saturation_threshold']
 
     if args.date is None:
         globallc = True
@@ -3114,7 +3123,7 @@ if __name__ == "__main__":
             os.mkdir(lcdir)
 
     lc = main(args.date, gaia_dr2_id, int(args.ap), args.filt, outfits, goutfits, globallc, args.bin, version, outdir,
-              lcdir, args.teff, args.targlist, oldtarglists, args.basedir)
+              lcdir, args.teff, args.targlist, oldtarglists, args.basedir, saturation_limit)
 
     # try:
     #     lc = main(args.date,gaia_dr2_id,int(args.ap), args.filt, outfits, goutfits, globallc, args.bin,version,outdir,lcdir,args.teff,args.targlist,oldtarglists,args.basedir)

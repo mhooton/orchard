@@ -3,12 +3,20 @@ import sys
 import os
 import numpy as np
 import glob
-from calibration.pipeutils import extract_overscan, image_trim, open_fits_file
+from calibration.pipeutils import get_instrument_parameters, apply_image_slice, open_fits_file
 from astropy.io import fits
 from astropy.stats import sigma_clip
 from reporting.QC import main as QC
 
-def biasmaker(inlist, biasname, outdir, reportdir, gain, run, targ):
+def biasmaker(inlist, biasname, outdir, reportdir, run, targ):
+    # Get parameters once from the first file
+    with open(inlist) as infile:
+        first_filename = infile.readline().strip()
+
+    with open_fits_file(first_filename) as hdul:
+        params = get_instrument_parameters(hdul)
+        gain = params['gain']
+
     """Create master bias from list of bias images."""
     os.system('mkdir ' + outdir)
     position = 0
@@ -61,24 +69,15 @@ def biasmaker(inlist, biasname, outdir, reportdir, gain, run, targ):
                 # open the fits image file referred to in the line:
                 with open_fits_file(line_call) as hdulist:
                     # obtain the overscan region
-                    # print(np.shape(hdulist[0].data),len(hdulist[0].data))
-                    overscan = extract_overscan(hdulist)
-                    # print(np.shape(overscan))
-                    # remove the pre/overscans from the y-axis (20 pixels top and bottom):
-                    # hdulist[0].data is in format 2088 x 2048 therefore y by x, so is this correct?
-                    # data = hdulist[0].data[0:2048,20:2068]
-                    data = image_trim(hdulist)
+                    data = apply_image_slice(hdulist, 'trim', hdulist[0].data)
+                    overscan_data = apply_image_slice(hdulist, 'overscan', 0.)
+                    if isinstance(overscan_data, np.ndarray) and overscan_data.size > 1:
+                        overscan_data = sigma_clip(overscan_data, maxiters=None)
+                        overscan = np.ma.median(overscan_data)
+                    else:
+                        overscan = overscan_data  # Will be 0. if no overscan configured
 
-                    # if np.shape(hdulist[0].data)[0] > 2048:
-                    #     data = hdulist[0].data[22:2066,2:2048]
-                    # elif np.shape(hdulist[0].data)[0] < 2000:
-                    #     data = hdulist[0].data
-                    # else:
-                    #     data = hdulist[0].data[2:2046, 2:2048]
-                    # print(np.shape(data))
-                # sigma clip the overscan and
-                # subtract the median of the overscan array from the bias to give the residual bias
-                corrected = data - np.ma.median(sigma_clip(overscan, maxiters=None))
+                corrected = data - overscan
                 datamatrix.append(corrected)
 
                 if i == 0:
@@ -143,12 +142,11 @@ def main():
     biasname = str(sys.argv[2])
     outdir = str(sys.argv[3]) + '/'
     reportdir = str(sys.argv[4]) + '/'
-    gain = sys.argv[5]
-    run = sys.argv[6]
-    targ = sys.argv[7]
-    # version = sys.argv[8]
+    run = sys.argv[5]
+    targ = sys.argv[6]
+    # version = sys.argv[7]
 
-    biasmaker(inlist, biasname, outdir, reportdir, gain, run, targ)
+    biasmaker(inlist, biasname, outdir, reportdir, run, targ)
 
 
 if __name__ == '__main__':
