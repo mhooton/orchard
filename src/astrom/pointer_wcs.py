@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple, Union
+import os
+import time
 import astropy.units as u
 import numpy as np
 import pandas as pd
@@ -595,6 +597,14 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
         'matches': 0
     }
 
+    # Initialize timing for verbose mode
+    if verbose:
+        start_time = time.time()
+        last_time = start_time
+        print(f"\n{'=' * 60}")
+        print(f"TIMING DIAGNOSTICS - {os.path.basename(filepath)}")
+        print(f"{'=' * 60}")
+
     if verbose:
         print(f"Starting pointer_wcs for file: {filepath}")
 
@@ -607,6 +617,11 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 print(f"FITS file opened successfully")
                 print(f"Data shape: {data.shape}")
                 print(f"IMAGETYP: {header.get('IMAGETYP', 'NOT_FOUND')}")
+                current_time = time.time()
+                elapsed = current_time - last_time
+                total_elapsed = current_time - start_time
+                print(f"[TIMING] Opened FITS file: {elapsed:.3f}s (Total: {total_elapsed:.3f}s)")
+                last_time = current_time
 
             # Clear existing WCS headers if requested
             if clear_existing_wcs and wcs_keywords:
@@ -627,6 +642,11 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
 
                 if verbose:
                     print(f"Image cleaning complete, cleaned image shape: {image_clean.shape}")
+                    current_time = time.time()
+                    elapsed = current_time - last_time
+                    total_elapsed = current_time - start_time
+                    print(f"[TIMING] Image cleaning: {elapsed:.3f}s (Total: {total_elapsed:.3f}s)")
+                    last_time = current_time
 
                 # Get RA and DEC from header
                 ra = header['RA']
@@ -669,7 +689,13 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
 
                 # Calculate field of view
                 shape = image_clean.shape
-                plate_scale = np.arctan((header['XPIXSZ'] * 1e-6) / (header['FOCALLEN'] * 1e-3)) * (180 / np.pi)
+
+                if "[mm]" in header.comments['FOCALLEN']:
+                    focallen_multiplier = 1e-3
+                else:
+                    focallen_multiplier = 1
+
+                plate_scale = np.arctan((header['XPIXSZ'] * 1e-6) / (header['FOCALLEN'] * focallen_multiplier)) * (180 / np.pi)
                 fovx = (1 / np.abs(np.cos(center.dec.rad))) * shape[0] * plate_scale
                 fovy = shape[1] * plate_scale
                 fov = np.array([fovx, fovy])
@@ -697,6 +723,11 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 if verbose:
                     print(f"Detected {len(stars_in_image)} stars in the image.")
                     print(f"Detected {len(stars_in_image)} stars in the image after multiscale detection.")
+                    current_time = time.time()
+                    elapsed = current_time - last_time
+                    total_elapsed = current_time - start_time
+                    print(f"[TIMING] Star detection: {elapsed:.3f}s (Total: {total_elapsed:.3f}s)")
+                    last_time = current_time
 
                 if len(stars_in_image) < 4:
                     result['error'] = "Not enough stars detected for plate solve"
@@ -726,6 +757,11 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
 
                 if verbose:
                     print(f"Found {len(gaia_stars)} Gaia stars in the field of view. with limit={2 * star_limit}")
+                    current_time = time.time()
+                    elapsed = current_time - last_time
+                    total_elapsed = current_time - start_time
+                    print(f"[TIMING] Gaia database query: {elapsed:.3f}s (Total: {total_elapsed:.3f}s)")
+                    last_time = current_time
 
                 if len(gaia_stars) < 4:
                     result['error'] = "Not enough Gaia stars found in field"
@@ -751,6 +787,11 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
 
                 if verbose:
                     print(f"WCS computation complete")
+                    current_time = time.time()
+                    elapsed = current_time - last_time
+                    total_elapsed = current_time - start_time
+                    print(f"[TIMING] WCS computation (star matching): {elapsed:.3f}s (Total: {total_elapsed:.3f}s)")
+                    last_time = current_time
 
                 # Validate star matching
                 matches = image_star_mapping.number_of_matched_stars(pixel_threshold=10)
@@ -786,6 +827,13 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 result['crval'] = (header['CRVAL1'], header['CRVAL2'])
                 result['success'] = True
 
+                if verbose:
+                    current_time = time.time()
+                    elapsed = current_time - last_time
+                    total_elapsed = current_time - start_time
+                    print(f"[TIMING] Header update: {elapsed:.3f}s (Total: {total_elapsed:.3f}s)")
+                    last_time = current_time
+
                 # Create diagnostic plots if verbose
                 if verbose:
                     print(f"Creating diagnostic plots...")
@@ -804,6 +852,14 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
         result['error'] = str(e)
         if verbose:
             print(f"ERROR in pointer_wcs: {e}")
+
+    # Print final timing summary
+    if verbose:
+        final_time = time.time()
+        total_elapsed = final_time - start_time
+        print(f"\n{'=' * 60}")
+        print(f"TOTAL EXECUTION TIME: {total_elapsed:.3f}s ({total_elapsed / 60:.2f} minutes)")
+        print(f"{'=' * 60}\n")
 
     return result
 
