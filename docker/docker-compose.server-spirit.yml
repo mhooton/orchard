@@ -1,0 +1,30 @@
+version: '2.2'
+
+services:
+  orchard-pipeline-spirit:
+    image: orchard-pipeline:latest
+    container_name: orchard-server-spirit
+    user: "886:20"
+    volumes:
+      - /appct/data/speculoos/orchard-spirit/src:/opt/orchard/src
+      - /export/data/SPECULOOSPipeline:/data/SPECULOOSPipeline
+      - /appct/data/speculoos:/gaia_database
+    working_dir: /opt/orchard/src
+    environment:
+      - ORCHARD_PATH=/opt/orchard/src
+      - PYTHONPATH=/opt/orchard/src
+      - N_CORES=20
+      - MPLCONFIGDIR=/tmp/matplotlib-config
+      - FONTCONFIG_CACHEDIR=/tmp/fontconfig-cache
+      - HOME=/tmp
+      - GAIADATABASEPATH=/gaia_database/gaia_tmass_16_jm_cut.db
+    # Relax container security to allow more threading
+    security_opt:
+      - seccomp:unconfined
+    ulimits:
+      nproc: 65536
+      nofile: 65536
+    command: bash
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
