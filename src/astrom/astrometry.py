@@ -290,7 +290,7 @@ def copy_wcs_to_raw(processed_path, raw_path, trim_offsets):
     raw_path : str
         Path to raw image to update
     """
-    from calibration.pipeutils import detect_instrument
+    from calibration.pipeutils import get_instrument_parameters
 
     # Use module-level WCS keywords
     wcs_keywords = WCS_KEYWORDS
