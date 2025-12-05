@@ -5,12 +5,15 @@ from typing import Optional, Tuple, Union
 import astropy.units as u
 import numpy as np
 import pandas as pd
+
+pd.set_option('future.no_silent_downcasting', True)
 import twirl
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.stats import SigmaClip, sigma_clipped_stats
 from astropy.units import Quantity
 from astropy.wcs.utils import WCS, pixel_to_skycoord
+from calibration.pipeutils import get_instrument_parameters
 from photutils.background import Background2D, MedianBackground
 from photutils.detection import DAOStarFinder
 from scipy import ndimage
@@ -20,8 +23,10 @@ import warnings
 from astropy.utils.exceptions import AstropyWarning
 # Suppress specific photutils and astropy warnings
 warnings.filterwarnings("ignore", message="Input data contains invalid values.*", category=AstropyWarning)
-warnings.filterwarnings("ignore", message=".*Input data contains invalid values.*", module="photutils.background.background_2d")
-warnings.filterwarnings("ignore", message=".*Input data contains invalid values.*", module="astropy.stats.sigma_clipping")
+warnings.filterwarnings("ignore", message=".*Input data contains invalid values.*",
+                        module="photutils.background.background_2d")
+warnings.filterwarnings("ignore", message=".*Input data contains invalid values.*",
+                        module="astropy.stats.sigma_clipping")
 
 
 def find_stars_dao(
@@ -630,11 +635,31 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 if verbose:
                     print(f"Header RA: {ra}, DEC: {dec}")
 
-                # Handle coordinate format based on telescope
-                if header['TELESCOP'] == 'Artemis':
-                    center = SkyCoord(ra, dec, unit=[u.hourangle, u.deg])
-                else:
-                    center = SkyCoord(ra, dec, unit=[u.deg, u.deg])
+                # Set default units
+                ra_unit = u.deg
+                dec_unit = u.deg
+
+                # Get coordinate units from config
+                with fits.open(filepath) as temp_hdul:
+                    params = get_instrument_parameters(temp_hdul)
+                if "ra_dec_header_units" in params:
+                    ra_unit_str = params["ra_dec_header_units"]["ra_unit"]
+                    dec_unit_str = params["ra_dec_header_units"]["dec_unit"]
+
+                    if ra_unit_str == "hourangle":
+                        ra_unit = u.hourangle
+                    elif ra_unit_str == "deg":
+                        ra_unit = u.deg
+                    else:
+                        raise ValueError(
+                            f"Unsupported RA unit '{ra_unit_str}' in config. Supported units: 'hourangle', 'deg'")
+
+                    if dec_unit_str == "deg":
+                        dec_unit = u.deg
+                    else:
+                        raise ValueError(f"Unsupported DEC unit '{dec_unit_str}' in config. Supported units: 'deg'")
+
+                center = SkyCoord(ra, dec, unit=[ra_unit, dec_unit])
 
                 if verbose:
                     print("COORDINATES AFTER SKYCOORD")
