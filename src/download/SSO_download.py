@@ -307,25 +307,149 @@ def clean_cache():
                 print(e)
 
 
-def eso_download(dir, telname, sdate, edate, wait, test_mode=False, query_only=False, verbose=False):
-    """Main download function"""
+def send_final_email_summary(telescope_states, date, telnames, test_mode, is_recent,
+                            grace_days, total_attempts):
+    """Send comprehensive email summary after all retry attempts complete"""
+
+    # Build summary for each telescope
+    telescope_summaries = []
+    any_failures = False
+    any_success = False
+
+    for idx, state in telescope_states.items():
+        telname = state['telname']
+        success = state['success']
+        attempts = state['attempts']
+
+        if not attempts:
+            continue
+
+        last_attempt = attempts[-1]
+
+        # Build attempt history
+        history = []
+        for att in attempts:
+            history.append(
+                f"  Attempt {att['attempt_num']}: "
+                f"Archive={att['archive_count']}, "
+                f"Downloaded={att['downloaded_count']}, "
+                f"Expected={att['expected_count'] if att['expected_count'] is not None else 'N/A'}"
+            )
+        history_str = "\n".join(history)
+
+        # Determine status message
+        if success:
+            any_success = True
+            if last_attempt['expected_count'] is not None:
+                status = f"✓ SUCCESS: {last_attempt['downloaded_count']}/{last_attempt['expected_count']} images"
+            else:
+                status = f"✓ SUCCESS: {last_attempt['downloaded_count']} images downloaded"
+        else:
+            any_failures = True
+            if last_attempt['expected_count'] is not None and last_attempt['expected_count'] > 0:
+                status = f"✗ INCOMPLETE: {last_attempt['downloaded_count']}/{last_attempt['expected_count']} images"
+            else:
+                status = f"✗ INCOMPLETE: Transfer log not updated (0 images expected)"
+
+        telescope_summaries.append(f"""
+{telname}:
+{status}
+Attempts: {len(attempts)}/{total_attempts}
+{history_str}
+        """.strip())
+
+    # Construct overall subject and message
+    if test_mode:
+        subject = "ESO Test Download Complete"
+        status_line = "Test mode - downloaded first image only"
+    elif any_failures:
+        if is_recent:
+            subject = f"ESO Download INCOMPLETE after {total_attempts} attempts"
+            status_line = f"Some telescopes incomplete after {total_attempts} attempts over ~{sum([15, 30] + [60] * (total_attempts - 3))} minutes"
+        else:
+            subject = "ESO Download Complete (old data)"
+            status_line = "Downloaded all available archive data (no retry for old observations)"
+    else:
+        subject = "ESO Download SUCCESS"
+        status_line = f"All telescopes complete (took {len(telescope_states[0]['attempts'])} attempt(s))" if telescope_states else "Complete"
+
+    message = f"""
+ESO Archive Download Summary
+Date: {date}
+Data age: {"Recent (within grace period)" if is_recent else f"Old (>{grace_days} days)"}
+Status: {status_line}
+
+{'='*60}
+TELESCOPE RESULTS:
+{'='*60}
+
+{chr(10).join(telescope_summaries)}
+
+{'='*60}
+    """.strip()
+
+    # Add recommendations for failures
+    if any_failures and is_recent:
+        message += """
+
+RECOMMENDED ACTIONS:
+- Images may still be transferring from Chile to ESO archive
+- Transfer log may not be updated yet
+- Run the same command again to retry
+- Check transfer_log.txt for expected image counts
+        """
+
+    # Send email
+    try:
+        config = get_email_config()
+        if config['to_addr_list']:
+            sendemail(
+                from_addr=config['from_addr'],
+                to_addr_list=config['to_addr_list'],
+                cc_addr_list=config['cc_addr_list'],
+                subject=subject,
+                message=message,
+                login=config['from_addr'],
+                password=config['password'],
+                smtpserver=config['smtp_server']
+            )
+            print("Email notification sent")
+        else:
+            print("No email recipients configured, skipping email notification")
+    except Exception as e:
+        print(f"Email sending failed: {e}")
+
+
+def eso_download(dir, telname, sdate, edate, wait, test_mode=False, query_only=False, verbose=False,
+                 transfer_log_grace_days=5, max_retries=13):
+    """
+    Main download function with retry logic
+
+    Args:
+        transfer_log_grace_days: Number of days after observation to enforce transfer log checking (default 5)
+        max_retries: Maximum number of download attempts (default 13, covering ~12 hours)
+    """
+
+    # Generate retry intervals: [15, 30, 60, 60, 60, ...] up to max_retries-1 intervals
+    retry_intervals = [15, 30] + [60] * (max_retries - 3) if max_retries > 2 else [15, 30][:max_retries-1]
 
     if telname == None:
         tel = ['60.A-9009(A)', '60.A-9009(B)', '60.A-9009(C)', '60.A-9009(D)']
         telname = ['Io', 'Europa', 'Ganymede', 'Callisto']
         telroute = ['Observations/' + s for s in telname]
     else:
-        telname = str(telname)
-        if telname == 'Io':
+        telname_str = str(telname)
+        if telname_str == 'Io':
             tel = ['60.A-9009(A)']
-        elif telname == 'Europa':
+        elif telname_str == 'Europa':
             tel = ['60.A-9009(B)']
-        elif telname == 'Ganymede':
+        elif telname_str == 'Ganymede':
             tel = ['60.A-9009(C)']
-        elif telname == 'Callisto':
+        elif telname_str == 'Callisto':
             tel = ['60.A-9009(D)']
-        telname = [telname]
+        telname = [telname_str]
         telroute = ['Observations/' + telname[0]]
+
 
     s = dt.datetime.strptime(sdate, "%Y%m%d")
     e = dt.datetime.strptime(edate, "%Y%m%d")
@@ -335,7 +459,7 @@ def eso_download(dir, telname, sdate, edate, wait, test_mode=False, query_only=F
     if test_mode:
         print("*** TEST MODE: Will only download the first image found ***")
 
-    # for date in range(int(sdate), int(edate) + 1):
+    # Process each date
     for d in (s + dt.timedelta(n) for n in range(days)):
         os.system(f"rm -rf {dir}/.astropy/cache/astroquery/Eso/*")
 
@@ -343,224 +467,186 @@ def eso_download(dir, telname, sdate, edate, wait, test_mode=False, query_only=F
         stime = d.strftime("%Y-%m-%d")
         etime = (d + dt.timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # Only check against transfer log for data from within the past 5 days
-        new_data = s > (dt.datetime.now() - dt.timedelta(days=5))
-        if new_data:
-            if wait.lower() == "true":
-                print("Set to wait, skipped if no images.")
+        # Check if this is recent data (within grace period)
+        days_since_observation = (dt.datetime.now() - d).days
+        is_recent = days_since_observation <= transfer_log_grace_days
+
+        if is_recent:
+            print(f"Data is {days_since_observation} days old (within {transfer_log_grace_days} day grace period)")
+            print("Will check against transfer log and retry if needed")
+        else:
+            print(f"Data is {days_since_observation} days old (beyond {transfer_log_grace_days} day grace period)")
+            print("Will download whatever is on archive without retry logic")
+
+        # State tracking for retry logic (per telescope)
+        telescope_states = {}
+        for idx in range(len(tel)):
+            telescope_states[idx] = {
+                'success': False,
+                'attempts': [],  # List of (attempt_num, archive_count, downloaded_count, expected_count)
+                'telname': None,
+                'final_message': None
+            }
+
+        # Retry loop - skip entirely for old data
+        max_attempts = max_retries if is_recent else 1
+
+        for attempt in range(max_attempts):
+            attempt_start_time = dt.datetime.now()
+
+            if attempt > 0:
+                print(f"\n{'='*80}")
+                print(f"RETRY ATTEMPT {attempt + 1}/{max_attempts}")
+                print(f"Started at {attempt_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"{'='*80}\n")
             else:
-                print("Images less than 5 days old. Compare against transfer log.")
+                print(f"\n{'='*80}")
+                print(f"INITIAL ATTEMPT")
+                print(f"Started at {attempt_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"{'='*80}\n")
 
-        for t in range(len(tel)):
-            num_i_eso, num_i_transfer, num_i, count = 0, 0, 0, 0
-            ok, found = False, False
+            all_telescopes_successful = True
 
-            imgdir = f"{dir}/{telroute[t]}/images/{date}"
+            # Process each telescope
+            for t in range(len(tel)):
+                # Skip if this telescope already succeeded
+                if telescope_states[t]['success']:
+                    print(f"Skipping {telname[t]} - already successfully downloaded")
+                    continue
 
-            print(f"Downloading images for {telname[t]} on {date}")
-            num_i_transfer, found = num_im_transfer(telroute[t], date, dir)
-            print(f"{num_i_transfer} images transferred from Chile.")
+                num_i_eso, num_i_transfer, num_i, count = 0, 0, 0, 0
+                ok, found = False, False
 
-            while (found == False and count < 20 and new_data) and wait.lower() == "true":
-                now = dt.datetime.now()
-                current_time = now.strftime("%H:%M:%S")
-                print(f"Current Time = {current_time}")
-                print("Images have not yet been transferred. Waiting 30 minutes...")
-                # wait for 30 minutes and then check if the images have been transferred
-                time.sleep(1800)
-                count = count + 1
-                print("Checking number of images transferred to ESO archive...")
+                imgdir = f"{dir}/{telroute[t]}/images/{date}"
+                telescope_states[t]['telname'] = telname[t]
+
+                print(f"Processing {telname[t]} on {date}")
+
+                # Get expected count from transfer log
                 num_i_transfer, found = num_im_transfer(telroute[t], date, dir)
+                print(f"Transfer log: {num_i_transfer} images (found={found})")
 
-            if found == False and wait.lower() == "true":
-                print("ESO download timed out.")
-            else:
-                count = 0
-                print(tel, stime, etime)
-                # Note: num_i_eso will be determined by get_images function
-                print("Querying ESO archive for available images...")
-
-                while count < 20 and new_data and wait.lower() == "true":
-                    # For now, we'll get the count from get_images
-                    break
-
-                if count < 20:
-                    # Create directory if needed
-                    if not os.path.exists(imgdir):
-                        os.makedirs(imgdir)
-                    else:
-                        print(f"{imgdir} already exists!")
-
-                    # Get already downloaded files (works for empty directories too)
-                    downloaded_files = []
-                    if os.path.exists(imgdir) and os.listdir(imgdir):
-                        print(f"WARNING: Images already exist for {telname[t]} on {date}.")
-                        downloaded_files = [a.replace(".fits", "") for a in os.listdir(imgdir)
-                                            if a.endswith(('.fits', '.fts'))]
-
-                        # Apply telescope-specific filtering
-                        if telname[t] == 'Callisto':
-                            if (int(date) > 20220509 and int(date) < 20230317) or int(date) > 20250225:
-                                downloaded_files = transformation_check(imgdir, downloaded_files, "SPIRIT")
-                            else:
-                                downloaded_files = transformation_check(imgdir, downloaded_files, "ANDOR")
-                        elif telname[t] == 'Ganymede' and int(date) > 20250303:
-                            downloaded_files = transformation_check(imgdir, downloaded_files, "ANDOR")
-                    else:
-                        print("Folder exists, but there are no images!" if os.path.exists(
-                            imgdir) else "Created new directory")
-
-                    print("Already downloaded files:", len(downloaded_files))
-
-                    # Single call to get_images
-                    num_i, num_i_eso = get_images(tel[t], telname[t], stime, etime, date, imgdir,
-                                                  downloaded_files, test_mode, verbose, query_only)
-
-                    # Single validation block
-                    ok_transfer = check_download_images(num_i_eso, num_i)
-                    ok_num, num_i_dir = check_num_images(imgdir, num_i_eso)
-                    ok = ok_transfer and ok_num
-
-                    if not ok:
-                        num_i = num_i_dir
-                        if not ok_transfer:
-                            print("WARNING: Issue with number of images on ESO Archive.")
-                        if not ok_num:
-                            print("WARNING: Issue with number of downloaded images on server.")
+                # Create directory if needed
+                if not os.path.exists(imgdir):
+                    os.makedirs(imgdir)
                 else:
-                    print("WARNING: Different number of images transferred as on the ESO archive.")
+                    print(f"{imgdir} already exists")
 
-            print(telname)
-            write_to_log(num_i, num_i_transfer, num_i_eso, dir, telname[t], telroute[t], str(date))
+                # Get already downloaded files
+                downloaded_files = []
+                if os.path.exists(imgdir) and os.listdir(imgdir):
+                    print(f"Images already exist for {telname[t]} on {date}")
+                    downloaded_files = [a.replace(".fits", "") for a in os.listdir(imgdir)
+                                        if a.endswith(('.fits', '.fts'))]
 
-            # DELETE ALL ZIPPED FILES (legacy cleanup)
-            print("Delete all remaining zipped files.")
-            zip_files = glob.glob(f"{imgdir}/*ts.Z")
-            for zip_file in zip_files:
-                try:
-                    os.remove(zip_file)
-                except:
-                    pass
-
-            # Don't send emails in query-only mode
-            if query_only:
-                print("Query-only mode: skipping email notification")
-            else:
-                # Determine email content based on actual status
-                total_on_archive = num_i_eso
-                newly_downloaded = num_i  # Use the return value from get_images
-                already_had = len(downloaded_files) if downloaded_files else 0
-                total_local = newly_downloaded + already_had
-
-                if test_mode:
-                    # Test mode specific messaging
-                    remaining = total_on_archive - already_had - newly_downloaded
-                    if newly_downloaded > 0:
-                        subject = f"ESO Test Download SUCCESS: {newly_downloaded} test image downloaded"
-                        message = f"""
-                        Test download completed for {', '.join(telname)} on {date}:
-                        - Total images available on ESO archive: {total_on_archive}
-                        - Already downloaded: {already_had}
-                        - Test download: {newly_downloaded} image
-                        - Remaining to download: {remaining}
-
-                        Status: TEST SUCCESSFUL - Ready for full download
-
-                        To download all remaining images, run without --test flag:
-                        python download/SSO_download.py --dir [DIR] --telescope {telname[0] if telname else 'TARGET'} --sdate {date[:4]}{date[4:6]}{date[6:8]} --edate {date[:4]}{date[4:6]}{date[6:8]}
-                        """
-                    else:
-                        subject = f"ESO Test Download: No new images needed"
-                        message = f"""
-                        Test download check for {', '.join(telname)} on {date}:
-                        - Total images available on ESO archive: {total_on_archive}
-                        - Already downloaded: {already_had}
-                        - Test result: All images already present locally
-
-                        Status: TEST COMPLETE - No download needed
-                        """
-
-                elif newly_downloaded == 0 and total_local == total_on_archive:
-                    # All files were already downloaded
-                    subject = f"ESO Archive Status: All {total_on_archive} images already present"
-                    message = f"""
-                    Archive check for {', '.join(telname)} on {date}:
-                    - Total images on ESO archive: {total_on_archive}
-                    - Already downloaded: {already_had}
-                    - Newly downloaded: 0
-                    Status: Complete (no action needed)
-                    """
-
-                elif newly_downloaded > 0 and total_local == total_on_archive:
-                    # Successfully downloaded missing files
-                    subject = f"ESO Download Complete: {newly_downloaded} new images"
-                    message = f"""
-                    Download completed for {', '.join(telname)} on {date}:
-                    - Total images on ESO archive: {total_on_archive}
-                    - Already had: {already_had}
-                    - Newly downloaded: {newly_downloaded}
-                    Status: Complete
-                    """
-
-                elif total_local < total_on_archive:
-                    # Partial download - something went wrong
-                    missing = total_on_archive - total_local
-                    subject = f"ESO Download INCOMPLETE: {missing} images missing"
-                    message = f"""
-                    Download INCOMPLETE for {', '.join(telname)} on {date}:
-                    - Total images on ESO archive: {total_on_archive}
-                    - Already had: {already_had}
-                    - Newly downloaded: {newly_downloaded}
-                    - Still missing: {missing}
-                    Status: REQUIRES ATTENTION
-
-                    Possible causes:
-                    - Network timeouts during download
-                    - Authentication issues  
-                    - Disk space problems
-                    - File corruption during transfer
-
-                    To retry missing files, run the same command again.
-                    """
-
-                else:
-                    # Edge case - more local files than on archive?
-                    subject = f"ESO Archive Anomaly: Local file count mismatch"
-                    message = f"""
-                    Unusual situation for {', '.join(telname)} on {date}:
-                    - Total images on ESO archive: {total_on_archive}
-                    - Total local files: {total_local}
-                    Status: REVIEW NEEDED
-                    """
-
-                # Send email for meaningful events
-                should_send_email = (
-                        test_mode or  # Always send test results
-                        newly_downloaded > 0 or  # New downloads happened
-                        total_local != total_on_archive  # Mismatch that needs attention
-                )
-
-                if should_send_email:
-                    try:
-                        config = get_email_config()
-                        if config['to_addr_list']:
-                            sendemail(
-                                from_addr=config['from_addr'],
-                                to_addr_list=config['to_addr_list'],
-                                cc_addr_list=config['cc_addr_list'],
-                                subject=subject,
-                                message=message.strip(),
-                                login=config['from_addr'],
-                                password=config['password'],
-                                smtpserver=config['smtp_server']
-                            )
-                            print("Email notification sent")
+                    # Apply telescope-specific filtering
+                    if telname[t] == 'Callisto':
+                        if (int(date) > 20220509 and int(date) < 20230317) or int(date) > 20250225:
+                            downloaded_files = transformation_check(imgdir, downloaded_files, "SPIRIT")
                         else:
-                            print("No email recipients configured, skipping email notification")
-                    except Exception as e:
-                        print(f"Email sending failed: {e}")
+                            downloaded_files = transformation_check(imgdir, downloaded_files, "ANDOR")
+                    elif telname[t] == 'Ganymede' and int(date) > 20250303:
+                        downloaded_files = transformation_check(imgdir, downloaded_files, "ANDOR")
+
+                print(f"Already downloaded: {len(downloaded_files)} files")
+
+                # Download images
+                num_i, num_i_eso = get_images(tel[t], telname[t], stime, etime, date, imgdir,
+                                              downloaded_files, test_mode, verbose, query_only)
+
+                # Calculate totals
+                total_downloaded = len(downloaded_files) + num_i
+
+                # Validation
+                ok_transfer = check_download_images(num_i_eso, num_i)
+                ok_num, num_i_dir = check_num_images(imgdir, num_i_eso)
+                ok = ok_transfer and ok_num
+
+                if not ok:
+                    num_i = num_i_dir
+                    total_downloaded = num_i_dir
+                    if not ok_transfer:
+                        print("WARNING: Issue with number of images on ESO Archive")
+                    if not ok_num:
+                        print("WARNING: Issue with number of downloaded images on server")
+
+                # Record this attempt
+                telescope_states[t]['attempts'].append({
+                    'attempt_num': attempt + 1,
+                    'archive_count': num_i_eso,
+                    'downloaded_count': total_downloaded,
+                    'expected_count': num_i_transfer if found else None,
+                    'newly_downloaded': num_i
+                })
+
+                # Determine success for this telescope
+                if is_recent:
+                    # For recent data, check against transfer log
+                    if not found or num_i_transfer == 0:
+                        # Transfer log not updated or shows 0 images - need to retry
+                        print(f"Transfer log not ready for {telname[t]} - will retry")
+                        telescope_states[t]['success'] = False
+                        all_telescopes_successful = False
+                    elif total_downloaded == num_i_transfer:
+                        # Perfect match!
+                        print(f"SUCCESS: {telname[t]} has all {num_i_transfer} expected images")
+                        telescope_states[t]['success'] = True
+                    elif num_i_eso < num_i_transfer:
+                        # Archive doesn't have everything yet
+                        print(f"Archive incomplete: {num_i_eso}/{num_i_transfer} for {telname[t]} - will retry")
+                        telescope_states[t]['success'] = False
+                        all_telescopes_successful = False
+                    elif total_downloaded < num_i_transfer:
+                        # We're missing some downloads
+                        print(f"Download incomplete: {total_downloaded}/{num_i_transfer} for {telname[t]} - will retry")
+                        telescope_states[t]['success'] = False
+                        all_telescopes_successful = False
+                    else:
+                        # Got everything we expected
+                        print(f"SUCCESS: {telname[t]} complete")
+                        telescope_states[t]['success'] = True
                 else:
-                    print("No significant changes to report, skipping email notification")
+                    # For old data, just accept what we got
+                    if total_downloaded == num_i_eso:
+                        print(f"Downloaded all {num_i_eso} images available on archive for {telname[t]}")
+                        telescope_states[t]['success'] = True
+                    else:
+                        print(f"Partial download: {total_downloaded}/{num_i_eso} for {telname[t]}")
+                        # Still mark as success for old data (no retries)
+                        telescope_states[t]['success'] = True
+
+                # Write to log
+                write_to_log(total_downloaded, num_i_transfer, num_i_eso, dir, telname[t], telroute[t], str(date))
+
+                # Cleanup zipped files
+                print("Deleting remaining zipped files")
+                zip_files = glob.glob(f"{imgdir}/*ts.Z")
+                for zip_file in zip_files:
+                    try:
+                        os.remove(zip_file)
+                    except:
+                        pass
+
+            # Check if we should retry
+            if all_telescopes_successful or not is_recent:
+                print(f"\n{'='*80}")
+                print("All telescopes complete - exiting retry loop")
+                print(f"{'='*80}\n")
+                break
+
+            # If not the last attempt and not all successful, wait before retry
+            if attempt < max_attempts - 1 and not all_telescopes_successful:
+                wait_minutes = retry_intervals[attempt] if attempt < len(retry_intervals) else 60
+                print(f"\n{'='*80}")
+                print(f"Not all telescopes complete. Waiting {wait_minutes} minutes before retry...")
+                print(f"Next attempt will be {attempt + 2}/{max_attempts}")
+                print(f"{'='*80}\n")
+                time.sleep(wait_minutes * 60)
+
+        # After all attempts, send email summary (skip in query-only mode)
+        if not query_only:
+            send_final_email_summary(telescope_states, date, telname, test_mode, is_recent,
+                                    transfer_log_grace_days, max_attempts)
 
 
 def sendemail(from_addr, to_addr_list, cc_addr_list, subject, message, login, password, smtpserver):
@@ -628,6 +714,9 @@ Examples:
 
   # Verbose mode
   python SSO_download.py --dir /data/SPECULOOSPipeline --telescope Io --sdate 20250728 --edate 20250729 --verbose
+  
+  # Custom retry settings
+  python SSO_download.py --dir /data/SPECULOOSPipeline --telescope Io --sdate 20250728 --edate 20250729 --transfer-log-grace-days 7 --max-retries 10
         """
     )
 
@@ -651,6 +740,10 @@ Examples:
                         help='Query only: list matching files without downloading')
     parser.add_argument('--verbose', action='store_true',
                         help='Verbose mode: show detailed download progress')
+    parser.add_argument('--transfer-log-grace-days', type=int, default=5,
+                        help='Number of days after observation to check transfer log and retry (default: 5)')
+    parser.add_argument('--max-retries', type=int, default=13,
+                        help='Maximum number of download attempts for recent data (default: 13, ~12 hours)')
 
     args = parser.parse_args()
 
@@ -680,5 +773,7 @@ Examples:
         wait=str(args.wait).lower(),
         test_mode=args.test,
         query_only=args.query_only,
-        verbose=args.verbose
+        verbose=args.verbose,
+        transfer_log_grace_days=args.transfer_log_grace_days,
+        max_retries=args.max_retries
     )
