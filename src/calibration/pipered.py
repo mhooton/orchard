@@ -101,19 +101,19 @@ def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, 
                 hdulist[0].header.add_history('Bias subtracted using ' + str(biasname))
                 hdulist[0].header['RON'] = (float(ron), 'Read out noise (e-s)')
 
-            # if (hasattr(dark, 'shape') and (np.median(dark) != 0 or np.ptp(dark) != 0)) or np.isscalar(
-            #         dark) and dark != 0:
-            #     hdulist[0].header.add_history('Dark subtracted using ' + str(used_darkname))
-            #     if hasattr(dark, 'shape'):
-            #         if params.get('bad_pixel_correction', False):
-            #             dark_for_err = clean_bad_pixels(dark, dark, flat_dict[filter])
-            #             hdulist[0].header['DARKCUR'] = (float(gain) * np.nanmedian(dark_for_err),
-            #                                             'Dark current (e-s per second)')
-            #         else:
-            #             hdulist[0].header['DARKCUR'] = (float(gain) * np.median(dark),
-            #                                             'Dark current (e-s per second)')
-            #     else:
-            #         hdulist[0].header['DARKCUR'] = (0, 'Dark current (e-s per second)')
+            if (hasattr(dark, 'shape') and (np.median(dark) != 0 or np.ptp(dark) != 0)) or np.isscalar(
+                    dark) and dark != 0:
+                hdulist[0].header.add_history('Dark subtracted using ' + str(used_darkname))
+                if hasattr(dark, 'shape'):
+                    if params.get('bad_pixel_correction', False):
+                        dark_for_err = clean_bad_pixels(dark, bpm)
+                        hdulist[0].header['DARKCUR'] = (float(gain) * np.nanmedian(dark_for_err),
+                                                        'Dark current (e-s per second)')
+                    else:
+                        hdulist[0].header['DARKCUR'] = (float(gain) * np.median(dark),
+                                                        'Dark current (e-s per second)')
+                else:
+                    hdulist[0].header['DARKCUR'] = (0, 'Dark current (e-s per second)')
 
             hdulist[0].header['GAIN'] = (float(gain), 'Gain used to calculate RON/Dark Cur')
             hdulist[0].header['PV'] = (version, 'Pipeline Version')
