@@ -2,7 +2,6 @@
 
 from astropy.io import fits
 import os
-from multiprocessing import Pool as ThreadPool
 from functools import partial
 import argparse
 import timeit
@@ -12,7 +11,6 @@ import fnmatch
 import shutil
 from astrom.twirl_speculoos import twirl_wcs
 from astrom.pointer_wcs import pointer_wcs
-
 def has_valid_wcs(header):
     """
     Check if header contains valid WCS data, not just WCS keywords.
@@ -45,6 +43,72 @@ def has_valid_wcs(header):
         return False
 
     return True
+
+def add_astrometry_with_timeout(infile, timeout, ext, db_path, raw_images, trim_offsets,
+                                total_files, file_num=None):
+    """
+    Wrapper that runs add_astrometry with a timeout using multiprocessing.
+
+    Parameters
+    ----------
+    infile : str
+        Path to image file
+    timeout : int
+        Timeout in seconds
+    ext : str
+        File extension
+    db_path : str
+        Path to Gaia database
+    raw_images : list
+        List of raw image paths
+    trim_offsets : tuple
+        Trim offsets for CRPIX adjustment
+    total_files : int
+        Total number of files being processed
+    file_num : int, optional
+        File number for progress display
+
+    Returns
+    -------
+    dict
+        Result dictionary from pointer_wcs or timeout error
+    """
+    from multiprocessing import Process, Queue
+    import queue
+
+    result_queue = Queue()
+
+    def worker():
+        try:
+            result = add_astrometry(infile, ext, db_path, raw_images, trim_offsets,
+                                    file_num=file_num, total_files=total_files)
+            result_queue.put(result)
+        except Exception as e:
+            result_queue.put({'success': False, 'error': str(e)})
+
+    process = Process(target=worker)
+    process.start()
+
+    try:
+        result = result_queue.get(timeout=timeout)
+        process.join(timeout=1)
+        return result
+    except queue.Empty:
+        # Timeout occurred
+        process.terminate()
+        process.join()
+        print(f"[TIMEOUT] Plate solving exceeded {timeout}s: {infile}")
+        return {
+            'success': False,
+            'error': f'Timeout after {timeout}s',
+            'crpix': None,
+            'crval': None,
+            'sources_detected': 0,
+            'sources_used': 0,
+            'gaia_queried': 0,
+            'gaia_used': 0,
+            'matches': 0
+        }
 
 def main(args):
     import sys
@@ -103,16 +167,6 @@ def main(args):
         print(f"Files with existing WCS (will be overwritten): {already_solved}", flush=True)
     else:
         print(f"Files already solved (skipped): {already_solved}", flush=True)
-    # infiles = infiles[:20]
-    # try:
-    #     pool = ThreadPool(int(args.nproc))
-    #     fn = partial(add_astrometry,ext=args.ext)
-    #     pool.map(fn, infiles)
-    #     # for infile in infiles:
-    #     #     add_astrometry(infile, args.ext)
-    #
-    # except Exception as e:
-    #     print("Astrometry failed: " + str(e))
 
     # Read raw image list if provided
     raw_images = []
@@ -134,15 +188,48 @@ def main(args):
         trim_offsets = (trim_config.get('left_col', 0), trim_config.get('top_row', 0))
 
     files_to_process = len(infiles)
-    for i, infile in enumerate(infiles, 1):
-        result = add_astrometry(infile, args.ext, args.db_path, raw_images, trim_offsets, file_num=i,
-                                total_files=files_to_process)
 
-        # Count results
-        if result and result.get('success', False):
-            newly_solved += 1
-        else:
-            failed_solve += 1
+    if int(args.nproc) > 1:
+        # Parallel processing with timeout
+        from multiprocessing import Pool
+        from functools import partial
+
+        pool = Pool(processes=int(args.nproc))
+
+        worker_func = partial(add_astrometry_with_timeout,
+                              timeout=args.timeout,
+                              ext=args.ext,
+                              db_path=args.db_path,
+                              raw_images=raw_images,
+                              trim_offsets=trim_offsets,
+                              total_files=files_to_process)
+
+        results = pool.map(worker_func, infiles)
+        pool.close()
+        pool.join()
+
+        # Count successes and failures
+        for result in results:
+            if result and result.get('success', False):
+                newly_solved += 1
+            else:
+                failed_solve += 1
+    else:
+        # Sequential processing with timeout
+        for i, infile in enumerate(infiles, 1):
+            result = add_astrometry_with_timeout(infile,
+                                                 timeout=args.timeout,
+                                                 ext=args.ext,
+                                                 db_path=args.db_path,
+                                                 raw_images=raw_images,
+                                                 trim_offsets=trim_offsets,
+                                                 total_files=files_to_process,
+                                                 file_num=i)
+
+            if result and result.get('success', False):
+                newly_solved += 1
+            else:
+                failed_solve += 1
 
     try:
         for f in infiles:
@@ -420,10 +507,13 @@ def add_astrometry(f, ext, db_path, raw_images, trim_offsets, file_num=None, tot
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('filelist')
-    parser.add_argument('-n', '--nproc')
+    parser.add_argument('-n', '--nproc', type=int, default=1,
+                        help='Number of parallel processes (default: 1)')
     parser.add_argument('-e', '--ext')
     parser.add_argument('-d', '--db_path')
     parser.add_argument('-r', '--raw-list', help='Path to raw image list file')
     parser.add_argument('-f', '--force-platesolve', action='store_true',
                         help='Force plate solving even for images that already have WCS')
+    parser.add_argument('-t', '--timeout', type=int, default=60,
+                        help='Timeout per image in seconds (default: 60)')
     main(parser.parse_args())

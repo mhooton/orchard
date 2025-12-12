@@ -6,7 +6,7 @@ from photometry.catmatch import shift_wcs_axis, apply_correct, apply_correct_old
 import photometry.casutools as casutools
 from photometry.vector_plot import wcsf_QCheck
 from photometry.wcs_status import set_wcs_status
-from multiprocessing import Pool as ThreadPool
+from multiprocessing import Pool
 from functools import partial
 from astropy.io import fits
 import os
@@ -84,7 +84,7 @@ def m_solve_images(filelist, outfile,
                  ipix=ipix,
                  ext=ext)
 
-    pool = ThreadPool(nproc)
+    pool = Pool(nproc)
 
     return pool.map(fn, infiles)
 
