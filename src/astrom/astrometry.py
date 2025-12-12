@@ -44,10 +44,11 @@ def has_valid_wcs(header):
 
     return True
 
+
 def add_astrometry_with_timeout(infile, timeout, ext, db_path, raw_images, trim_offsets,
                                 total_files, file_num=None):
     """
-    Wrapper that runs add_astrometry with a timeout using multiprocessing.
+    Wrapper that runs add_astrometry with a signal-based timeout.
 
     Parameters
     ----------
@@ -71,36 +72,45 @@ def add_astrometry_with_timeout(infile, timeout, ext, db_path, raw_images, trim_
     Returns
     -------
     dict
-        Result dictionary from pointer_wcs or timeout error
+        Result dictionary from add_astrometry or timeout error
     """
-    from multiprocessing import Process, Queue
-    import queue
+    import signal
 
-    result_queue = Queue()
+    class TimeoutException(Exception):
+        pass
 
-    def worker():
-        try:
-            result = add_astrometry(infile, ext, db_path, raw_images, trim_offsets,
-                                    file_num=file_num, total_files=total_files)
-            result_queue.put(result)
-        except Exception as e:
-            result_queue.put({'success': False, 'error': str(e)})
+    def timeout_handler(signum, frame):
+        raise TimeoutException(f"Plate solving timed out after {timeout}s")
 
-    process = Process(target=worker)
-    process.start()
+    # Set up the timeout
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(timeout)
 
     try:
-        result = result_queue.get(timeout=timeout)
-        process.join(timeout=1)
+        result = add_astrometry(infile, ext, db_path, raw_images, trim_offsets,
+                                file_num=file_num, total_files=total_files)
+        signal.alarm(0)  # Cancel the alarm
         return result
-    except queue.Empty:
-        # Timeout occurred
-        process.terminate()
-        process.join()
-        print(f"[TIMEOUT] Plate solving exceeded {timeout}s: {infile}")
+    except TimeoutException as e:
+        signal.alarm(0)  # Cancel the alarm
+        print(f"[TIMEOUT] {infile}: {str(e)}")
         return {
             'success': False,
-            'error': f'Timeout after {timeout}s',
+            'error': str(e),
+            'crpix': None,
+            'crval': None,
+            'sources_detected': 0,
+            'sources_used': 0,
+            'gaia_queried': 0,
+            'gaia_used': 0,
+            'matches': 0
+        }
+    except Exception as e:
+        signal.alarm(0)  # Cancel the alarm
+        print(f"[ERROR] {infile}: {str(e)}")
+        return {
+            'success': False,
+            'error': str(e),
             'crpix': None,
             'crval': None,
             'sources_detected': 0,
