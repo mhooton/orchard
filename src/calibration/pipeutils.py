@@ -13,12 +13,13 @@ def load_instrument_config():
     with open(config_path, 'r') as f:
         return json.load(f)
 
-def detect_instrument(hdul):
+def detect_instrument(hdul, trimmed=False):
     """
     Centralized instrument detection from FITS HDUList using configuration file
 
     Args:
         hdul: Opened FITS HDUList
+        trimmed: Boolean indicating if the image has been trimmed (default: False)
 
     Returns:
         str: Instrument name ('andor', 'spirit', etc.)
@@ -37,7 +38,25 @@ def detect_instrument(hdul):
 
             # Loop through instruments for this telescope and match by naxis2
             for instrument_name, instrument_params in telescope_config.items():
-                if instrument_params['naxis2'] == naxis2:
+                config_naxis2 = instrument_params['naxis2']
+
+                # If trimmed=True, calculate expected trimmed naxis2
+                if trimmed and 'trim' in instrument_params:
+                    trim_config = instrument_params['trim']
+                    top_row = trim_config.get('top_row', 0) or 0
+                    bottom_row = trim_config.get('bottom_row', config_naxis2)
+
+                    # Handle negative indexing
+                    if bottom_row and bottom_row < 0:
+                        bottom_row = config_naxis2 + bottom_row + 1
+                    elif bottom_row is None:
+                        bottom_row = config_naxis2
+
+                    expected_naxis2 = bottom_row - top_row
+                else:
+                    expected_naxis2 = config_naxis2
+
+                if expected_naxis2 == naxis2:
                     return instrument_name
 
             # If no naxis2 match, return the first (and likely only) instrument
@@ -49,7 +68,21 @@ def detect_instrument(hdul):
         # Fallback: search all telescopes for naxis2 match
         for telescope_name, telescope_config in config['telescopes'].items():
             for instrument_name, instrument_params in telescope_config.items():
-                if instrument_params['naxis2'] == naxis2:
+                config_naxis2 = instrument_params['naxis2']
+
+                if trimmed and 'trim' in instrument_params:
+                    trim_config = instrument_params['trim']
+                    top_row = trim_config.get('top_row', 0) or 0
+                    bottom_row = trim_config.get('bottom_row', config_naxis2)
+                    if bottom_row and bottom_row < 0:
+                        bottom_row = config_naxis2 + bottom_row + 1
+                    elif bottom_row is None:
+                        bottom_row = config_naxis2
+                    expected_naxis2 = bottom_row - top_row
+                else:
+                    expected_naxis2 = config_naxis2
+
+                if expected_naxis2 == naxis2:
                     print(f"Warning: Telescope name '{telescop}' not recognized, but matched instrument by NAXIS2")
                     return instrument_name
 
@@ -59,17 +92,18 @@ def detect_instrument(hdul):
 
     except Exception as e:
         print(f"Warning: Could not detect instrument from header: {e}")
-        return 'andor'  # Default fallback
+        return 'andor'
 
-def get_instrument_parameters(hdul):
+def get_instrument_parameters(hdul, trimmed=False):
     """
     Get instrument parameters from config file given a FITS HDUList
 
     Args:
         hdul: Opened FITS HDUList
+        trimmed: Boolean indicating if the image has been trimmed
 
     Returns:
-        dict: Dictionary containing instrument parameters (gain, saturation_threshold, etc.)
+        dict: Dictionary containing instrument parameters
     """
     try:
         hdr = hdul[0].header
@@ -77,7 +111,7 @@ def get_instrument_parameters(hdul):
 
         # Load configuration and detect instrument
         config = load_instrument_config()
-        instrument = detect_instrument(hdul)
+        instrument = detect_instrument(hdul, trimmed=trimmed)
 
         # Get telescope config
         if telescop in config['telescopes']:

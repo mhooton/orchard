@@ -188,6 +188,9 @@ def reducer(inlist, outdir, biasname, darknames, flatnames, bpmname, reddir, ver
         else:
             print("Bad pixel map not found. Continuing without bad pixel correction.")
             bpm = None
+    else:
+        print("No Bad Pixel Correction applied")
+        bpm = None
 
     procfarr = {}
 

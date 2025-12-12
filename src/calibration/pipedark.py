@@ -299,7 +299,7 @@ def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ
                 tel = dirsplit[-5]
                 QC([0, reportdir + "/QC", date, field, tel, run, 'QC7', darkc])
 
-    #Assign final group to outname
+    #Assign final group to outname - highest exposure time group for dark matching
     phdu.writeto(outdir + darkname, overwrite=True)
 
     # Save noisy pixel map if created

@@ -661,7 +661,7 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
 
                 # Get coordinate units from config
                 with fits.open(filepath) as temp_hdul:
-                    params = get_instrument_parameters(temp_hdul)
+                    params = get_instrument_parameters(temp_hdul, trimmed=True)
                 if "ra_dec_header_units" in params:
                     ra_unit_str = params["ra_dec_header_units"]["ra_unit"]
                     dec_unit_str = params["ra_dec_header_units"]["dec_unit"]

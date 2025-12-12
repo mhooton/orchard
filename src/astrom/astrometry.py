@@ -125,7 +125,7 @@ def main(args):
         first_filename = filel.readline().strip()
 
     with open_fits_file(first_filename) as hdul:
-        params = get_instrument_parameters(hdul)
+        params = get_instrument_parameters(hdul, trimmed=True)  # <-- Add trimmed=True
 
     # Extract trim offsets once
     trim_offsets = (0, 0)  # default
@@ -321,9 +321,9 @@ def copy_wcs_to_raw(processed_path, raw_path, trim_offsets):
         for keyword, value in wcs_headers.items():
             raw_header[keyword] = value
 
-        # Log the adjustment for debugging
-        if x_offset != 0 or y_offset != 0:
-            print(f"Debug: Adjusted CRPIX by ({x_offset}, {y_offset}) using config-based trim offsets")
+        # # Log the adjustment for debugging
+        # if x_offset != 0 or y_offset != 0:
+        #     print(f"Debug: Adjusted CRPIX by ({x_offset}, {y_offset}) using config-based trim offsets")
 
 def add_astrometry(f, ext, db_path, raw_images, trim_offsets, file_num=None, total_files=None):
     if fnmatch.fnmatch(f, '*.' + ext):
