@@ -690,7 +690,7 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 # Calculate field of view
                 shape = image_clean.shape
 
-                if "[mm]" in header.comments['FOCALLEN']:
+                if "mm" in header.comments['FOCALLEN']:
                     focallen_multiplier = 1e-3
                 else:
                     focallen_multiplier = 1
