@@ -86,12 +86,9 @@
         "dark_matching_exptime": true,
         "bad_pixel_correction": {
           "preferred_flat_filter": "zYJ",
-          "dark_threshold_sigma": 5,
-          "flat_low_value": 0.1,
-          "hot_sigma": 10,
-          "noisy_threshold_sigma": 10,
-          "noisy_min_frames": 5,
-          "stuck_threshold": -25,
+          "hot_sigma_threshold": 5,
+          "cold_sigma_threshold": 5,
+          "flat_threshold": 0.1,
           "overwrite_existing": false
         }
       }

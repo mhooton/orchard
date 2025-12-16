@@ -11,47 +11,6 @@ import pipeutils
 import fnmatch
 from collections import defaultdict
 
-def detect_noisy_pixels_single_exposure(frames, sigma=5, min_frames=5):
-    """
-    Detect noisy pixels for a single exposure time batch.
-
-    Parameters:
-    -----------
-    frames : list of 2D arrays
-        Individual dark frames at the same exposure time (bias-subtracted)
-    sigma : float
-        Number of standard deviations above median to flag (default 5)
-    min_frames : int
-        Minimum number of frames required (default 5)
-
-    Returns:
-    --------
-    noisy_map : 2D boolean array
-        True = noisy pixel
-    """
-
-    # Check if we have enough frames
-    if len(frames) < min_frames:
-        print(f"WARNING: Need at least {min_frames} frames for noisy pixel detection, found {len(frames)}")
-        # Return all-False array with same shape as frames
-        return np.zeros(frames[0].shape, dtype=bool)
-
-    # Stack frames into 3D array (n_frames, ny, nx)
-    frames_array = np.array(frames)
-
-    # Calculate temporal std for each pixel
-    temporal_std_map = np.std(frames_array, axis=0)
-
-    # Calculate threshold from distribution of temporal stds
-    median_std = np.median(temporal_std_map)
-    std_of_stds = np.std(temporal_std_map)
-    threshold = median_std + sigma * std_of_stds
-
-    # Flag pixels above threshold
-    noisy_map = temporal_std_map > threshold
-
-    return noisy_map
-
 def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ=None):
     """
     Create master dark frame(s) from a list of dark images.
@@ -144,61 +103,9 @@ def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ
 
     output_files = []
 
-    # Initialize noisy pixel map as None
-    noisy_pixel_map = None
-
-    # Read noisy pixel detection parameters
-    if 'bad_pixel_correction' in params:
-        bpm_config = params['bad_pixel_correction']
-        noisy_sigma = bpm_config.get('noisy_threshold_sigma', 5)
-        noisy_min_frames = bpm_config.get('noisy_min_frames', 5)
-        print(f"Noisy pixel detection enabled: sigma={noisy_sigma}, min_frames={noisy_min_frames}")
-    else:
-        noisy_sigma = None
-        noisy_min_frames = None
-        print("Noisy pixel detection disabled (no bad_pixel_correction config)")
-
     # Process each group
     for group_key, file_pairs in groups_to_process.items():
         print(f"Processing {len(file_pairs)} dark files for group: {group_key}")
-
-        # Noisy pixel detection (only if configured)
-        if noisy_sigma is not None and len(file_pairs) >= noisy_min_frames:
-            # Noisy pixel detection for this exposure time
-            if len(file_pairs) >= noisy_min_frames:
-                frames = []
-                for chunk_file, filename in file_pairs:
-                    try:
-                        with open_fits_file(filename) as hdulist:
-                            data = apply_image_slice(hdulist, 'trim', hdulist[0].data)
-                            overscan_data = apply_image_slice(hdulist, 'overscan', 0.)
-                            if isinstance(overscan_data, np.ndarray) and overscan_data.size > 1:
-                                overscan_data = sigma_clip(overscan_data, maxiters=None)
-                                overscan = np.ma.median(overscan_data)
-                            else:
-                                overscan = overscan_data
-
-                            # Bias correction (no exposure scaling for noisy detection)
-                            if np.shape(bias) == np.shape(data):
-                                corrected = data - overscan - bias
-                            else:
-                                corrected = data - overscan
-
-                            frames.append(corrected)
-                    except Exception as e:
-                        print(f"Warning: Could not load {filename} for noisy pixel detection: {e}")
-                        continue
-
-                # Detect noisy pixels for this exposure time
-                if len(frames) > 0:
-                    noisy_map_this_exp = detect_noisy_pixels_single_exposure(frames, sigma=noisy_sigma,
-                                                                             min_frames=noisy_min_frames)
-
-                    # Combine with accumulated map
-                    if noisy_pixel_map is None:
-                        noisy_pixel_map = noisy_map_this_exp
-                    else:
-                        noisy_pixel_map = noisy_pixel_map | noisy_map_this_exp
 
         # Group files by chunk file for this exposure time
         chunk_groups = defaultdict(list)
@@ -301,13 +208,6 @@ def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ
 
     #Assign final group to outname - highest exposure time group for dark matching
     phdu.writeto(outdir + darkname, overwrite=True)
-
-    # Save noisy pixel map if created
-    if noisy_pixel_map is not None:
-        noisy_fits = pyfits.PrimaryHDU(noisy_pixel_map.astype(int))
-        noisy_fits.writeto(outdir + 'noisy_pixel_map.fits', overwrite=True)
-        print("Created noisy pixel map")
-
 
     # Clean up temporary files
     for dsorted_fn in glob.glob(outdir + 'dsorted*'):

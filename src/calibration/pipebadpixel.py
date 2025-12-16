@@ -4,111 +4,43 @@ import argparse
 import numpy as np
 from calibration.pipeutils import get_instrument_parameters, open_fits_file, create_dark_dict, create_flat_dict
 from astropy.io import fits
-from matplotlib import pyplot as plt
+from matplotlib import pyplot as pl
 
-
-def detect_stuck_pixels(dark_dict, effective_saturation_map, threshold=1.0, max_exposure=32):
+def detect_bad_pixels(dark, hot_sigma=5, cold_sigma=5):
     """
-    Detect stuck/inverse pixels by fitting dark current vs exposure time.
+    Detect hot and cold pixels as outliers in the dark frame.
 
     Parameters:
     -----------
-    dark_dict : dict
-        Keys are exposure times (seconds), values are 2D bias-subtracted submaster dark arrays
-    effective_saturation_map : 2D array
-        Per-pixel saturation threshold (saturation_threshold - master_bias)
-    threshold : float
-        Dark current threshold in ADU/s (default 1.0)
-    max_exposure : float
-        Maximum exposure time to include in fitting (default 32s)
+    dark : 2D array
+        Bias-subtracted master dark (or shortest exposure dark)
+    hot_sigma : float
+        Number of standard deviations above median to flag hot pixels (default 5)
+    cold_sigma : float
+        Number of standard deviations below median to flag cold pixels (default 5)
 
     Returns:
     --------
-    stuck_map : 2D boolean array
-        True = stuck pixel
+    hot_pixel_map : 2D boolean array
+        True = hot pixel
+    cold_pixel_map : 2D boolean array
+        True = cold pixel
     """
 
-    # Filter dark_dict for exposure times < max_exposure
-    filtered_dict = {exp: dark for exp, dark in dark_dict.items()
-                     if isinstance(exp, (int, float)) and exp < max_exposure}
+    # Calculate threshold
+    dark_median = np.median(dark)
+    dark_std = np.std(dark)
 
-    # Check if we have enough exposure times
-    if len(filtered_dict) < 2:
-        print(
-            f"WARNING: Need at least 2 exposure times < {max_exposure}s for stuck pixel detection, found {len(filtered_dict)}")
-        # Get shape from any available dark, or from effective_saturation_map
-        if len(filtered_dict) > 0:
-            shape = list(filtered_dict.values())[0].shape
-        else:
-            shape = effective_saturation_map.shape
-        return np.zeros(shape, dtype=bool)
+    hot_threshold = dark_median + hot_sigma * dark_std
+    cold_threshold = dark_median - cold_sigma * dark_std
 
-    # Extract exposure times and darks
-    exposure_times = np.array(sorted(filtered_dict.keys()))
-    darks_adu_per_s = np.array([filtered_dict[exp] for exp in exposure_times])
+    # Flag pixels above/below thresholds
+    hot_pixel_map = dark > hot_threshold
+    cold_pixel_map = dark < cold_threshold
 
-    # Convert from ADU/s back to ADU by multiplying by exposure time
-    darks = np.array([darks_adu_per_s[i] * exposure_times[i]
-                      for i in range(len(exposure_times))])  # Shape: (n_exposures, ny, nx)
+    return hot_pixel_map, cold_pixel_map
 
-    # Get image shape
-    ny, nx = darks.shape[1], darks.shape[2]
-
-    # Initialize stuck pixel map
-    stuck_map = np.zeros((ny, nx), dtype=bool)
-
-    # Loop over each pixel
-    for i in range(ny):
-        for j in range(nx):
-            # Extract pixel values across all exposure times
-            pixel_values = darks[:, i, j]
-
-            # Create valid mask: not NaN, not inf, not saturated
-            valid_mask = (~np.isnan(pixel_values) &
-                          ~np.isinf(pixel_values) &
-                          (pixel_values <= effective_saturation_map[i, j]))
-
-            valid_exposures = exposure_times[valid_mask]
-            valid_values = pixel_values[valid_mask]
-
-            # Check if we have enough valid points to fit
-            if len(valid_exposures) >= 2:
-                # Fit line and extract slope (dark current in ADU/s)
-                coeffs = np.polyfit(valid_exposures, valid_values, deg=1)
-                slope = coeffs[0]
-
-                # Flag if dark current below threshold
-                if slope < threshold:
-                    stuck_map[i, j] = True
-            # If < 2 valid points, leave as False (not stuck)
-
-    return stuck_map
-
-
-def detect_saturated_pixels(master_flat, effective_saturation_map):
-    """
-    Detect saturated pixels in the master flat.
-
-    Parameters:
-    -----------
-    master_flat : 2D array
-        Bias-subtracted master flat field
-    effective_saturation_map : 2D array
-        Per-pixel saturation threshold (saturation_threshold - master_bias)
-
-    Returns:
-    --------
-    saturated_map : 2D boolean array
-        True = saturated pixel
-    """
-
-    # Flag pixels where flat value exceeds the saturation threshold
-    saturated_map = master_flat > effective_saturation_map
-
-    return saturated_map
-
-
-def detect_flatbad_pixels(master_flat, flat_low_value):
+def detect_flatbad_pixels(master_flat, flat_threshold):
     """
     Detect flatbad pixels with low response in the master flat.
 
@@ -116,8 +48,8 @@ def detect_flatbad_pixels(master_flat, flat_low_value):
     -----------
     master_flat : 2D array
         Bias-subtracted master flat field
-    flat_low_value : float
-        Threshold as fraction of flat median (e.g., 0.1)
+    flat_threshold : float
+        Absolute threshold for flat response (e.g., 0.1)
 
     Returns:
     --------
@@ -125,61 +57,10 @@ def detect_flatbad_pixels(master_flat, flat_low_value):
         True = flatbad pixel
     """
 
-    # Calculate the threshold
-    flat_median = np.median(master_flat)
-    threshold = flat_low_value * flat_median
-
     # Flag pixels below threshold
-    flatbad_map = master_flat < threshold
+    flatbad_map = master_flat < flat_threshold
 
     return flatbad_map
-
-
-def detect_hot_pixels(dark_dict, effective_saturation_map, sigma=10):
-    """
-    Detect hot pixels as extreme outliers in the shortest exposure dark.
-
-    Parameters:
-    -----------
-    dark_dict : dict
-        Keys are exposure times (seconds), values are 2D bias-subtracted submaster dark arrays
-    effective_saturation_map : 2D array
-        Per-pixel saturation threshold (saturation_threshold - master_bias)
-    sigma : float
-        Number of standard deviations above median to flag (default 10)
-
-    Returns:
-    --------
-    hot_map : 2D boolean array
-        True = hot pixel
-    """
-
-    # Check if dark_dict is empty
-    if len(dark_dict) == 0:
-        print("WARNING: No darks available for hot pixel detection")
-        return np.zeros(effective_saturation_map.shape, dtype=bool)
-
-    # Filter to only numeric exposure times
-    numeric_keys = [exp for exp in dark_dict.keys() if isinstance(exp, (int, float))]
-
-    if len(numeric_keys) == 0:
-        print("WARNING: No numeric exposure times available for hot pixel detection")
-        return np.zeros(effective_saturation_map.shape, dtype=bool)
-
-    # Find shortest exposure time
-    min_exposure = min(numeric_keys)
-    shortest_dark = dark_dict[min_exposure]
-
-    # Calculate threshold
-    dark_median = np.median(shortest_dark)
-    dark_std = np.std(shortest_dark)
-    threshold = dark_median + sigma * dark_std
-
-    # Flag pixels above threshold
-    hot_map = shortest_dark > threshold
-
-    return hot_map
-
 
 def bad_pixel_maps(inlist, caldir, outdir, darknames, flatnames, bpmname, biasname):
     """
@@ -229,9 +110,9 @@ def bad_pixel_maps(inlist, caldir, outdir, darknames, flatnames, bpmname, biasna
             flat = flat_dict[filter]
 
             # dark_threshold_sigma = bpm_config.get('dark_threshold_sigma', 5)
-            flat_low_value = bpm_config.get('flat_low_value', 0.1)
-            hot_sigma = bpm_config.get('hot_sigma', 10)
-            stuck_threshold = bpm_config.get('stuck_threshold', -10.)
+            hot_sigma_threshold = bpm_config.get('hot_sigma_threshold', 5)
+            cold_sigma_threshold = bpm_config.get('cold_sigma_threshold', 5)
+            flat_threshold = bpm_config.get('flat_threshold', 0.1)
             # Read overwrite setting from config
             overwrite_existing = bpm_config.get('overwrite_existing', True)
 
@@ -239,25 +120,32 @@ def bad_pixel_maps(inlist, caldir, outdir, darknames, flatnames, bpmname, biasna
                 master_bias = hdul[0].data
             effective_saturation_map = params['saturation_threshold'] - master_bias
 
-            # Stuck pixels
-            stuck_filename = caldir + "stuck_pixel_map.fits"
-            if not overwrite_existing and os.path.exists(stuck_filename):
-                print(f"Loading existing stuck pixel map from {stuck_filename}")
-                stuck_pixel_map = fits.getdata(stuck_filename).astype(bool)
+            # Select appropriate dark (shortest exposure or combined)
+            numeric_keys = [exp for exp in dark_dict.keys() if isinstance(exp, (int, float))]
+            if len(numeric_keys) > 0:
+                min_exposure = min(numeric_keys)
+                dark_for_detection = dark_dict[min_exposure]
+            elif 'combined' in dark_dict:
+                dark_for_detection = dark_dict['combined']
             else:
-                print("Creating stuck pixel map")
-                stuck_pixel_map = detect_stuck_pixels(dark_dict, effective_saturation_map, threshold=stuck_threshold)
-                fits.writeto(stuck_filename, stuck_pixel_map.astype(int), overwrite=True)
+                print("ERROR: No suitable dark found for bad pixel detection")
+                return
 
-            # Saturated pixels
-            saturated_filename = caldir + "saturated_pixel_map.fits"
-            if not overwrite_existing and os.path.exists(saturated_filename):
-                print(f"Loading existing saturated pixel map from {saturated_filename}")
-                saturated_pixel_map = fits.getdata(saturated_filename).astype(bool)
+            # Hot and cold pixels
+            hot_filename = caldir + "hot_pixel_map.fits"
+            cold_filename = caldir + "cold_pixel_map.fits"
+
+            if not overwrite_existing and os.path.exists(hot_filename) and os.path.exists(cold_filename):
+                print(f"Loading existing hot and cold pixel maps")
+                hot_pixel_map = fits.getdata(hot_filename).astype(bool)
+                cold_pixel_map = fits.getdata(cold_filename).astype(bool)
             else:
-                print("Creating saturated pixel map")
-                saturated_pixel_map = detect_saturated_pixels(flat, effective_saturation_map)
-                fits.writeto(saturated_filename, saturated_pixel_map.astype(int), overwrite=True)
+                print("Creating hot and cold pixel maps")
+                hot_pixel_map, cold_pixel_map = detect_bad_pixels(dark_for_detection,
+                                                                  hot_sigma=hot_sigma_threshold,
+                                                                  cold_sigma=cold_sigma_threshold)
+                fits.writeto(hot_filename, hot_pixel_map.astype(int), overwrite=True)
+                fits.writeto(cold_filename, cold_pixel_map.astype(int), overwrite=True)
 
             # Flatbad pixels
             flatbad_filename = caldir + "flatbad_pixel_map.fits"
@@ -266,31 +154,11 @@ def bad_pixel_maps(inlist, caldir, outdir, darknames, flatnames, bpmname, biasna
                 flatbad_pixel_map = fits.getdata(flatbad_filename).astype(bool)
             else:
                 print("Creating flatbad pixel map")
-                flatbad_pixel_map = detect_flatbad_pixels(flat, flat_low_value)
+                flatbad_pixel_map = detect_flatbad_pixels(flat, flat_threshold)
                 fits.writeto(flatbad_filename, flatbad_pixel_map.astype(int), overwrite=True)
 
-            # Hot pixels
-            hot_filename = caldir + "hot_pixel_map.fits"
-            if not overwrite_existing and os.path.exists(hot_filename):
-                print(f"Loading existing hot pixel map from {hot_filename}")
-                hot_pixel_map = fits.getdata(hot_filename).astype(bool)
-            else:
-                print("Creating hot pixel map")
-                hot_pixel_map = detect_hot_pixels(dark_dict, effective_saturation_map, sigma=hot_sigma)
-                fits.writeto(hot_filename, hot_pixel_map.astype(int), overwrite=True)
-
-            # Noisy pixels
-            noisy_filename = caldir + "noisy_pixel_map.fits"
-            if os.path.exists(noisy_filename):
-                print(f"Loading noisy pixel map from {noisy_filename}")
-                noisy_pixel_map = fits.getdata(noisy_filename).astype(bool)
-            else:
-                print(f"WARNING: Noisy pixel map not found at {noisy_filename}")
-                # Create empty map with appropriate shape
-                noisy_pixel_map = np.zeros_like(stuck_pixel_map, dtype=bool)
-
-            # After combining all maps
-            bad_pixel_map = stuck_pixel_map | saturated_pixel_map | flatbad_pixel_map | hot_pixel_map | noisy_pixel_map
+            # Combine all maps
+            bad_pixel_map = hot_pixel_map | cold_pixel_map | flatbad_pixel_map
 
             # Calculate total pixels
             total_pixels = bad_pixel_map.size
@@ -301,11 +169,9 @@ def bad_pixel_maps(inlist, caldir, outdir, darknames, flatnames, bpmname, biasna
             print("=" * 60)
 
             maps = {
-                'Stuck': stuck_pixel_map,
-                'Saturated': saturated_pixel_map,
-                'Flatbad': flatbad_pixel_map,
                 'Hot': hot_pixel_map,
-                'Noisy': noisy_pixel_map,
+                'Cold': cold_pixel_map,
+                'Flatbad': flatbad_pixel_map,
                 'Total': bad_pixel_map
             }
 
@@ -320,13 +186,9 @@ def bad_pixel_maps(inlist, caldir, outdir, darknames, flatnames, bpmname, biasna
 
             # Calculate unique pixels for each type (excluding Total)
             unique_maps = {
-                'Stuck': stuck_pixel_map & ~(saturated_pixel_map | flatbad_pixel_map | hot_pixel_map | noisy_pixel_map),
-                'Saturated': saturated_pixel_map & ~(
-                            stuck_pixel_map | flatbad_pixel_map | hot_pixel_map | noisy_pixel_map),
-                'Flatbad': flatbad_pixel_map & ~(
-                            stuck_pixel_map | saturated_pixel_map | hot_pixel_map | noisy_pixel_map),
-                'Hot': hot_pixel_map & ~(stuck_pixel_map | saturated_pixel_map | flatbad_pixel_map | noisy_pixel_map),
-                'Noisy': noisy_pixel_map & ~(stuck_pixel_map | saturated_pixel_map | flatbad_pixel_map | hot_pixel_map)
+                'Hot': hot_pixel_map & ~(cold_pixel_map | flatbad_pixel_map),
+                'Cold': cold_pixel_map & ~(hot_pixel_map | flatbad_pixel_map),
+                'Flatbad': flatbad_pixel_map & ~(hot_pixel_map | cold_pixel_map)
             }
 
             for name, unique_map in unique_maps.items():
@@ -366,12 +228,6 @@ def main():
     bpmname = args.bpmname
     biasname = args.biasname
 
-    # inlist = str(sys.argv[1])
-    # caldir = str(sys.argv[2]) + '/'
-    # outdir = str(sys.argv[3]) + '/'
-    # darknames = [caldir + d for d in str(sys.argv[4])]
-    # flatnames = [caldir + f for f in str(sys.argv[5])]
-    # bpmnames = str(sys.argv[6])
     bad_pixel_maps(inlist, caldir, outdir, darknames, flatnames, bpmname, biasname)
 
 if __name__ == '__main__':
