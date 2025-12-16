@@ -14,8 +14,8 @@ abspath() {
 T1="1" # create input lists, default: 1
 T2="1" # create masterbias, default: 1
 T3="1" # create masterdark, default: 1
-#T4="1" # copy temporary shutter map, default: 1
-T5="1" # create masterflat, default: 1
+T4="1" # create masterflat, default: 1
+T5="1" # create bad pixel map, default: 1
 T6="1" # reduce science images, default: 1
 T7="1" # check if each fits image has astrom in it's header, default:1
 T8="1" # create stack image, default: 1
@@ -28,12 +28,14 @@ T12="1" # sweep from v3 to v2
 # Parse and remove task control arguments, leaving positional args intact
 filtered_args=()
 only_task=""
+FORCE_PLATESOLVE="0"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --no_T1) T1="0"; shift ;;
         --no_T2) T2="0"; shift ;;
         --no_T3) T3="0"; shift ;;
+        --no_T4) T4="0"; shift ;;
         --no_T5) T5="0"; shift ;;
         --no_T6) T6="0"; shift ;;
         --no_T7) T7="0"; shift ;;
@@ -45,6 +47,7 @@ while [[ $# -gt 0 ]]; do
         --only_T1) only_task="1"; shift ;;
         --only_T2) only_task="2"; shift ;;
         --only_T3) only_task="3"; shift ;;
+        --only_T4) only_task="4"; shift ;;
         --only_T5) only_task="5"; shift ;;
         --only_T6) only_task="6"; shift ;;
         --only_T7) only_task="7"; shift ;;
@@ -53,17 +56,19 @@ while [[ $# -gt 0 ]]; do
         --only_T10) only_task="10"; shift ;;
         --only_T11) only_task="11"; shift ;;
         --only_T12) only_task="12"; shift ;;
+        --force-platesolve) FORCE_PLATESOLVE="1"; shift ;;
         *) filtered_args+=("$1"); shift ;; # Keep non-task arguments
     esac
 done
 
 # Handle --only_TX logic
 if [[ -n "$only_task" ]]; then
-    T1="0"; T2="0"; T3="0"; T5="0"; T6="0"; T7="0"; T8="0"; T9="0"; T10="0"; T11="0"; T12="0"
+    T1="0"; T2="0"; T3="0"; T4="0"; T5="0"; T6="0"; T7="0"; T8="0"; T9="0"; T10="0"; T11="0"; T12="0"
     case $only_task in
         1) T1="1" ;;
         2) T2="1" ;;
         3) T3="1" ;;
+        4) T4="1" ;;
         5) T5="1" ;;
         6) T6="1" ;;
         7) T7="1" ;;
@@ -79,7 +84,7 @@ fi
 set -- "${filtered_args[@]}"
 
 # Make variables readonly after parsing
-readonly T1 T2 T3 T5 T6 T7 T8 T9 T10 T11 T12
+readonly T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12 FORCE_PLATESOLVE
 
 #if [[ $# -ne 8 ]] && [[ $# -ne 8 ]]; then
 #    cat >&2 <<-EOF
@@ -156,12 +161,13 @@ readonly VERSION='v3'
 readonly TLIST=$(abspath ${2})/ml_40pc.txt
 #readonly EXT='fts'
 
-if [ "$TEL" = "ARTEMIS" ]; then
-  readonly GAIN=1.1
-elif [ "$TEL" = "SAINT-EX" ]; then
-  readonly GAIN=3.48
+# Add this with other readonly declarations
+if [ -n "${GAIADATABASEPATH:-}" ]; then
+    readonly DATABASEPATH=${GAIADATABASEPATH}
+    echo "Gaia database path: ${DATABASEPATH}"
 else
-  readonly GAIN=1.0029
+    readonly DATABASEPATH=/gaia_database/gaia_tmass_16_jm_cut.db
+    echo "Using default Gaia database path: ${DATABASEPATH}"
 fi
 
 echo "Using ${CORES} cores"
@@ -269,7 +275,7 @@ create_master_bias() {
     echo "START T2"
     # Create MasterBias
     echo "Create MasterBias"
-    CMD="python ${SCRIPTDIR}/calibration/pipebias.py $BIASLIST ${RUNNAME}_MasterBias.fits ${OUTPUTDIR}/${DATE}/reduction ${REPORTDIR} ${GAIN} ${RUNNAME} ${i}"
+    CMD="python ${SCRIPTDIR}/calibration/pipebias.py $BIASLIST ${RUNNAME}_MasterBias.fits ${OUTPUTDIR}/${DATE}/reduction ${REPORTDIR} ${RUNNAME} ${i}"
     echo ${CMD}
     ${CMD}
 
@@ -282,7 +288,7 @@ create_master_dark() {
     echo "START T3"
     #Create MasterDark
     echo "Create MasterDark"
-    CMD="python ${SCRIPTDIR}/calibration/pipedark.py $DARKLIST ${RUNNAME}_MasterBias.fits ${RUNNAME}_MasterDark.fits ${OUTPUTDIR}/${DATE}/reduction ${REPORTDIR} ${GAIN} ${RUNNAME} ${i}" #/Reduction/output/${RUNNAME}
+    CMD="python ${SCRIPTDIR}/calibration/pipedark.py $DARKLIST ${RUNNAME}_MasterBias.fits ${RUNNAME}_MasterDark.fits ${OUTPUTDIR}/${DATE}/reduction ${REPORTDIR} ${RUNNAME} ${i}" #/Reduction/output/${RUNNAME}
     echo ${CMD}
     ${CMD}
 
@@ -302,10 +308,56 @@ create_master_dark() {
 
 
 create_master_flat() {
-    echo "START T5"
+    echo "START T4"
     #Create MasterFlat
     echo "Create MasterFlat"
-    CMD="python ${SCRIPTDIR}/calibration/pipeflat.py $FLATLIST ${T2} ${T3} ${RUNNAME}_MasterBias.fits ${RUNNAME}_MasterDark.fits ${RUNNAME}_MasterFlat.fits ${OUTPUTDIR}/${DATE}/reduction ${REPORTDIR}"
+#    CMD="python ${SCRIPTDIR}/calibration/pipeflat.py $FLATLIST ${T2} ${T3} ${RUNNAME}_MasterBias.fits ${RUNNAME}_MasterDark.fits ${RUNNAME}_MasterFlat.fits ${OUTPUTDIR}/${DATE}/reduction ${REPORTDIR}"
+    #SET USEBIAS AND USEDARK TO 1, TO DECOUPLE FROM STAGES
+    CMD="python ${SCRIPTDIR}/calibration/pipeflat.py $FLATLIST 1 1 ${RUNNAME}_MasterBias.fits ${RUNNAME}_MasterDark.fits ${RUNNAME}_MasterFlat.fits ${OUTPUTDIR}/${DATE}/reduction ${REPORTDIR}"
+    echo ${CMD}
+    ${CMD}
+
+    CMD="python ${SCRIPTDIR}/reporting/report.py ${report} ${DATE} ${i} ${TEL} ${RUNNAME} 4"
+    ${CMD}
+    echo "END T4"
+}
+
+create_bad_pixel_map() {
+    echo "START T5"
+    #Create MasterFlat
+    echo "Create Bad Pixel Map"
+
+    MASTERFLATS=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_MasterFlat_*.fits
+    MASTERFLAT=""
+    for M in ${MASTERFLATS}
+    do
+        MFLAT=${M#${OUTPUTDIR}/${DATE}/reduction/}
+        echo ${MFLAT}
+        if [ -z "$MASTERFLAT" ]; then
+            MASTERFLAT="$MFLAT"
+        else
+            MASTERFLAT="$MASTERFLAT $MFLAT"
+        fi
+    done
+
+    # Handle master darks
+    MASTERDARKS=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_MasterDark*.fits
+    MASTERDARK=""
+    for D in ${MASTERDARKS}
+    do
+        MDARK=${D#${OUTPUTDIR}/${DATE}/reduction/}
+        echo ${MDARK}
+        if [ -z "$MASTERDARK" ]; then
+            MASTERDARK="$MDARK"
+        else
+            MASTERDARK="$MASTERDARK $MDARK"
+        fi
+    done
+
+    # Use target name directly since files are created with underscores
+    IMAGELIST=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_image_${i}.list
+
+    CMD="python ${SCRIPTDIR}/calibration/pipebadpixel.py ${IMAGELIST} --caldir ${OUTPUTDIR}/${DATE}/reduction --outdir ${OUTPUTDIR}/${DATE}/${i}/${RUNNAME} --darknames $MASTERDARK --flatnames $MASTERFLAT --bpmname ${RUNNAME}_BadPixelMap.fits --biasname ${RUNNAME}_MasterBias.fits"
     echo ${CMD}
     ${CMD}
 
@@ -339,12 +391,26 @@ reduce_images() {
         fi
     done
 
+    # Handle master darks
+    MASTERDARKS=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_MasterDark*.fits
+    MASTERDARK=""
+    for D in ${MASTERDARKS}
+    do
+        MDARK=${D#${OUTPUTDIR}/${DATE}/reduction/}
+        echo ${MDARK}
+        if [ -z "$MASTERDARK" ]; then
+            MASTERDARK="$MDARK"
+        else
+            MASTERDARK="$MASTERDARK $MDARK"
+        fi
+    done
+
     # Use target name directly since files are created with underscores
     IMAGELIST=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_image_${i}.list
 
     printf "For target = ${i}\n"
     ensure_directory "${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}" #${IMAGELIST%.*}
-    CMD="python ${SCRIPTDIR}/calibration/pipered.py ${IMAGELIST} --biasname ${RUNNAME}_MasterBias.fits --darkname ${RUNNAME}_MasterDark.fits --flatname $MASTERFLAT --caldir ${OUTPUTDIR}/${DATE}/reduction --outdir ${OUTPUTDIR}/${DATE}/${i}/${RUNNAME} --gain ${GAIN} --version ${VERSION} --usebias 1 --usedark 1"
+    CMD="python ${SCRIPTDIR}/calibration/pipered.py ${IMAGELIST} --biasname ${RUNNAME}_MasterBias.fits --darkname $MASTERDARK --flatnames $MASTERFLAT --bpmname ${RUNNAME}_BadPixelMap.fits --caldir ${OUTPUTDIR}/${DATE}/reduction --outdir ${OUTPUTDIR}/${DATE}/${i}/${RUNNAME} --version ${VERSION} --usebias 1 --usedark 1"
     echo ${CMD}
     ${CMD}
 }
@@ -383,8 +449,7 @@ reduce_science_images() {
 check_astrometry(){
     echo "START T7"
     printf "\n**Check if astrometry in header of images**\n"
-#    for i in ${TARGET[*]}
-#    do
+
     printf "For Target = ${i}\n"
     IMAGELISTS=${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}/*_processed.dat
 
@@ -396,7 +461,15 @@ check_astrometry(){
                 CMD="python ${SCRIPTDIR}/astrom/astrometry.py
                     $IMAGELIST
                     --nproc=${CORES}\
-                    --ext=${OUTEXT}"
+                    --ext=${OUTEXT}\
+                    --db_path=${DATABASEPATH}\
+                    --raw-list ${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_image_${i}.list"
+
+                if [ "${FORCE_PLATESOLVE:-}" = "1" ]; then
+                    CMD="${CMD} --force-platesolve"
+                    echo "Force plate solving enabled"
+                fi
+
                  echo ${CMD}
                 ${CMD}
             else
@@ -620,6 +693,9 @@ perform_differential_photometry(){
     local readonly output=${OUTPUTDIR}/${DATE}/${i}/*_${DATE}_output.${OUTEXT}
     ensure_directory "${OUTPUTDIR}/lightcurves"
 
+    # RAW IMAGE LIST ONLY FOR LOADING CONFIG IN SPLIGHTCURVE
+    IMAGELIST=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_image_${i}.list
+
     for out in ${output}
     do
       SUBLIST=${out#${OUTPUTDIR}/${DATE}/${i}/}
@@ -659,7 +735,8 @@ perform_differential_photometry(){
                 -d ${DATE} \
                 -a ${j} \
                 -v ${VERSION} \
-                -targ ${TLIST}"
+                -targ ${TLIST} \
+                --imagelist ${IMAGELIST}"
             echo ${CMD}
             ${CMD}
         done
@@ -1034,7 +1111,8 @@ main() {
             echo $TARGET
             [ "$T2" = "1" ] && create_master_bias
             [ "$T3" = "1" ] && create_master_dark
-            [ "$T5" = "1" ] && create_master_flat
+            [ "$T4" = "1" ] && create_master_flat
+            [ "$T5" = "1" ] && create_bad_pixel_map
             [ "$T12" = "1" ] && pdf_report
         else
             echo $TARGET
@@ -1049,7 +1127,8 @@ main() {
                 #cd ${WORKINGDIR}/Reduction
                 [ "$T2" = "1" ] && [ $count = 1 ] && create_master_bias
                 [ "$T3" = "1" ] && [ $count = 1 ] && create_master_dark
-                [ "$T5" = "1" ] && [ $count = 1 ] && create_master_flat
+                [ "$T4" = "1" ] && [ $count = 1 ] && create_master_flat
+                [ "$T5" = "1" ] && [ $count = 1 ] && create_bad_pixel_map
 #                if [[ ! -z "${MASTER_FLAT}" ]]; then
 #                    copy_custom_master_flat
 #                fi

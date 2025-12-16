@@ -34,7 +34,10 @@ import argparse
 from photometry.wcs_status import wcs_succeeded
 from astrom.proper_motion import generate_new_cat
 import timeit
-
+import warnings
+warnings.filterwarnings("ignore", message=".*the RADECSYS keyword is deprecated, use RADESYSa*",
+                        module="astropy.wcs.wcs")
+warnings.filterwarnings("ignore", message=".*invalid value encountered in log10*", category=RuntimeWarning)
 
 def main(argv):
     # if you don't provide an outlist name i'll assume you just want to add _phot to the end

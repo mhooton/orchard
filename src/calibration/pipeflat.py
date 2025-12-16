@@ -5,7 +5,7 @@ import glob
 import numpy as np
 from astropy.io import fits as pyfits
 from astropy.stats import sigma_clip
-from calibration.pipeutils import extract_overscan, image_trim, open_fits_file
+from calibration.pipeutils import apply_image_slice, open_fits_file, get_jd_header_name
 
 
 def render_total_file(data, fname, nfiles):
@@ -80,42 +80,21 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
         for line in open(i):  # open(inlist):
             stripped = line.strip()
             with open_fits_file(stripped) as hdulist:
-                header = hdulist[0].header
-                overscan = extract_overscan(hdulist)
-                overscan = sigma_clip(overscan)
-                medoverscan = np.ma.median(overscan)
-                data = image_trim(hdulist)
-
-                # if filt=="zYJ":
-                #     # INFRARED CAMERA - TO DO (does not have overscan, size of images are different)
-                #     data = hdulist[0].data
-                #     medoverscan = 0
-                # else:
-                #     if np.shape(hdulist[0].data)[0] > 2048:
-                #         overscan = extract_overscan(hdulist)
-                #         overscan = sigma_clip(overscan)
-                #         medoverscan = np.ma.median(overscan)
-                #         # remove the pre/overscans from the y axis (22 pixels top and bottom):
-                #         # also remove 2 bad columns from LHS
-                #         data = hdulist[0].data[22:2066,2:2048]
-                #     else:
-                #         # extract median value of the overscan
-                #         with open(outdir + "overscan.dat", "r") as f:
-                #             medoverscan = float(f.read())
-                #         # remove the pre/overscans from the y axis (22 pixels top and bottom):
-                #         # also remove 2 bad columns from LHS
-                #         data = hdulist[0].data[2:2046, 2:2048]
-
-                # exposure time:
-                exposure = header['exptime']
+                # obtain the overscan region
+                data = apply_image_slice(hdulist, 'trim', hdulist[0].data)
+                overscan_data = apply_image_slice(hdulist, 'overscan', 0.)
+                if isinstance(overscan_data, np.ndarray) and overscan_data.size > 1:
+                    overscan_data = sigma_clip(overscan_data, maxiters=None)
+                    overscan = np.ma.median(overscan_data)
+                else:
+                    overscan = overscan_data  # Will be 0. if no overscan configured
+                exposure = hdulist[0].header['exptime']
                 # SPECULOOS data doesn't have modified julian date, it uses UTC or julian date
-                if header['observer'] == "Astra" or "MOANA" in header['telescop']:
-                    jd = header['jd-obs']
-                else:  # ACP flats do not have JD-OBS, so revert to JD (rounded to 10 decimal places rather than 7 for JD-OBS)
-                    jd = header['jd']
+                jd_header = get_jd_header_name(hdulist)
+                jd = hdulist[0].header[jd_header.lower()]  # or however the header key formatting works
 
-            # why are we removing 40 more pixels? Just for robustness to remove the chance of bleeding?
-            median_data = np.median(data[20:-20, :])
+            # # why are we removing 40 more pixels? Just for robustness to remove the chance of bleeding?
+            # median_data = np.median(data[20:-20, :])
 
             # write exposure times to a file called expdata.dat
             f = open(expfile, 'a')
@@ -124,12 +103,12 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
 
             # ensure the size of images are consistent:
             if np.shape(bias) == np.shape(data):
-                corrected1 = data - np.ma.median(medoverscan) - bias
+                corrected1 = data - overscan - bias
             else:
                 print("WARNING: Bias and Flat dimensions do NOT match! Using UNCORRECTED Flat images!")
                 print("Master Bias dimensions: ", np.shape(bias))
                 print("Master Flat dimensions: ", np.shape(data))
-                corrected1 = data - np.ma.median(medoverscan)
+                corrected1 = data - overscan
 
             if np.shape(dark) == np.shape(data):
                 corrected1 = corrected1 - (dark * exposure)

@@ -32,7 +32,7 @@ def auto_detect_confmap(filelist_path):
 
         # Open the first file to detect instrument
         with open_fits_file(first_file) as hdul:
-            instrument = detect_instrument(hdul)
+            instrument = detect_instrument(hdul, trimmed=True)
 
         confmap_path = get_confmap_path(instrument)
 

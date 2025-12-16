@@ -1,0 +1,169 @@
+{
+  "telescopes": {
+    "SPECULOOS-IO": {
+      "andor": {
+        "gain": 1.0029,
+        "saturation_threshold": 62000,
+        "naxis2": 2088,
+        "dark_matching_exptime": false,
+        "overscan": {
+          "top_row": -15,
+          "bottom_row": null,
+          "left_col": 4,
+          "right_col": null
+        },
+        "trim": {
+          "top_row": 22,
+          "bottom_row": 2066,
+          "left_col": 2,
+          "right_col": 2048
+        }
+      }
+    },
+    "SPECULOOS-EUROPA": {
+      "andor": {
+        "gain": 1.0029,
+        "saturation_threshold": 62000,
+        "naxis2": 2088,
+        "dark_matching_exptime": false,
+        "overscan": {
+          "top_row": -15,
+          "bottom_row": null,
+          "left_col": 4,
+          "right_col": null
+        },
+        "trim": {
+          "top_row": 22,
+          "bottom_row": 2066,
+          "left_col": 2,
+          "right_col": 2048
+        }
+      }
+    },
+    "SPECULOOS-GANYMEDE": {
+      "andor": {
+        "gain": 1.0029,
+        "saturation_threshold": 62000,
+        "naxis2": 2088,
+        "dark_matching_exptime": false,
+        "overscan": {
+          "top_row": -15,
+          "bottom_row": null,
+          "left_col": 4,
+          "right_col": null
+        },
+        "trim": {
+          "top_row": 22,
+          "bottom_row": 2066,
+          "left_col": 2,
+          "right_col": 2048
+        }
+      }
+    },
+    "SPECULOOS-CALLISTO": {
+      "andor": {
+        "gain": 1.0029,
+        "saturation_threshold": 62000,
+        "naxis2": 2088,
+        "dark_matching_exptime": false,
+        "overscan": {
+          "top_row": -15,
+          "bottom_row": null,
+          "left_col": 4,
+          "right_col": null
+        },
+        "trim": {
+          "top_row": 22,
+          "bottom_row": 2066,
+          "left_col": 2,
+          "right_col": 2048
+        }
+      },
+      "spirit": {
+        "gain": 1.1,
+        "saturation_threshold": 11000,
+        "naxis2": 1280,
+        "dark_matching_exptime": true,
+        "bad_pixel_correction": {
+          "preferred_flat_filter": "zYJ",
+          "dark_threshold_sigma": 5,
+          "flat_low_value": 0.1,
+          "hot_sigma": 10,
+          "noisy_threshold_sigma": 10,
+          "noisy_min_frames": 5,
+          "stuck_threshold": -25,
+          "overwrite_existing": false
+        }
+      }
+    },
+    "Artemis": {
+      "andor": {
+        "gain": 1.1,
+        "saturation_threshold": 62000,
+        "naxis2": 2088,
+        "dark_matching_exptime": false,
+        "overscan": {
+          "top_row": -15,
+          "bottom_row": null,
+          "left_col": 4,
+          "right_col": null
+        },
+        "trim": {
+          "top_row": 22,
+          "bottom_row": 2066,
+          "left_col": 2,
+          "right_col": 2048
+        },
+        "ra_dec_header_units": {
+          "ra_unit": "hourangle",
+          "dec_unit": "deg"
+        }
+      }
+    },
+    "SAINT-EX": {
+      "andor": {
+        "gain": 3.48,
+        "saturation_threshold": 62000,
+        "naxis2": 2088,
+        "dark_matching_exptime": false,
+        "overscan": {
+          "top_row": -15,
+          "bottom_row": null,
+          "left_col": 4,
+          "right_col": null
+        },
+        "trim": {
+          "top_row": 22,
+          "bottom_row": 2066,
+          "left_col": 2,
+          "right_col": 2048
+        }
+      }
+    },
+    "MOANA-ES": {
+      "ikon": {
+        "gain": "FILL_ME_IN",
+        "saturation_threshold": 62000,
+        "naxis2": 2048,
+        "dark_matching_exptime": false,
+        "trim": {
+          "top_row": 1,
+          "bottom_row": -1,
+          "left_col": 1,
+          "right_col": -1
+        }
+      }
+    }
+  },
+  "acquisition": {
+    "acp": {
+      "jd_header_name": "JD"
+    },
+    "astra": {
+      "jd_header_name": "JD-OBS"
+    },
+    "moana": {
+      "jd_header_name": "JD-OBS"
+    }
+  }
+}

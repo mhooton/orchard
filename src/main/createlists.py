@@ -89,20 +89,11 @@ def classify_file(filename, logroot, runnumber):
             else:
                 out['science'].append(filename)
         elif 'DARK' in str.upper(imtype): #imtype == 'Dark Frame':
-            if int(naxis1) > 2000:
-                out['dark'].append(filename)
-            elif int(naxis1) > 1000:
-                out['dark'].append(filename)
+            out['dark'].append(filename)
         elif 'BIAS' in str.upper(imtype): #imtype == 'Bias Frame':
-            if int(naxis1)>2000:
-                out['bias'].append(filename)
-            elif int(naxis1) > 1000:
-                out['bias'].append(filename)
+            out['bias'].append(filename)
         elif 'FLAT' in str.upper(imtype): #imtype == 'FLAT':
-            if int(naxis1) > 2000:
-                out['flat'].append(filename)
-            elif 'ZYJ' in str.upper(filter):
-                out['flat'].append(filename)
+            out['flat'].append(filename)
     except:
         print("Unable to open corrupted FITS file: " + str(filename))
 

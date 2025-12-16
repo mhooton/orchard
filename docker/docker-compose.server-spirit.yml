@@ -1,12 +1,12 @@
 version: '2.2'
 
 services:
-  orchard-pipeline:
+  orchard-pipeline-spirit:
     image: orchard-pipeline:latest
-    container_name: orchard-server
+    container_name: orchard-server-spirit
     user: "886:20"
     volumes:
-      - /appct/data/speculoos/orchard/src:/opt/orchard/src
+      - /appct/data/speculoos/orchard-spirit/src:/opt/orchard/src
       - /export/data/SPECULOOSPipeline:/data/SPECULOOSPipeline
       - /appct/data/speculoos:/gaia_database
     working_dir: /opt/orchard/src

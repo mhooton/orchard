@@ -135,10 +135,9 @@ def main(filelist,outname,catname,outdir,backupcatdir,reportdir, filter, date,
                     # print 'TARGET:' + str(field)
 
                 status_check = ['ok', 'ok']
-                # REMOVE THIS BLOCK, IT BARELY MATTERS WHETHER OR NOT CASUTOOLS RUNS
-                # if wcs_succeeded(image) == False:
-                #     status_check.append('not_ok')
-                #     print image + ' could not be WCS fit and will not be included in stacked image'
+                if wcs_succeeded(image) == False:
+                    status_check.append('not_ok')
+                    print(image + ' could not be WCS fit and will not be included in stacked image')
 
                 if all([status == 'ok' for status in status_check]):
                     if count==1:
@@ -166,8 +165,9 @@ def main(filelist,outname,catname,outdir,backupcatdir,reportdir, filter, date,
     #TEST
     # median_filter_stack(outstack_name)
 
-    trim_stack(outstack_name)
-    trim_stack(outstackconf_name)
+    # REMOVE TRIMMING OF STACKS -- I DON'T KNOW WHAT BENEFIT THIS CONVEYS
+    # trim_stack(outstack_name)
+    # trim_stack(outstackconf_name)
     casutools.imcore(outstack_name, outcatname, #argv['--outname'],
                      threshold= c_thresh, #argv['--c_thresh'],
                      confidence_map=outstackconf_name,

@@ -4,7 +4,8 @@ import argparse
 import os
 import numpy as np
 from astropy.io import fits as pyfits
-from calibration.pipeutils import extract_overscan, image_trim, open_fits_file
+from calibration.pipeutils import (get_instrument_parameters, apply_image_slice, clean_bad_pixels, open_fits_file,
+                                   create_dark_dict, create_flat_dict)
 from functools import partial
 from multiprocessing.dummy import Pool as ThreadPool
 import timeit
@@ -13,103 +14,148 @@ import pandas as pd
 from itertools import compress
 import warnings
 from astropy.io.fits.verify import VerifyWarning
+
+from calibration.pipeutils import create_dark_dict
+
 warnings.filterwarnings('ignore', category=VerifyWarning, message=".*Invalid 'BLANK' keyword.*")
 
-def reduce_file(filename, outdir,biasname,darkname, bias, dark, flat, gain, ron, overscan, version):
+def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, bpm, ron, version):
+
     path, fname = os.path.split(filename)
-    outname = outdir + 'proc' + fname.replace("'", "").replace(" ", "--").replace(".fts",".fits")
+    outname = outdir + 'proc' + fname.replace("'", "").replace(" ", "--").replace(".fts", ".fits")
 
-    try:
-        with open_fits_file(filename) as hdulist:
-            exposure = hdulist[0].header['exptime']
-            filter = hdulist[0].header['filter']
-            filter = filter.replace("'", "")
+    # try:
+    with open_fits_file(filename) as hdulist:
+        exposure = hdulist[0].header['exptime']
+        filter = hdulist[0].header['filter']
+        filter = filter.replace("'", "")
 
-            # print(np.shape(hdulist[0].data))
-            # print(filter)
-            #open science image
+        # Extract overscan and trim data using apply_image_slice
+        overscan_data = apply_image_slice(hdulist, 'overscan', 0.)
+        if isinstance(overscan_data, np.ndarray) and overscan_data.size > 1:
+            overscan_data = sigma_clip(overscan_data, maxiters=None)
+            overscan = np.ma.median(overscan_data)
+        else:
+            overscan = overscan_data  # Will be 0. if no overscan configured
 
-            overscan = extract_overscan(hdulist)
-            overscan = sigma_clip(overscan, maxiters=None)
-            overscan = np.ma.median(overscan)
-            data = image_trim(hdulist)
+        data = apply_image_slice(hdulist, 'trim', hdulist[0].data)
 
-            # if "zYJ" in filter:
-            #     data = hdulist[0].data
-            #     overscan = 0
-            # else:
-            #     if np.shape(hdulist[0].data)[0] > 2048:
-            #         overscan = extract_overscan(hdulist)
-            #         # sigma clip the overscan
-            #         overscan = sigma_clip(overscan, iters=None)
-            #         overscan = np.ma.median(overscan)
-            #         data = hdulist[0].data[22:2066, 2:2048]
-            #     else:
-            #         data = hdulist[0].data[2:2046, 2:2048]
+        # Get gain from params instead of parameter
+        gain = params['gain']
 
-            #apply corrections to this science image (if there's a masterflat for this filter)
-            if filter not in flat.keys():
-                print("No flat found for filter: " + filter)
-
+        # Apply corrections to this science image (if there's a masterflat for this filter)
+        if filter not in flat_dict.keys():
+            print("No flat found for filter: " + filter)
+        else:
+            # Select appropriate dark based on exposure time
+            rounded_exposure = int(round(exposure))
+            if rounded_exposure in dark_dict:
+                dark = dark_dict[rounded_exposure]
+                used_darkname = f"MasterDark_{rounded_exposure}s.fits"
+            elif 'combined' in dark_dict:
+                dark = dark_dict['combined']
+                used_darkname = "MasterDark.fits"
             else:
-                if len(dark)==0 or np.shape(dark)!=np.shape(data):
-                    dark = 0
-                    print("WARNING: Flat not corrected for dark!")
-                    darkname = "N/A"
-                if len(bias)==0 or np.shape(bias)!=np.shape(data):
-                    bias = 0
-                    print("WARNING: Flat not corrected for bias!")
-                    biasname = "N/A"
+                dark = 0
+                used_darkname = "N/A"
+                print("WARNING: No dark correction applied!")
 
-                corrected = (data-overscan-bias-(dark*exposure))/flat[filter]
+            if len(dark) == 0 or (hasattr(dark, 'shape') and np.shape(dark) != np.shape(data)):
+                dark = 0
+                print("WARNING: Dark dimensions don't match data!")
+                used_darkname = "N/A"
 
-                corrected = np.float32(corrected)
+            if len(bias) == 0 or np.shape(bias) != np.shape(data):
+                bias = 0
+                print("WARNING: Bias dimensions don't match data!")
+                biasname = "N/A"
 
-                hdulist[0].data = corrected
-                hdulist[0].header.set('OVERSCAN',overscan)
-                hdulist[0].header.add_history('Overscan of '+str(overscan)+' subtracted')
-                if np.median(bias)!=0 or np.ptp(bias)!=0:
-                    hdulist[0].header.add_history('Bias subtracted using '+str(biasname))
-                    hdulist[0].header['RON'] = (float(ron), 'Read out noise (e-s)')
-                if np.median(dark)!=0 or np.ptp(dark)!=0:
-                    hdulist[0].header.add_history('Dark subtracted using '+str(darkname))
-                    hdulist[0].header['DARKCUR'] = (float(gain) * np.median(dark), 'Dark current (e-s per second)')
-                # hdulist[0].header.add_history('Flat corrected using '+str(flatname))
+            # Apply corrections
+            if hasattr(dark, 'shape') and dark.shape == data.shape:
+                corrected = (data - overscan - bias - (dark * exposure)) / flat_dict[filter]
+            else:
+                corrected = (data - overscan - bias) / flat_dict[filter]
 
-                hdulist[0].header['GAIN'] = (float(gain), 'Gain used to calculate RON/Dark Cur')
-                hdulist[0].header['PV'] = (version, 'Pipeline Version')
+            # print("BPM type:", type(bpm))
+            # print("BPM dtype:", bpm.dtype)
+            # print("BPM unique values:", np.unique(bpm))
+            # print("BPM shape:", bpm.shape)
+            # print("Image shape:", corrected.shape)
+            if bpm is not None:
+                # print("Corrected type:", type(corrected))
+                # print("Corrected dtype:", corrected.dtype)
+                # if isinstance(corrected, np.ma.MaskedArray):
+                #     print("Corrected is a masked array")
+                #     print("Number of masked elements:", np.ma.count_masked(corrected))
+                # else:
+                #     print("Corrected is NOT a masked array")
+                corrected = clean_bad_pixels(corrected, bpm)
 
-                if hdulist[0].header.get('CRPIX1') != None:
-                    hdulist[0].header['CRPIX1'] = hdulist[0].header['CRPIX1'] - 2
-                    hdulist[0].header['CRPIX2'] = hdulist[0].header['CRPIX2'] - 22
-                    hdulist[0].header.add_history('Subtracted 2 pixels from CRPIX1 and 22 from CRPIX2 to account for trimming of images')
-                #command = 'rm -f '+outname
-                #os.system(command)
-                if os.path.exists(outname):
-                    os.remove(outname)
-                #write new fits file to new folder
-                hdulist.writeto(outname)
+            corrected = np.float32(corrected)
 
-    except Exception as e:
-        print("*** ERROR with file " + filename + ". Removing this file from analysis.***")
-        print(e)
-        return np.nan
+            hdulist[0].data = corrected
+            hdulist[0].header.set('OVERSCAN', overscan)
+            hdulist[0].header.add_history('Overscan of ' + str(overscan) + ' subtracted')
 
-    return filter #outname
+            if np.median(bias) != 0 or np.ptp(bias) != 0:
+                hdulist[0].header.add_history('Bias subtracted using ' + str(biasname))
+                hdulist[0].header['RON'] = (float(ron), 'Read out noise (e-s)')
 
-def reducer(inlist,outdir, biasname, darkname, flatname, gain, reddir, version, usebias,usedark):
-    flat_dict = {}
-    #import master bias
-    if usebias=="1":
+            if (hasattr(dark, 'shape') and (np.median(dark) != 0 or np.ptp(dark) != 0)) or np.isscalar(
+                    dark) and dark != 0:
+                hdulist[0].header.add_history('Dark subtracted using ' + str(used_darkname))
+                if hasattr(dark, 'shape'):
+                    if params.get('bad_pixel_correction', False):
+                        dark_for_err = clean_bad_pixels(dark, bpm)
+                        hdulist[0].header['DARKCUR'] = (float(gain) * np.nanmedian(dark_for_err),
+                                                        'Dark current (e-s per second)')
+                    else:
+                        hdulist[0].header['DARKCUR'] = (float(gain) * np.median(dark),
+                                                        'Dark current (e-s per second)')
+                else:
+                    hdulist[0].header['DARKCUR'] = (0, 'Dark current (e-s per second)')
+
+            hdulist[0].header['GAIN'] = (float(gain), 'Gain used to calculate RON/Dark Cur')
+            hdulist[0].header['PV'] = (version, 'Pipeline Version')
+
+            if 'trim' in params and hdulist[0].header.get('CRPIX1') is not None:
+                trim_config = params['trim']
+                left_col = trim_config.get('left_col', 0)
+                top_row = trim_config.get('top_row', 0)
+
+                hdulist[0].header['CRPIX1'] = hdulist[0].header['CRPIX1'] - left_col
+                hdulist[0].header['CRPIX2'] = hdulist[0].header['CRPIX2'] - top_row
+                hdulist[0].header.add_history(
+                    f'Subtracted {left_col} pixels from CRPIX1 and {top_row} from CRPIX2 to account for image trimming')
+
+            if os.path.exists(outname):
+                os.remove(outname)
+            hdulist.writeto(outname)
+
+    # except Exception as e:
+    #     print("*** ERROR with file " + filename + ". Removing this file from analysis.***")
+    #     print(e)
+    #     return np.nan
+
+    return filter
+
+
+def reducer(inlist, outdir, biasname, darknames, flatnames, bpmname, reddir, version, usebias, usedark):
+    # Get parameters once from the first file
+    with open(inlist) as infile:
+        first_filename = infile.readline().strip()
+
+    with open_fits_file(first_filename) as hdul:
+        params = get_instrument_parameters(hdul)
+
+    # Import master bias
+    if usebias == "1":
         if os.path.exists(biasname):
             with open_fits_file(biasname) as hdulist:
                 bias = hdulist[0].data
             with open(reddir + "readoutnoise.dat", "r") as f:
                 ron = f.read()
-                print('Readout noise is '+str(ron)+' ADU')
-            with open(reddir + "overscan.dat", "r") as f:
-                overscan = float(f.read())
-                print('Overscan is ' + str(overscan) + ' ADU')
+                print('Readout noise is ' + str(ron) + ' ADU')
         else:
             print("No Bias Used")
             bias = []
@@ -117,42 +163,58 @@ def reducer(inlist,outdir, biasname, darkname, flatname, gain, reddir, version, 
             overscan = 0
     else:
         print("No Bias Used")
-        bias=[]
+        bias = []
         ron = 0
         overscan = 0
 
-    #import master dark
-    if usedark=="1":
-        if os.path.exists(darkname):
-            with open_fits_file(darkname) as hdulist:
-                dark = hdulist[0].data
-        else:
-            print("No Dark Used")
-            dark = []
+    # Import master darks
+    if usedark == "1":
+        dark_dict = create_dark_dict(darknames)
     else:
         print("No Dark Used")
-        dark=[]
-    #import master flat
-    for f in flatname:
-        filt = f.split('.fits')[0].split('_')[-1]
-        with open_fits_file(f) as hdulist:
-            flat_dict[filt] = hdulist[0].data
-    print(list(flat_dict.keys()))
-    # print(np.shape(flat_dict['zYJ']))
+        dark_dict = {}
+
+    print(f"Available dark exposures: {list(dark_dict.keys())}")
+
+    # Import master flats
+    flat_dict = create_flat_dict(flatnames)
+
+    if 'bad_pixel_correction' in params:
+        if os.path.exists(bpmname):
+            with open_fits_file(bpmname) as hdulist:
+                bpm = hdulist[0].data
+                bpm = bpm.astype(bool)
+            print("Bad pixel map found. Applying bad pixel correction.")
+        else:
+            print("Bad pixel map not found. Continuing without bad pixel correction.")
+            bpm = None
+    else:
+        print("No Bad Pixel Correction applied")
+        bpm = None
 
     procfarr = {}
 
     start_time = timeit.default_timer()
     pool = ThreadPool()
-    fn = partial(reduce_file, outdir=outdir, biasname=biasname, darkname=darkname, bias=bias, dark=dark, flat=flat_dict, gain=gain, ron=ron, overscan=overscan,version=version)
+    fn = partial(reduce_file, outdir=outdir, params=params, biasname=biasname, bias=bias,
+                 dark_dict=dark_dict, flat_dict=flat_dict, bpm=bpm, ron=ron, version=version)
+
     with open(inlist) as infile:
-        #loop through all science fits filenames
         filenames = [line.strip() for line in infile]
 
-    #apply reduce_file to each filename
+    # Apply reduce_file to each filename
     filters = pool.map(fn, filenames)
-    # print len(filters)
-    # print len(filenames)
+
+    # with open(inlist) as infile:
+    #     filenames = [line.strip() for line in infile]
+    #
+    # filters = []
+    # for filename in filenames:
+    #     result = reduce_file(filename, outdir=outdir, params=params, biasname=biasname,
+    #                          bias=bias, dark_dict=dark_dict, flat_dict=flat_dict,
+    #                          bpm=bpm, ron=ron, version=version)
+    #     filters.append(result)
+
     idx = pd.isnull(filters)
     idx2 = [not i for i in idx]
     filters = list(compress(filters, idx2))
@@ -160,7 +222,6 @@ def reducer(inlist,outdir, biasname, darkname, flatname, gain, reddir, version, 
 
     after_pool = timeit.default_timer()
 
-    # for k in flat_dict.keys():
     for f in range(len(filenames)):
         # if we have a flat for this filter
         if filters[f] in flat_dict.keys():
@@ -170,12 +231,10 @@ def reducer(inlist,outdir, biasname, darkname, flatname, gain, reddir, version, 
             else:
                 procfarr[filters[f]] = [outdir + 'proc' + os.path.basename(
                     filenames[f].replace("'", "").replace(" ", "--").replace(".fts", ".fits"))]
-        # procfarr[k] = [outdir+'proc'+os.path.basename(f).replace("'","") for f in filenames if "-"+k+'.fts' in os.path.basename(f).replace("'","")]
-        # if ('-'+k in f)]
-        # procfarr[k] = [outdir + 'proc' + os.path.basename(f) for f in filenames]
+
     procfarr = dict((k, v) for k, v in procfarr.items() if v)
 
-    for k,v in procfarr.items():
+    for k, v in procfarr.items():
         if v != []:
             dfile = outdir + k + '_processed.dat'
             f = open(dfile, 'w')
@@ -183,38 +242,34 @@ def reducer(inlist,outdir, biasname, darkname, flatname, gain, reddir, version, 
             f.write("\n".join(v[1:]))
             f.close()
 
-    total_time = timeit.default_timer()-start_time
-    pool_time = after_pool-start_time
-    file_time = timeit.default_timer()-after_pool
-    print("total time for reduction = " + str(total_time/60.) + " minutes")
-    print("time for pooling = " + str(pool_time/60.) + " minutes")
+    total_time = timeit.default_timer() - start_time
+    pool_time = after_pool - start_time
+    file_time = timeit.default_timer() - after_pool
+    print("total time for reduction = " + str(total_time / 60.) + " minutes")
+    print("time for pooling = " + str(pool_time / 60.) + " minutes")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('inlist')
-    parser.add_argument('-b','--biasname')
-    parser.add_argument('-d','--darkname')
-    parser.add_argument('-f','--flatname', nargs='+')
-    parser.add_argument('-c','--caldir')
-    parser.add_argument('-o','--outdir')
-    parser.add_argument('-g','--gain')
+    parser.add_argument('-b', '--biasname')
+    parser.add_argument('-d', '--darknames', nargs='+')
+    parser.add_argument('-f', '--flatnames', nargs='+')
+    parser.add_argument('-bpm', '--bpmname')
+    parser.add_argument('-c', '--caldir')
+    parser.add_argument('-o', '--outdir')
     parser.add_argument('-v', '--version')
     parser.add_argument('-ub', '--usebias')
     parser.add_argument('-ud', '--usedark')
     args = parser.parse_args()
 
     inlist = args.inlist
-    # caldir is the location of thed master bias/dark/flat fits files
     caldir = args.caldir + '/'
-    # outdir is the output location for the reduced images
     outdir = args.outdir + '/'
     biasname = caldir + args.biasname
-    darkname = caldir + args.darkname
-    # flatname = caldir+flatname
-    # print args.flatname
-    flatname = [caldir + f for f in args.flatname]
-    gain = args.gain
+    darknames = [caldir + d for d in args.darknames]
+    flatnames = [caldir + f for f in args.flatnames]
+    bpmname = caldir + args.bpmname
     version = args.version
     usebias = args.usebias
     usedark = args.usedark
@@ -222,8 +277,7 @@ def main():
     if os.path.exists(outdir + 'processed.dat'):
         os.remove(outdir + 'processed.dat')
 
-    reducer(inlist, outdir, biasname, darkname, flatname,gain,caldir, version, usebias, usedark)
-
+    reducer(inlist, outdir, biasname, darknames, flatnames, bpmname, caldir, version, usebias, usedark)
 
 if __name__ == '__main__':
     main()
