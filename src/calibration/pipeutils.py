@@ -26,7 +26,7 @@ def detect_instrument(hdul, trimmed=False):
     """
     try:
         hdr = hdul[0].header
-        telescop = hdr.get('TELESCOP', '')
+        telescop = hdr.get('TELESCOP', '').strip()
         naxis2 = hdr.get('NAXIS2', 0)
 
         # Load configuration
