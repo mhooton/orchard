@@ -171,8 +171,13 @@ def plot_readoutnoise_linear(telescope, dates, values, monitoring_dir, instrumen
     # Plot scatter points
     ax.scatter(dates, values, alpha=0.6, s=20)
 
-    # Set y limits
-    ax.set_ylim(0, 20)
+    # Set y limits based on instrument
+    if instrument_suffix == '_SPIRIT':
+        ax.set_ylim(0, 100)
+        ylim_text = '0-100'
+    else:
+        ax.set_ylim(0, 20)
+        ylim_text = '0-20'
 
     # Format x-axis
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
@@ -182,9 +187,9 @@ def plot_readoutnoise_linear(telescope, dates, values, monitoring_dir, instrumen
     # Labels and title
     ax.set_xlabel('Date')
     ax.set_ylabel('Readout Noise (electrons)')
-    title = f'{telescope} - Readout Noise Evolution (Linear Scale, 0-20 electrons)'
+    title = f'{telescope} - Readout Noise Evolution (Linear Scale, {ylim_text} electrons)'
     if instrument_suffix:
-        title = f'{telescope} ({instrument_suffix}) - Readout Noise Evolution (Linear Scale, 0-20 electrons)'
+        title = f'{telescope} ({instrument_suffix}) - Readout Noise Evolution (Linear Scale, {ylim_text} electrons)'
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
 
@@ -275,8 +280,8 @@ def plot_darkcurrent_linear(telescope, dates, values, monitoring_dir, instrument
 
     # Set y limits based on instrument
     if instrument_suffix == '_SPIRIT':
-        ax.set_ylim(0, 100)
-        ylim_text = '0-100'
+        ax.set_ylim(0, 500)
+        ylim_text = '0-500'
     else:
         # ANDOR (default for all telescopes except Callisto SPIRIT)
         ax.set_ylim(0, 1)
