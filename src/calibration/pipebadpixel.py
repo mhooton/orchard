@@ -76,12 +76,24 @@ def bad_pixel_maps(inlist, caldir, outdir, darknames, flatnames, bpmname, biasna
 
     with open_fits_file(first_filename) as hdul:
         params = get_instrument_parameters(hdul)
+        gain = params['gain']
         # exposure = hdul[0].header['exptime']
         # filter = hdul[0].header['filter']
         # filter = filter.replace("'", "")
 
+    # Load master darks (needed for both BPM creation and dark current calculation)
+    dark_dict = create_dark_dict(darknames)
 
-
+    # Select appropriate dark for detection/calculation (shortest exposure or combined)
+    numeric_keys = [exp for exp in dark_dict.keys() if isinstance(exp, (int, float))]
+    if len(numeric_keys) > 0:
+        min_exposure = min(numeric_keys)
+        dark_for_detection = dark_dict[min_exposure]
+    elif 'combined' in dark_dict:
+        dark_for_detection = dark_dict['combined']
+    else:
+        print("ERROR: No suitable dark found")
+        return
 
     if 'bad_pixel_correction' in params:
         if params['bad_pixel_correction']:
@@ -98,7 +110,6 @@ def bad_pixel_maps(inlist, caldir, outdir, darknames, flatnames, bpmname, biasna
                 print(f"Error finding or reading readout noise: {e}. Setting to 0.")
                 ron = 0.
 
-            dark_dict = create_dark_dict(darknames)
             flat_dict = create_flat_dict(flatnames)
 
             if bpm_config['preferred_flat_filter'] in flat_dict:
@@ -119,17 +130,6 @@ def bad_pixel_maps(inlist, caldir, outdir, darknames, flatnames, bpmname, biasna
             with open_fits_file(caldir + biasname) as hdul:
                 master_bias = hdul[0].data
             effective_saturation_map = params['saturation_threshold'] - master_bias
-
-            # Select appropriate dark (shortest exposure or combined)
-            numeric_keys = [exp for exp in dark_dict.keys() if isinstance(exp, (int, float))]
-            if len(numeric_keys) > 0:
-                min_exposure = min(numeric_keys)
-                dark_for_detection = dark_dict[min_exposure]
-            elif 'combined' in dark_dict:
-                dark_for_detection = dark_dict['combined']
-            else:
-                print("ERROR: No suitable dark found for bad pixel detection")
-                return
 
             # Hot and cold pixels
             hot_filename = caldir + "hot_pixel_map.fits"
@@ -204,10 +204,27 @@ def bad_pixel_maps(inlist, caldir, outdir, darknames, flatnames, bpmname, biasna
             # Save final bad pixel map
             fits.writeto(caldir + bpmname, bad_pixel_map.astype(int), overwrite=True)
 
+            # Calculate dark current with bad pixel correction
+            from calibration.pipeutils import clean_bad_pixels
+            cleaned_dark = clean_bad_pixels(dark_for_detection, bad_pixel_map)
+            darkc = float(gain) * np.nanmedian(cleaned_dark)
+            print(f"Dark current (cleaned): {darkc:.4f} e-/s")
+
         else:
             print("No bad pixel correction requested. Skipping bad pixel correction.")
+            # Calculate dark current without bad pixel correction
+            darkc = float(gain) * np.median(dark_for_detection)
+            print(f"Dark current (uncleaned): {darkc:.4f} e-/s")
     else:
         print("No bad pixel correction requested. Skipping bad pixel correction.")
+        # Calculate dark current without bad pixel correction
+        darkc = float(gain) * np.median(dark_for_detection)
+        print(f"Dark current (uncleaned): {darkc:.4f} e-/s")
+
+        # Write dark current to file
+    with open(caldir + "darkcurrent.dat", "w") as f:
+        f.write('%s' % darkc)
+    print(f"Wrote dark current to {caldir}darkcurrent.dat")
 
 def main():
     parser = argparse.ArgumentParser()

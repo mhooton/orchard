@@ -247,7 +247,6 @@ def interpolate_pixels(frame):
 
     return result_frame
 
-
 def clean_bad_pixels(image, bad_pixel_map):
     """
     Clean bad pixels in image data

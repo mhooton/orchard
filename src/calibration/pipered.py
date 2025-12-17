@@ -19,7 +19,7 @@ from calibration.pipeutils import create_dark_dict
 
 warnings.filterwarnings('ignore', category=VerifyWarning, message=".*Invalid 'BLANK' keyword.*")
 
-def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, bpm, ron, version):
+def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, bpm, ron, darkcur, version):
 
     path, fname = os.path.split(filename)
     outname = outdir + 'proc' + fname.replace("'", "").replace(" ", "--").replace(".fts", ".fits")
@@ -104,16 +104,7 @@ def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, 
             if (hasattr(dark, 'shape') and (np.median(dark) != 0 or np.ptp(dark) != 0)) or np.isscalar(
                     dark) and dark != 0:
                 hdulist[0].header.add_history('Dark subtracted using ' + str(used_darkname))
-                if hasattr(dark, 'shape'):
-                    if params.get('bad_pixel_correction', False):
-                        dark_for_err = clean_bad_pixels(dark, bpm)
-                        hdulist[0].header['DARKCUR'] = (float(gain) * np.nanmedian(dark_for_err),
-                                                        'Dark current (e-s per second)')
-                    else:
-                        hdulist[0].header['DARKCUR'] = (float(gain) * np.median(dark),
-                                                        'Dark current (e-s per second)')
-                else:
-                    hdulist[0].header['DARKCUR'] = (0, 'Dark current (e-s per second)')
+                hdulist[0].header['DARKCUR'] = (darkcur, 'Dark current (e-s per second)')
 
             hdulist[0].header['GAIN'] = (float(gain), 'Gain used to calculate RON/Dark Cur')
             hdulist[0].header['PV'] = (version, 'Pipeline Version')
@@ -170,9 +161,18 @@ def reducer(inlist, outdir, biasname, darknames, flatnames, bpmname, reddir, ver
     # Import master darks
     if usedark == "1":
         dark_dict = create_dark_dict(darknames)
+        # Read dark current value
+        if os.path.exists(reddir + "darkcurrent.dat"):
+            with open(reddir + "darkcurrent.dat", "r") as f:
+                darkcur = float(f.read())
+                print(f'Dark current is {darkcur:.4f} e-/s')
+        else:
+            print("Dark current file not found")
+            darkcur = 0
     else:
         print("No Dark Used")
         dark_dict = {}
+        darkcur = 0
 
     print(f"Available dark exposures: {list(dark_dict.keys())}")
 
@@ -196,8 +196,10 @@ def reducer(inlist, outdir, biasname, darknames, flatnames, bpmname, reddir, ver
 
     start_time = timeit.default_timer()
     pool = ThreadPool()
+    start_time = timeit.default_timer()
+    pool = ThreadPool()
     fn = partial(reduce_file, outdir=outdir, params=params, biasname=biasname, bias=bias,
-                 dark_dict=dark_dict, flat_dict=flat_dict, bpm=bpm, ron=ron, version=version)
+                 dark_dict=dark_dict, flat_dict=flat_dict, bpm=bpm, ron=ron, darkcur=darkcur, version=version)
 
     with open(inlist) as infile:
         filenames = [line.strip() for line in infile]
