@@ -80,7 +80,7 @@
         }
       },
       "spirit": {
-        "gain": 1.1,
+        "gain": 5.09,
         "saturation_threshold": 11000,
         "naxis2": 1280,
         "dark_matching_exptime": true,
