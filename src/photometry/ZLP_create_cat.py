@@ -55,6 +55,9 @@ def main(filelist,outname,catname,outdir,backupcatdir,reportdir, filter, date,
          ncores=1,
          ext='fits'):
 
+    # Convert string arguments to appropriate types
+    ncores = int(ncores)
+
     # CHANGE TO DATDIR SO CATCACHE IS WRITTEN IN CORRECT PLACE
     os.chdir(filelist.split("output")[0])
 
@@ -109,18 +112,18 @@ def main(filelist,outname,catname,outdir,backupcatdir,reportdir, filter, date,
         #Sets the r/w pointer to start of file
         tmp.seek(0)
 
-        if no_wcs=='False':#argv['--no-wcs']:
-            #call a function to wcs solve the images in order to stack
+        if no_wcs == 'False':  # argv['--no-wcs']:
+            # call a function to wcs solve the images in order to stack
             print('\n**wcs solving images**\n')
             m_solve_images(
                 name, name,
-                thresh= s_thresh,#argv['--s_thresh']
-                nproc= None, #int(argv['--nproc']) if argv['--nproc'] else None,
-                verbose= verbose,
+                thresh=s_thresh,  # argv['--s_thresh']
+                nproc=ncores,
+                verbose=verbose,
                 rcore=rcore,
                 catsrc=catsrc,
                 ipix=ipix,
-                ext=ext) #argv['--verbose'])
+                ext=ext)  # argv['--verbose'])
         else:
             print('no wcs solving')
 

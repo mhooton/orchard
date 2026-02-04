@@ -40,7 +40,6 @@ def initialise_wcs_cache(fname, outdir, catsrc, thresh, verbose, force=False):
     print(("verbose = "+str(verbose)))
     casutools.wcsfit(fname, catalogue_name, catsrc=catsrc, verbose=verbose)
 
-
 def m_solve_images(filelist, outfile,
                    nproc=None,
                    thresh=20.0,
@@ -84,10 +83,20 @@ def m_solve_images(filelist, outfile,
                  ipix=ipix,
                  ext=ext)
 
-    pool = Pool(nproc)
-
-    return pool.map(fn, infiles)
-
+    # Handle nproc=1 as serial processing for clearer output and debugging
+    if nproc == 1:
+        print("Running in serial mode (nproc=1)")
+        results = []
+        for infile in infiles:
+            result = fn(infile)
+            results.append(result)
+        return results
+    else:
+        # Use multiprocessing pool
+        if nproc is None or nproc > 1:
+            print(f"Running in parallel mode (nproc={nproc})")
+        pool = Pool(nproc)
+        return pool.map(fn, infiles)
 
 def handle_errors_in_casu_solve(casuin, *args, **kwargs):
     '''
@@ -102,8 +111,6 @@ def handle_errors_in_casu_solve(casuin, *args, **kwargs):
     else:
         set_wcs_status(casuin, succeeded=True)
         return return_value
-
-
 
 def casu_solve_old(casuin,
                    thresh=20,

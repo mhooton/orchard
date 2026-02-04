@@ -29,6 +29,7 @@ T12="1" # sweep from v3 to v2
 filtered_args=()
 only_task=""
 FORCE_PLATESOLVE="0"
+CORES_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -57,6 +58,7 @@ while [[ $# -gt 0 ]]; do
         --only_T11) only_task="11"; shift ;;
         --only_T12) only_task="12"; shift ;;
         --force-platesolve) FORCE_PLATESOLVE="1"; shift ;;
+        --cores) CORES_OVERRIDE="$2"; shift 2 ;;
         *) filtered_args+=("$1"); shift ;; # Keep non-task arguments
     esac
 done
@@ -84,7 +86,7 @@ fi
 set -- "${filtered_args[@]}"
 
 # Make variables readonly after parsing
-readonly T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12 FORCE_PLATESOLVE
+readonly T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12 FORCE_PLATESOLVE CORES_OVERRIDE
 
 #if [[ $# -ne 8 ]] && [[ $# -ne 8 ]]; then
 #    cat >&2 <<-EOF
@@ -143,13 +145,16 @@ readonly WCSFIT_REFERENCE_FRAME=''
 
 # there are ** cores on the server
 echo "$(python -c "import multiprocessing; print(multiprocessing.cpu_count())")"
-# Use N_CORES environment variable if set, otherwise use half of available cores
-if [ -n "${N_CORES:-}" ]; then
+# Hierarchy: command-line > environment > default
+if [ -n "$CORES_OVERRIDE" ]; then
+    readonly CORES=$CORES_OVERRIDE
+    echo "Using command-line override: ${CORES} cores"
+elif [ -n "${N_CORES:-}" ]; then
     readonly CORES=${N_CORES}
     echo "Using N_CORES environment variable: ${CORES} cores"
 else
     readonly CORES=1
-    echo "Using default of 1 core"
+    echo "Using default of 1 core (serial processing)"
 fi
 readonly APSIZE=4
 readonly NUMSTACK=50

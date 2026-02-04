@@ -43,16 +43,22 @@ def m_wcs_photom(filelist, outlist, appsize, cat_file,
     #     for f in infiles:
     #         outfile.write(f + ".phot")
 
-
-    pool = Pool(nproc)
-
-    print("POOL M_WCS_PHOTOM")
-
     fn = partial(handle_errors_in_wcs_photom,
                  cat_file=cat_file,
                  appsize=appsize,
                  verbose=verbose)
-    pool.map(fn, infiles)
+
+    # Handle nproc=1 as serial processing for clearer output and debugging
+    if nproc == 1:
+        print("Running photometry in serial mode (nproc=1)")
+        for infile in infiles:
+            fn(infile)
+    else:
+        print(f"Running photometry in parallel mode (nproc={nproc})")
+        pool = Pool(nproc)
+        pool.map(fn, infiles)
+        pool.close()
+        pool.join()
 
     infiles = remove_wcs_failed(infiles)
 
@@ -79,7 +85,17 @@ def m_wcs_photom(filelist, outlist, appsize, cat_file,
     # calculate the RA and DEC shifts of each image from the previous:
     indexes = np.arange(1, len(infiles))
     fn = partial(m_frame_shift, infiles)
-    pool.map(fn, indexes)
+
+    if nproc == 1:
+        # Serial processing for frame shifts
+        for idx in indexes:
+            fn(idx)
+    else:
+        # Parallel processing for frame shifts
+        pool = Pool(nproc)
+        pool.map(fn, indexes)
+        pool.close()
+        pool.join()
 
 def remove_wcs_failed(infiles):
     new_infiles = []

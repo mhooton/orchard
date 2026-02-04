@@ -204,6 +204,7 @@ def main(args):
         from multiprocessing import Pool
         from functools import partial
 
+        print(f"Running in parallel mode with {args.nproc} processes", flush=True)
         pool = Pool(processes=int(args.nproc))
 
         worker_func = partial(add_astrometry_with_timeout,
@@ -226,6 +227,7 @@ def main(args):
                 failed_solve += 1
     else:
         # Sequential processing with timeout
+        print(f"Running in serial mode (nproc={args.nproc})", flush=True)
         for i, infile in enumerate(infiles, 1):
             result = add_astrometry_with_timeout(infile,
                                                  timeout=args.timeout,
