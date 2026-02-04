@@ -74,7 +74,7 @@ class ESODownloader:
             print(f"Error getting OAuth2.0 token: {str(e)}")
             return False
 
-    def query_files(self, prog_id, start_date, end_date, dp_cat='SCIENCE'):
+    def query_files(self, prog_id, start_date, end_date, dp_cat='SCIENCE', start_mjd=None, end_mjd=None):
         """
         Query ESO TAP service for files matching criteria
 
@@ -83,15 +83,19 @@ class ESODownloader:
             start_date: Start date in YYYY-MM-DD format (astronomical night begins 15:00 UTC this day)
             end_date: End date in YYYY-MM-DD format (astronomical night ends 15:00 UTC this day)
             dp_cat: Data category ('SCIENCE' or 'CALIB')
+            start_mjd: Optional start MJD to override date conversion (for pagination)
+            end_mjd: Optional end MJD to override date conversion (for pagination)
 
         Returns:
             List of file metadata dictionaries
         """
         self.ensure_valid_token()
 
-        # Convert to astronomical night boundaries (15:00 UTC to 15:00 UTC next day)
-        start_mjd = self._date_to_mjd_night_start(start_date)
-        end_mjd = self._date_to_mjd_night_end(end_date)
+        # Use provided MJD values if available, otherwise convert from dates
+        if start_mjd is None:
+            start_mjd = self._date_to_mjd_night_start(start_date)
+        if end_mjd is None:
+            end_mjd = self._date_to_mjd_night_end(end_date)
 
         # ADQL query for raw data - using only basic columns that definitely exist
         query = f"""
@@ -388,6 +392,18 @@ class ESODownloader:
         # Don't add a day - the date_str is already the end date
         mjd = (dt - datetime(1858, 11, 17)).total_seconds() / 86400.0
         return mjd
+
+    def _timestamp_to_mjd(self, timestamp_str):
+        """Convert ISO timestamp string to MJD"""
+        try:
+            # Parse ISO format timestamp (e.g., 2025-12-16T04:49:08.869)
+            dt = datetime.fromisoformat(timestamp_str)
+            # Calculate MJD: days since 1858-11-17 00:00 UTC
+            mjd = (dt - datetime(1858, 11, 17)).total_seconds() / 86400.0
+            return mjd
+        except Exception as e:
+            print(f"Error converting timestamp to MJD: {e}")
+            return None
 
 
 def store(dp_ids, dirname, username, password):

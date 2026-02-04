@@ -47,13 +47,54 @@ else:
     print("✗ ESO credentials not found in environment variables")
     sys.exit(1)
 
-
 # Test email config
 try:
     config = get_email_config()
     print(f"✓ Email config loaded - sending from: {config['from_addr']}")
 except:
     print("✗ Email configuration incomplete")
+
+
+# AFTER:
+def parse_timestamp_from_dp_id(dp_id):
+    """
+    Extract ISO timestamp from ESO dp_id
+    Example: SPECU4.2025-12-16T04:49:08.869 -> 2025-12-16T04:49:08.869
+    """
+    try:
+        # dp_id format: INSTRUMENT.YYYY-MM-DDTHH:MM:SS.mmm (no .fits extension)
+        # Split on first dot to separate instrument from timestamp
+        if '.' not in dp_id:
+            return None
+
+        # Everything after the first dot is the timestamp
+        timestamp = dp_id.split('.', 1)[1]
+
+        # Validate it looks like a timestamp (basic check)
+        if 'T' in timestamp and len(timestamp) > 10:
+            return timestamp
+
+        return None
+    except Exception as e:
+        print(f"Warning: Could not parse timestamp from {dp_id}: {e}")
+        return None
+
+def subtract_time_buffer(timestamp_str, buffer_minutes=2):
+    """
+    Subtract buffer minutes from ISO timestamp string
+    Returns new timestamp string in format expected by ESO TAP: 'YYYY-MM-DD HH:MM:SS'
+    """
+    try:
+        from datetime import datetime, timedelta
+        # Parse timestamp (format: 2025-12-16T04:49:08.869)
+        dt_obj = datetime.fromisoformat(timestamp_str)
+        # Subtract buffer
+        dt_buffered = dt_obj - timedelta(minutes=buffer_minutes)
+        # Return in 'YYYY-MM-DD HH:MM:SS' format (no milliseconds, space separator)
+        return dt_buffered.isoformat()
+    except Exception as e:
+        print(f"Warning: Could not subtract buffer from {timestamp_str}: {e}")
+        return timestamp_str
 
 def get_images(tel, telname, stime, etime, date, imgdir, down_im, test_mode=False, verbose=False, query_only=False):
     """
@@ -86,22 +127,101 @@ def get_images(tel, telname, stime, etime, date, imgdir, down_im, test_mode=Fals
         for data_type in ['SCIENCE', 'CALIB']:
             t0 = timeit.default_timer()
 
-            # Query for files using modern TAP service
-            print(f"Querying for {data_type} images...")
-            files = downloader.query_files(tel, stime, etime, data_type)
+            # Pagination loop for handling >10k results
+            all_files = []
+            seen_dp_ids = set()  # Track unique dp_ids to avoid duplicates from pagination overlap
+            query_start_time = stime
+            pagination_attempt = 0
+            max_pagination_attempts = 50  # Safety limit
+
+            while pagination_attempt < max_pagination_attempts:
+                pagination_attempt += 1
+
+                # Query for files using modern TAP service
+                if pagination_attempt == 1:
+                    print(f"Querying for {data_type} images...")
+                else:
+                    print(f"Pagination query {pagination_attempt} starting from {query_start_time}...")
+
+                # Use MJD if available (for pagination), otherwise use date strings
+                if pagination_attempt == 1:
+                    files = downloader.query_files(tel, query_start_time, etime, data_type)
+                    # Store end MJD for pagination
+                    end_mjd = downloader._date_to_mjd_night_end(etime)
+                else:
+                    # Pagination query with MJD
+                    files = downloader.query_files(tel, stime, etime, data_type,
+                                                   start_mjd=query_start_mjd,
+                                                   end_mjd=end_mjd)
+
+                if not files:
+                    if pagination_attempt == 1:
+                        print(f"WARNING: no {data_type} results found for {telname} on {date}")
+                    break
+
+                # Filter out duplicates from pagination overlap
+                unique_files_in_batch = []
+                duplicates_in_batch = 0
+                for file_row in files:
+                    dp_id = file_row[0]  # dp_id is first column
+                    if dp_id not in seen_dp_ids:
+                        seen_dp_ids.add(dp_id)
+                        unique_files_in_batch.append(file_row)
+                    else:
+                        duplicates_in_batch += 1
+
+                num_files = len(files)
+                num_unique = len(unique_files_in_batch)
+                print(
+                    f"Retrieved {num_files} files in this batch ({num_unique} unique, {duplicates_in_batch} duplicates)")
+                all_files.extend(unique_files_in_batch)
+
+                # Check if we hit the 10k limit
+                if num_files >= 10000:
+                    print(f"Hit 10,000 result limit - paginating to get remaining files...")
+
+                    # Extract timestamp from last file
+                    last_dp_id = files[-1][0]  # dp_id is first column
+                    last_timestamp = parse_timestamp_from_dp_id(last_dp_id)
+
+                    if last_timestamp:
+                        # Subtract buffer and convert to MJD for next query
+                        buffered_timestamp = subtract_time_buffer(last_timestamp, buffer_minutes=2)
+                        query_start_mjd = downloader._timestamp_to_mjd(buffered_timestamp)
+
+                        if query_start_mjd:
+                            print(f"Last file timestamp: {last_timestamp}")
+                            print(f"Next query will start from: {buffered_timestamp} (MJD: {query_start_mjd:.6f})")
+                            # Store MJD for next iteration
+                            query_start_time = None  # Signal to use MJD instead
+                        else:
+                            print(f"WARNING: Could not convert timestamp to MJD - stopping pagination")
+                            break
+                    else:
+                        print(f"WARNING: Could not parse timestamp from {last_dp_id} - stopping pagination")
+                        break
+                else:
+                    # Got fewer than 10k results - we're done
+                    break
+
+            if pagination_attempt >= max_pagination_attempts:
+                print(f"WARNING: Hit maximum pagination attempts ({max_pagination_attempts}) - may be missing files")
+
+            files = all_files  # Use the combined results
 
             t1 = timeit.default_timer()
             elapsed = t1 - t0
             print(f"Time taken to query archive for {data_type} images: {elapsed / 60:.3f} minutes")
 
             if not files:
-                print(f"WARNING: no {data_type} results found for {telname} on {date}")
                 continue
-            elif len(files) >= 10000:
-                print(f"WARNING: returned maximum number (10000) of {data_type} images for {telname} on {date}")
 
             num_files = len(files)
-            print(f"{num_files} {data_type} images for {telname} on {date}")
+            print(f"Total {num_files} {data_type} images for {telname} on {date} (after pagination)")
+
+            if num_files >= 10000 and pagination_attempt == 1:
+                print(f"WARNING: Exactly 10000 files but pagination not triggered - check logic")
+
             total_eso_files += num_files
 
             if num_files == 0:
