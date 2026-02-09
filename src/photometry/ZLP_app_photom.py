@@ -1,28 +1,50 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
+Aperture Photometry Execution
 
-Zero Level Pipeline apperture photometry
+Orchestrates forced aperture photometry across all science frames using reference
+catalogues from stacked images. Applies proper motion corrections to catalogue
+positions and performs quality assessment of photometric measurements.
 
-Usage:
-  ZLP_app_photom [options] (-c <CONFMAP> | --confmap <CONFMAP>) (-C <CATFILE> | --catfile <CATFILE>) (-f <FILELIST> | --filelist <FILELIST> | INPUT ...)
+Args:
+    catfile (str): Path to stack catalogue FITS file with Gaia cross-match
+    filter (str): Filter name (e.g., 'I+z', 'zYJ')
+    filelist (str): Path to file containing list of science frame paths
+    outdir (str): Output directory for photometry files
+    date (str): Observation date in YYYYMMDD format
+    nproc (int, optional): Number of parallel processes (default: 1)
+    apsize (float, optional): Aperture radius in pixels (default: 4)
+    ext (str, optional): File extension 'fits' or 'fts' (default: 'fits')
+    ipix (float, optional): Minimum pixels for detection (default: 6)
+    s_thresh (float, optional): Detection threshold in sigma (default: 20)
+    catsrc (str, optional): Catalogue for WCS solving (default: 'vizgaia3')
+    norunwcs (bool, optional): Skip WCS refinement (default: False)
+    verbose (bool, optional): Print detailed output (default: False)
 
-Options:
-  -h --help              Show help text
-  --verbose              Print more text
-  --dist=DISTMAP         The path to the relevent distortion
-  --outlist=OUTLIST      Specify the name of the list of completed files
-  --nproc=NPROC          Enable multithreading if you're analysing a lot of files at once [default: 1]
-  --apsize=APSIZE        The radius of the apperture you wish to use in the photometry stage [default: 2]
-  --s_thresh=S_THRESH    The detection threshold to use when WCS solving images - typically higher than when doing actual photometry [default: 7]
-  --catsrc=CATSRC        What catalogue to use during catalog matching [default: viz2mass]
-  --catpath=CATPATH      If you're using a local catalog for cat matching, where is it? [default: False]
-  --outdir=OUTDIR        Where you would like the result files to go [default: ./]
+Processing workflow:
+    1. Optional WCS refinement of science frames (if norunwcs=False)
+    2. Proper motion correction from Gaia epoch (J2016.0) to observation date
+    3. Forced aperture photometry via casutools.imcore_list
+    4. Image quality assessment (FWHM, seeing, cloud status, frame shifts)
+    5. Validation and removal of failed frames
 
-This is the apperture photometry portion of the pipeline. It can be driven either in a list mode
-or on a single file
+Output:
+    - {image}.phot files for each science frame (FITS tables with aperture fluxes)
+    - {filelist}_phot file listing successfully processed frames
+    - Quality metrics in FITS headers (SEEING, FWHM, PSF_a_*, PSF_b_*, etc.)
 
+Example:
+    python ZLP_app_photom.py --catfile stack_catalogue_I+z.fits --filter I+z \\
+        --filelist I+z_processed.dat --outdir /output/target/ \\
+        --date 20240115 --nproc 8 --apsize 4
+
+Notes:
+    - Proper motion correction is critical for multi-year baselines
+    - Aperture size should typically match FWHM of images
+    - Serial mode (nproc=1) recommended for debugging
 """
+
 import sys
 import linecache
 import threading

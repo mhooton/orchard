@@ -1,9 +1,27 @@
 #!/usr/bin/env python
+"""
+Image Classification and List Generation
 
-# Small python sxocript to create list of images for NGTS Zero-Level-Pipeline
-# Output goes to Reduction Module
-# Philipp Eigmueller Feb 6 2014
+Classifies raw FITS images from a night's observations into science, bias, dark,
+and flat field categories based on FITS header keywords (IMAGETYP, EXPTIME).
+Creates organized file lists for each target and calibration frame type to drive
+subsequent pipeline stages.
 
+The script handles:
+- Multiple image file extensions (.fits, .fts, .fz, .bz2)
+- Target name sanitization and validation
+- Filter-specific flat field organization
+- Comprehensive logging of classification decisions
+
+Output structure:
+- {runname}_image_{target}.list - Science images per target
+- {runname}_bias.list - Bias frames
+- {runname}_dark.list - Dark frames
+- {runname}_flat_{filter}.list - Flat fields per filter
+
+This is Stage T1 of the pipeline and must complete successfully before
+calibration stages can proceed.
+"""
 
 import glob
 import os

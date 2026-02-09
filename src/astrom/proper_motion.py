@@ -8,6 +8,57 @@ import datetime
 import astropy.time
 import photometry.gaia_dr2_test as gaia_dr2_test
 
+"""
+Proper Motion Correction for Reference Catalogues
+
+Updates reference catalogue star positions from Gaia DR3 epoch (J2016.0) to
+observation date using Gaia proper motion measurements.
+
+Functions:
+    generate_new_cat(catfile, date, output_path)
+        Main entry point for PM correction
+
+        Args:
+            catfile (str): Path to stack catalogue with Gaia_Crossmatch extension
+            date (str): Target date in YYYYMMDD format
+            output_path (str): Path for output PM-corrected catalogue
+
+        Returns:
+            None (writes new catalogue to output_path)
+
+    calculate_pm(stars, cat_jd, new_jd)
+        Calculate proper motion corrected positions
+
+        Args:
+            stars (dict): Star data with 'ra', 'dec', 'pmra', 'pmdec', 'parallax'
+            cat_jd (float): Julian date of catalogue epoch (Gaia DR3 = 2457389.0)
+            new_jd (float): Target Julian date for correction
+
+        Returns:
+            dict: Stars dictionary with 'new_ra' and 'new_dec' added
+
+Proper motion correction:
+    - Uses Gaia pmra, pmdec (mas/yr) and parallax
+    - Converts PM to degrees/yr accounting for declination
+    - Applies correction: new_ra = ra + (pmra/cos(dec)) * dt
+    - Stars without Gaia PM data keep original positions
+
+Example:
+    generate_new_cat('SP1234567_stack_catalogue_I+z.fits', 
+                     '20240115',
+                     'SP1234567_stack_catalogue_pm.fits')
+
+Typical PM values:
+    - Low PM stars: <10 mas/yr → <0.1 pixel shift over 3 years
+    - High PM stars: >50 mas/yr → >0.5 pixel shift over 3 years
+    - Barnard's star: ~10000 mas/yr → ~100 pixel shift over 3 years
+
+Notes:
+    - Essential for accurate photometry over multi-year baselines
+    - Uncorrected PM causes centroiding errors and flux loss
+    - Automatically triggers Gaia cross-match if not already done
+"""
+
 # Script to calculate the Proper Motion for all stars in a Catalogue based on Gaia DR2 crossmatch
 # and write a new stack catalogue with the new RA and DECs at a given time
 

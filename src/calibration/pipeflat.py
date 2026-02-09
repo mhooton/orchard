@@ -1,3 +1,25 @@
+"""
+Master Flat Field Creation
+
+Creates normalized master flat field frames from dome or twilight flat images.
+Processes flats separately per filter, applying bias and dark corrections before
+combining multiple exposures into a master flat that corrects for pixel-to-pixel
+sensitivity variations and vignetting.
+
+Processing steps:
+- Overscan subtraction and bias/dark correction for each flat
+- Normalization of each flat by its median flux
+- Sigma-clipped median combination to reject outliers (cosmic rays, etc.)
+- Per-filter output organization (e.g., MasterFlat_I+z.fits, MasterFlat_zYJ.fits)
+
+The master flats are normalized to unity mean, allowing direct division into
+science frames during reduction. Variance and standard deviation maps are also
+generated for quality assessment.
+
+This is Stage T4 of the pipeline and produces the flat fields required for
+science image reduction (Stage T6).
+"""
+
 import math
 import sys
 import os

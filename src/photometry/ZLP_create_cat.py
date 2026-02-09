@@ -1,25 +1,32 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
+Stack Image Creation and Source Catalogue Generation
 
-Zero Level Pipeline catalog generation
+Creates deep stacked images from multiple science frames and generates source
+catalogues for photometric reference. This stage is critical for establishing
+the field star catalogue used in differential photometry.
 
-Usage:
-  ZLP_create_cat [options] --confmap=CONFMAP --filelist=FILELIST
+Processing workflow:
+1. Select subset of science images (middle of night, lowest background)
+2. Optionally perform WCS fitting on selected frames (if not already solved)
+3. Stack images using weighted median combination via casutools.imstack
+4. Detect sources in stacked image using casutools.imcore
+5. Cross-match detected sources with Gaia DR3/2MASS catalogues
+6. Generate reference catalogue with precise positions and magnitudes
 
-Options:
-  -h --help                                 Show help text
-  -v, --verbose                             Print more text
-  -o <OUTNAME>, --outname <OUTNAME>         Specify the name of the output catalog [default: catfile.fits]
-  -s <STACKLIST>, --stacklist <STACKLIST>   The name of the file that stores the names of the images used in the stack [default: stackfilelist]
-  --c_thresh <C_THRESH>                     The detection threshold to use when defining the input [default: 2]
-  --s_thresh <S_THRESH>                     The detection threshold to use when WCS solving images - typically higher than when doing actual photometry [default: 20]
-  -n <NPROC>, --nproc <NPROC>               Enable multithreading if you're analysing a lot of files at once
-  -N <NFILES>, --nfiles <NFILES>            Maximum number of files to use in the stack
-  --no-wcs                                  Do not solve each image for WCS.  However images must have a solution somehow
+The stacked image provides deeper source detection than individual frames,
+while the Gaia cross-matching ensures accurate astrometric and photometric
+calibration. A backup system preserves the best stack catalogue when subsequent
+attempts fail (useful for nights with poor data quality).
 
-This is the catalog generation tool, requires a filelist input. need to work on being selective on the files used in input.
+Output files:
+- {target}_outstack_{filter}.fits - Deep stacked image
+- {target}_stack_catalogue_{filter}.fits - Source catalogue with Gaia cross-match
+- {filter}_stacked.dat - List of images successfully included in stack
 
+This is Stage T8 of the pipeline and produces the reference catalogues required
+for aperture photometry (Stage T9).
 """
 
 #from docopt import docopt

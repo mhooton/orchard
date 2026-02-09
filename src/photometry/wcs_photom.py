@@ -1,4 +1,64 @@
 # -*- coding: utf-8 -*-
+"""
+Forced Aperture Photometry and Image Quality Assessment
+
+Performs aperture photometry at fixed catalogue positions using casutools.imcore_list.
+Measures image quality metrics including FWHM, seeing, and frame-to-frame shifts.
+
+Functions:
+    m_wcs_photom(filelist, outlist, appsize, cat_file, nproc=1, verbose=False)
+        Main entry point for parallel photometry across multiple frames
+
+        Args:
+            filelist (str): Path to file listing science frame paths
+            outlist (str): Path to output file listing processed frames
+            appsize (float): Aperture radius in pixels
+            cat_file (str): Path to PM-corrected reference catalogue
+            nproc (int, optional): Number of parallel processes (default: 1)
+            verbose (bool, optional): Print detailed output (default: False)
+
+        Returns:
+            None (writes .phot files and updates outlist)
+
+    wcs_photom(image, cat_file='nocat', conf_file='noconf', appsize=4, verbose=False)
+        Single-frame photometry with quality assessment
+
+        Args:
+            image (str): Path to science frame FITS file
+            cat_file (str, optional): Path to reference catalogue (default: 'nocat')
+            conf_file (str, optional): Path to confidence map (default: 'noconf')
+            appsize (float, optional): Aperture radius in pixels (default: 4)
+            verbose (bool, optional): Print detailed output (default: False)
+
+        Returns:
+            str: 'ok' if successful, 'failed' if WCS missing
+
+        Output:
+            Creates {image}.phot with FITS table extensions:
+            - Extension 1: Photometry table with aperture fluxes
+            - Headers: SEEING, FWHM, CLOUD_S, PSF_a_1-9, PSF_b_1-9, PSF_t_1-9,
+                      RA_MOVE, DEC_MOVE, SKY_MOVE
+
+Quality metrics:
+    - FWHM: Average PSF full-width half-maximum in pixels
+    - SEEING: FWHM converted to arcseconds (using 0.35"/pixel plate scale)
+    - PSF_a_*, PSF_b_*: PSF semi-major/minor axes in 9 grid positions
+    - PSF_t_*: PSF rotation angle in degrees
+    - CLOUD_S: Bulk image structure metric (S/N)
+    - RA_MOVE, DEC_MOVE: Frame shift from previous image in arcseconds
+    - SKY_MOVE: Total positional shift in arcseconds
+
+Example:
+    m_wcs_photom('I+z_processed.dat', 'I+z_processed.dat_phot',
+                 appsize=4.0, cat_file='stack_catalogue_pm.fits',
+                 nproc=8, verbose=True)
+
+Notes:
+    - Uses forced photometry (apertures at catalogue positions)
+    - PSF measured in 9 positions detects focus/aberration gradients
+    - Frame shifts monitor telescope tracking stability
+"""
+
 from astropy.io import fits as pf
 import os
 import sys
