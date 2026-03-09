@@ -245,7 +245,7 @@ def gaia_db_query(
         limit: int = 1000,
         tmass: bool = False,
         dateobs: Optional[datetime] = None,
-        db_path: Union[str, Path] = "/gaia_database/gaia_tmass_16_jm_cut.db"
+        db_path: Union[str, Path] = "/gaia_database/gaia_dr3_unified_16jcut.db"
 ) -> np.ndarray:
     """
     Query the local Gaia database to retrieve the RA-DEC coordinates of stars within a given field-of-view (FOV) centered on a given sky position.

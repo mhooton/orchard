@@ -87,6 +87,7 @@ def run_command(cmd, verbose=False):
         print("error code", casuexc.returncode, casuexc.output)
         with lock:
             print(' '.join(str_cmd))
+        raise  # Re-raise exception so calling code knows the command failed
 
 
 def imstack(filelist, confidence_map=None,
@@ -168,9 +169,16 @@ def imcore_list(input_file, listfile, output_file,
     run_command(cmd, verbose=verbose)
 
 
-def wcsfit(infile, incat, catsrc, verbose=True, site='cds'):
+def wcsfit(infile, incat, catsrc, verbose=True, site='cds', wcsref=None):
     '''
-    Runs the casu task `wcsfit`. Local fits reference is required
+    Runs the casu task `wcsfit`.
+    If wcsref is provided, catsrc is overridden to 'localfits' and
+    --wcsref <wcsref> is appended to the command.
     '''
-    cmd = ['wcsfit', infile, incat, '--site', site, '--catsrc', catsrc]
+    if wcsref is not None:
+        catsrc = 'localfits'
+        cmd = ['wcsfit', infile, incat, '--site', site, '--catsrc', catsrc,
+               '--catpath', wcsref]
+    else:
+        cmd = ['wcsfit', infile, incat, '--site', site, '--catsrc', catsrc]
     run_command(cmd, verbose=verbose)

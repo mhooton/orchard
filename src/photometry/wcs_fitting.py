@@ -21,24 +21,135 @@ except ImportError:
 import json
 import psutil
 import warnings
+import sqlite3
+import datetime
+from astropy.time import Time
 from astropy.io.fits.verify import VerifyWarning
 warnings.filterwarnings('ignore', category=VerifyWarning)
 
-
 Catalogue = namedtuple('Catalogue', ['cat_name', 'ra_lims', 'dec_lims'])
 
+GAIA_DR3_EPOCH = 2016.0
+LOCAL_DB_FOV_PADDING = 1.5  # multiply detector FOV by this when querying local db
+
+def make_localfits_table(image_path, output_path, fov_padding=LOCAL_DB_FOV_PADDING):
+    """
+    Query the local Gaia database for sources covering the field of the given
+    image, apply proper motion correction to the observation epoch, and write
+    a minimal FITS table with 'ra' and 'dec' columns for use with wcsfit
+    localfits mode.
+
+    Inputs:
+        image_path  : str   Path to the FITS image
+        output_path : str   Path to write the output FITS table
+        fov_padding : float Multiplier applied to the detector FOV when
+                            querying the database (default 1.5)
+    """
+    db_path = os.environ.get('GAIADATABASEPATH',
+                             '/gaia_database/gaia_dr3_unified_16jcut.db')
+
+    with fits.open(image_path) as hdul:
+        header = hdul[0].header
+        ra_centre = header['CRVAL1']
+        dec_centre = header['CRVAL2']
+        dateobs = header.get('DATE-OBS', None)
+
+        # Derive FOV from focal length and pixel scale
+        naxis1 = header['NAXIS1']
+        naxis2 = header['NAXIS2']
+        focallen = header.get('FOCALLEN', None)
+        try:
+            focallen_comment = header.comments['FOCALLEN']
+        except KeyError:
+            focallen_comment = ''
+        if focallen is not None:
+            if '[mm]' in focallen_comment or 'in mm' in focallen_comment.lower():
+                focallen_m = focallen * 1e-3
+            else:
+                focallen_m = focallen
+            xpixsz = header.get('XPIXSZ', 13.5)  # microns
+            plate_scale = (xpixsz * 1e-6) / focallen_m  # rad/pixel
+            fov_deg = max(naxis1, naxis2) * np.degrees(plate_scale)
+        else:
+            # Fallback: derive from CD matrix if available
+            cd1_1 = header.get('CD1_1', header.get('CDELT1', 0.001))
+            fov_deg = max(naxis1, naxis2) * abs(cd1_1)
+
+    half_fov = 0.5 * fov_deg * fov_padding
+
+    # Compute observation epoch for proper motion correction
+    if dateobs is not None:
+        try:
+            obs_epoch = Time(dateobs).jyear
+        except Exception:
+            obs_epoch = GAIA_DR3_EPOCH
+    else:
+        obs_epoch = GAIA_DR3_EPOCH
+
+    delta_t = obs_epoch - GAIA_DR3_EPOCH  # years since DR3 epoch
+
+    # Query local database
+    min_dec = max(dec_centre - half_fov, -90.0)
+    max_dec = min(dec_centre + half_fov,  90.0)
+    min_ra = ra_centre - half_fov
+    max_ra = ra_centre + half_fov
+
+    conn = sqlite3.connect(db_path)
+    arr = np.arange(np.floor(min_dec), np.ceil(max_dec) + 1, 1)
+    rows = []
+    for i in range(len(arr) - 1):
+        shard = f"{int(arr[i])}_{int(arr[i + 1])}"
+        query = (f"SELECT ra, dec, pmra, pmdec FROM '{shard}' "
+                 f"WHERE dec BETWEEN {min_dec} AND {max_dec} "
+                 f"AND ra BETWEEN {min_ra} AND {max_ra}")
+        try:
+            cursor = conn.execute(query)
+            rows.extend(cursor.fetchall())
+        except Exception as e:
+            print(f"make_localfits_table: DB query error for shard {shard}: {e}")
+    conn.close()
+
+    if not rows:
+        raise ValueError(f"make_localfits_table: No sources found for field "
+                         f"RA={ra_centre:.3f}, Dec={dec_centre:.3f}")
+
+    # Apply proper motion correction
+    ra_out = []
+    dec_out = []
+    for ra, dec, pmra, pmdec in rows:
+        if pmra is not None and pmdec is not None:
+            ra_corr  = ra  + delta_t * (pmra  / 1000.) / 3600.
+            dec_corr = dec + delta_t * (pmdec / 1000.) / 3600.
+        else:
+            ra_corr  = ra
+            dec_corr = dec
+        ra_out.append(ra_corr)
+        dec_out.append(dec_corr)
+
+    # Write minimal FITS table with ra and dec columns
+    ra_col  = fits.Column(name='ra',  format='D', array=np.array(ra_out))
+    dec_col = fits.Column(name='dec', format='D', array=np.array(dec_out))
+    table   = fits.BinTableHDU.from_columns([ra_col, dec_col])
+    table.writeto(output_path, overwrite=True)
+    print(f"make_localfits_table: Written {len(ra_out)} sources to {output_path}")
 
 def initialise_wcs_cache(fname, outdir, catsrc, thresh, verbose, force=False):
     print("\n**Constructing initial wcs cache**\n")
     catalogue_name = outdir+'_initial-catalogue.fits'
-    #imcore - source detect on this first image and output fits catalogue to this file 'catalogue_name'
     casutools.imcore(fname, catalogue_name, threshold=thresh, verbose=verbose)
-    #wcsfit - matches up objects from image with astrometric positions standards. Input first image and imcore catalogue
     print(("fname = "+str(fname)))
     print(("catalogue_name = "+str(catalogue_name)))
     print(("catsrc = "+str(catsrc)))
     print(("verbose = "+str(verbose)))
-    casutools.wcsfit(fname, catalogue_name, catsrc=catsrc, verbose=verbose)
+
+    localfits_path = catalogue_name.replace('.fits', '_localfits_ref.fits')
+    try:
+        make_localfits_table(fname, localfits_path)
+        casutools.wcsfit(fname, catalogue_name, catsrc=catsrc, verbose=verbose,
+                         wcsref=localfits_path)
+    finally:
+        if os.path.exists(localfits_path):
+            os.remove(localfits_path)
 
 def m_solve_images(filelist, outfile,
                    nproc=None,
@@ -105,12 +216,12 @@ def handle_errors_in_casu_solve(casuin, *args, **kwargs):
   '''
     try:
         return_value = casu_solve(casuin, *args, **kwargs)
+        set_wcs_status(casuin, succeeded=True)
+        return return_value
     except Exception as err:
         print(("Exception handled in `casu_solve`: {}".format(str(err))))
         set_wcs_status(casuin, succeeded=False)
-    else:
-        set_wcs_status(casuin, succeeded=True)
-        return return_value
+        return None
 
 def casu_solve_old(casuin,
                    thresh=20,
@@ -204,10 +315,17 @@ def casu_solve(casuin, thresh=2, verbose=False, catsrc='vizgaia3', rcore=4, ipix
     print(catfile_name)
 
     casutools.imcore(casuin, catfile_name, threshold=thresh, verbose=verbose,
-                     ipix=ipix, rcore=rcore)  # changed ipix from 2 to 6, rcore was 3 - changed to match appsize???
+                     ipix=ipix, rcore=rcore)
 
     # Now we're ready to solve wcs
-    casutools.wcsfit(casuin, catfile_name, catsrc=catsrc, verbose=verbose)
+    localfits_path = catfile_name.replace('.cat', '_localfits_ref.fits')
+    try:
+        make_localfits_table(casuin, localfits_path)
+        casutools.wcsfit(casuin, catfile_name, catsrc=catsrc, verbose=verbose,
+                         wcsref=localfits_path)
+    finally:
+        if os.path.exists(localfits_path):
+            os.remove(localfits_path)
 
     # Come back to this testing section later - perhaps break out into separate script?
     # find frame limits from index file in catcache directory
@@ -321,12 +439,13 @@ def reference_catalogue_objects(catalogue, catpath, catsrc):
     with fits.open(cat_name) as catd:
         catt = catd[1].data.copy()
 
-    if catsrc == 'vizgaia3':
+    col_names = catt.columns.names
+    if 'Gmag' in col_names:
         return {'ra': catt['ra'], 'dec': catt['dec'], 'Gmag': catt['Gmag']}
-    elif catsrc == 'vizgaia2':
-        return {'ra': catt['ra'], 'dec': catt['dec'], 'Gmag': catt['Gmag']}
-    elif catsrc == 'viz2mass':
-        return {'ra': catt['ra'], 'dec': catt['dec'], 'Jmag': catt['Jmag'], 'Kmag':catt['Kmag'],'Hmag':catt['Hmag']}
+    elif 'Jmag' in col_names:
+        return {'ra': catt['ra'], 'dec': catt['dec'], 'Jmag': catt['Jmag'], 'Kmag': catt['Kmag'], 'Hmag': catt['Hmag']}
+    else:
+        return {'ra': catt['ra'], 'dec': catt['dec']}
 
 
 

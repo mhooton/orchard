@@ -17,7 +17,7 @@ services:
       - MPLCONFIGDIR=/tmp/matplotlib-config
       - FONTCONFIG_CACHEDIR=/tmp/fontconfig-cache
       - HOME=/tmp
-      - GAIADATABASEPATH=/gaia_database/gaia_tmass_16_jm_cut.db
+      - GAIADATABASEPATH=/gaia_database/gaia_dr3_unified_16jcut.db
     # Relax container security to allow more threading
     security_opt:
       - seccomp:unconfined

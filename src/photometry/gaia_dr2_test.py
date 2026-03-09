@@ -16,13 +16,75 @@ import fitsio
 import datetime as dt
 from astropy.time import Time
 from astropy.io import fits
+import sqlite3
+import os
 
 
 # print current time to keep track of how long the querying takes to run
 # print datetime.datetime.now().time()
 start_time = timeit.default_timer()
-# astroquery.gaia.
 
+
+# ---------------------------------------------------------------------------
+# Local database connection
+# ---------------------------------------------------------------------------
+
+_db_connection = None
+
+
+def _get_db_connection():
+    """Get or create a cached SQLite connection to the local Gaia database."""
+    global _db_connection
+    if _db_connection is None:
+        db_path = os.environ.get('GAIADATABASEPATH',
+                                 '/gaia_database/gaia_dr3_unified_16jcut.db')
+        _db_connection = sqlite3.connect(db_path)
+    return _db_connection
+
+
+def _db_query(min_dec, max_dec, min_ra, max_ra):
+    """
+    Query the unified local Gaia database for sources within the given
+    RA/dec bounding box. Returns a list of row dicts.
+
+    Inputs:
+        min_dec, max_dec : float  dec limits in degrees
+        min_ra,  max_ra  : float  ra  limits in degrees
+
+    Output:
+        list of dicts with keys: ra, dec, pmra, pmdec, phot_g_mean_mag,
+        g_rp, bp_rp, parallax, teff_gspphot, source_id, dr2_source_id
+    """
+    conn = _get_db_connection()
+
+    min_dec = max(min_dec, -90.0)
+    max_dec = min(max_dec, 90.0)
+
+    arr = np.arange(np.floor(min_dec), np.ceil(max_dec) + 1, 1)
+    rows = []
+    for i in range(len(arr) - 1):
+        shard = f"{int(arr[i])}_{int(arr[i + 1])}"
+        query = (
+            f"SELECT ra, dec, pmra, pmdec, phot_g_mean_mag, g_rp, bp_rp, "
+            f"parallax, teff_gspphot, source_id, dr2_source_id "
+            f"FROM '{shard}' "
+            f"WHERE dec BETWEEN {min_dec} AND {max_dec} "
+            f"AND ra BETWEEN {min_ra} AND {max_ra}"
+        )
+        try:
+            cursor = conn.execute(query)
+            cols = [d[0] for d in cursor.description]
+            for row in cursor.fetchall():
+                rows.append(dict(zip(cols, row)))
+        except Exception as e:
+            print(f"DB query error for shard {shard}: {e}")
+
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Crossmatch entry point
+# ---------------------------------------------------------------------------
 
 def crossmatch(fitsfile,
                logfile=None,
@@ -30,9 +92,28 @@ def crossmatch(fitsfile,
                ext='fits',
                date='20180101',
                catsrc='vizgaia3',
+               use_local_db=True,
                ):
-    # set the output to a file called queryresults.txt
-    print('\n **Crossmatching sources with '+str(catsrc)+'...** \n')
+    """
+    Crossmatch sources in a FITS catalogue against Gaia DR3, using either
+    the local unified database (default) or the Gaia archive.
+
+    Inputs:
+        fitsfile     : str   Path to input FITS catalogue
+        logfile      : str   Optional path to write log output
+        n            : int   Number of parallel workers
+        ext          : str   File extension ('fits')
+        date         : str   Observation date YYYYMMDD
+        catsrc       : str   Gaia catalogue version ('vizgaia3', 'vizgaia2')
+        use_local_db : bool  If True (default), query local SQLite database.
+                             If False, query the Gaia archive directly.
+    """
+    print('\n **Crossmatching sources with ' + str(catsrc) + '...** \n')
+    if use_local_db:
+        print(' ** Using local Gaia database **\n')
+    else:
+        print(' ** Using Gaia archive **\n')
+
     if logfile != None:
         oldstdout = sys.stdout
         f = open(logfile, 'w')
@@ -61,9 +142,8 @@ def crossmatch(fitsfile,
             elif 'stack_catalogue' in fitsfile:
                 cat = infile[1]
                 id = cat['sequence_number'].read()
-            ra = cat['ra'].read()  # [100:120]
-            dec = cat['dec'].read()  # [100:120]
-            # ids = cat['obj_id'].read()
+            ra = cat['ra'].read()
+            dec = cat['dec'].read()
 
         # Set Gaia epoch based on catalog version
         if catsrc == 'vizgaia3':
@@ -81,8 +161,12 @@ def crossmatch(fitsfile,
         pool = ThreadPool(int(n))
 
         # carry out a conesearch for gaia targets around each identified object
-        fn = partial(f_query_gaia,query=conesearch)
-        results = pool.map(fn, zip(id,ra,dec,itertools.repeat(rad_deg),itertools.repeat(delta_t)))
+        if use_local_db:
+            fn = partial(f_query_gaia, query=conesearch_local)
+        else:
+            fn = partial(f_query_gaia, query=conesearch_archive)
+
+        results = pool.map(fn, zip(id, ra, dec, itertools.repeat(rad_deg), itertools.repeat(delta_t)))
         pool.close()
 
         crossmatch_lists = list(zip(*results))
@@ -95,7 +179,7 @@ def crossmatch(fitsfile,
         if logfile != None:
             sys.stdout = oldstdout
 
-        # Count successful DR2 matches
+        # Count successful matches
         teffs_valid = sum(1 for x in crossmatch['teff_val'] if x is not None and str(x) != 'nan' and not np.isnan(float(x)))
         n_dr3_targets = sum(1 for x in crossmatch['dr3_id'] if x is not None and str(x) != 'nan' and not np.isnan(float(x)))
         n_dr2_matches = sum(1 for x in crossmatch['dr2_id'] if x is not None and str(x) != 'nan' and not np.isnan(float(x)))
@@ -117,19 +201,16 @@ def crossmatch(fitsfile,
         # Create plot showing DR2 ID availability vs Gmag
         import matplotlib.pyplot as plt
 
-        # Create binary variable: 0 = has DR2 ID, 1 = missing DR2 ID
         dr2_missing = []
         gmags = []
 
         for i, (dr2_id, gmag) in enumerate(zip(crossmatch['dr2_id'], crossmatch['gmag'])):
-            # Check if Gmag is valid
             if gmag is not None and str(gmag) != 'nan' and not np.isnan(float(gmag)):
                 gmags.append(gmag)
-                # 1 if DR2 ID is missing (nan), 0 if DR2 ID exists
                 is_missing = (dr2_id is None or str(dr2_id) == 'nan' or np.isnan(float(dr2_id)))
                 dr2_missing.append(1 if is_missing else 0)
 
-        if gmags:  # Only plot if we have data
+        if gmags:
             plt.figure(figsize=(10, 6))
             plt.scatter(gmags, dr2_missing, alpha=0.6)
             plt.xlabel('Gmag')
@@ -138,7 +219,6 @@ def crossmatch(fitsfile,
             plt.grid(True, alpha=0.3)
             plt.ylim(-0.1, 1.1)
 
-            # Save plot
             plot_filename = fitsfile.replace('.fits', '_dr2_availability.png')
             plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
             plt.close()
@@ -160,16 +240,107 @@ def crossmatch(fitsfile,
 
     return perc, len(ra)
 
-def f_query_gaia(a_b,query):
+
+def f_query_gaia(a_b, query):
     """Convert `f([1,2])` to `f(1,2)` call."""
     return query(*a_b)
 
+
 def twoMASScrossmatch():
-    a=0
+    a = 0
     return a
 
+
+# ---------------------------------------------------------------------------
+# Local database conesearch
+# ---------------------------------------------------------------------------
+
+def conesearch_local(id, ra, dec, rad_deg, delta_t):
+    """
+    Look up the closest Gaia DR3 source to (ra, dec) within rad_deg
+    using the local unified SQLite database, applying proper motion correction.
+
+    Inputs:
+        id       : source identifier (for logging)
+        ra       : float  RA in degrees
+        dec      : float  Dec in degrees
+        rad_deg  : float  search radius in degrees
+        delta_t  : float  time baseline in years from Gaia epoch
+
+    Output:
+        tuple: (dr3_id, dr2_id, pmra, pmdec, gmag, g_rp, bp_rp,
+                parallax, teff, separation)
+    """
+    coord = SkyCoord(ra=ra, dec=dec, unit=(u.deg, u.deg), frame='icrs')
+
+    r_dr3_id = np.nan
+    r_dr2_id = np.nan
+    r_pmra = np.nan
+    r_pmdec = np.nan
+    r_gmag = np.nan
+    r_g_rp = np.nan
+    r_bp_rp = np.nan
+    r_parallax = np.nan
+    r_teff = np.nan
+    r_sep = np.nan
+
+    print(id)
+
+    rows = _db_query(dec - rad_deg, dec + rad_deg, ra - rad_deg, ra + rad_deg)
+
+    if not rows:
+        return (r_dr3_id, r_dr2_id, r_pmra, r_pmdec, r_gmag,
+                r_g_rp, r_bp_rp, r_parallax, r_teff, r_sep)
+
+    # Compute proper-motion-corrected separation for each candidate
+    seps = []
+    for row in rows:
+        try:
+            pmra = row['pmra']
+            pmdec = row['pmdec']
+            if pmra is not None and pmdec is not None:
+                new_ra = row['ra'] + (delta_t * (pmra / 1000.) / 3600.)
+                new_dec = row['dec'] + (delta_t * (pmdec / 1000.) / 3600.)
+            else:
+                new_ra = row['ra']
+                new_dec = row['dec']
+            coord_gaia = SkyCoord(new_ra, new_dec, unit=(u.deg, u.deg), frame='icrs')
+            seps.append(coord.separation(coord_gaia).radian)
+        except Exception:
+            seps.append(np.inf)
+
+    min_idx = int(np.argmin(seps))
+    best = rows[min_idx]
+    best_sep = seps[min_idx]
+
+    print(best_sep)
+
+    if best_sep > 0.00001:
+        print('hold')
+        return (r_dr3_id, r_dr2_id, r_pmra, r_pmdec, r_gmag,
+                r_g_rp, r_bp_rp, r_parallax, r_teff, r_sep)
+
+    r_dr3_id = best['source_id']
+    r_dr2_id = best['dr2_source_id']
+    r_pmra = best['pmra']
+    r_pmdec = best['pmdec']
+    r_gmag = best['phot_g_mean_mag']
+    r_g_rp = best['g_rp']
+    r_bp_rp = best['bp_rp']
+    r_parallax = best['parallax']
+    r_teff = best['teff_gspphot']
+    r_sep = best_sep
+
+    return (r_dr3_id, r_dr2_id, r_pmra, r_pmdec, r_gmag,
+            r_g_rp, r_bp_rp, r_parallax, r_teff, r_sep)
+
+
+# ---------------------------------------------------------------------------
+# Archive conesearch (original behaviour, preserved as fallback)
+# ---------------------------------------------------------------------------
+
 def get_dr2_id_from_dr3(dr3_source_id):
-    """Get DR2 source_id from DR3 source_id using cross-match table"""
+    """Get DR2 source_id from DR3 source_id via the Gaia archive."""
     try:
         query = "SELECT dr2_source_id FROM gaiadr3.dr2_neighbourhood WHERE dr3_source_id = " + str(dr3_source_id)
         j = Gaia.launch_job(query=query, verbose=False)
@@ -183,13 +354,28 @@ def get_dr2_id_from_dr3(dr3_source_id):
         print(f"Error getting DR2 ID for DR3 ID {dr3_source_id}: {e}")
         return np.nan
 
-def conesearch(id, ra, dec,rad_deg,delta_t):
-    # set coordinates using RA and DEC from source in output.fits
+
+def conesearch_archive(id, ra, dec, rad_deg, delta_t):
+    """
+    Look up the closest Gaia DR3 source to (ra, dec) within rad_deg
+    by querying the Gaia archive directly.
+
+    Inputs:
+        id       : source identifier (for logging)
+        ra       : float  RA in degrees
+        dec      : float  Dec in degrees
+        rad_deg  : float  search radius in degrees
+        delta_t  : float  time baseline in years from Gaia epoch
+
+    Output:
+        tuple: (dr3_id, dr2_id, pmra, pmdec, gmag, g_rp, bp_rp,
+                parallax, teff, separation)
+    """
     coord = SkyCoord(ra=ra, dec=dec, unit=(u.deg, u.deg), frame='icrs')
     radius = Quantity(rad_deg, u.deg)
 
-    r_dr3_id = np.nan  # DR3 ID
-    r_dr2_id = np.nan  # DR2 ID
+    r_dr3_id = np.nan
+    r_dr2_id = np.nan
     r_pmra = np.nan
     r_pmdec = np.nan
     r_gmag = np.nan
@@ -202,16 +388,12 @@ def conesearch(id, ra, dec,rad_deg,delta_t):
     r_sep = np.nan
     print(id)
 
-    # gaia_dr2 = Gaia.load_table('gaiadr2.gaia_source')
-
-    # cross match with gaia DR3:
-    ra = coord.ra.deg  # RA already in degrees
-    dec = coord.dec.deg  # Dec already in degrees
+    ra = coord.ra.deg
+    dec = coord.dec.deg
     if rad_deg is not None:
         if hasattr(radius, 'unit'):
             radiusDeg = radius.to(u.deg).value
         else:
-            # Assume radius is in arcsec if no unit specified
             radiusDeg = (radius * u.arcsec).to(u.deg).value
         query = "SELECT DISTANCE(POINT('ICRS',ra,dec), \
                 POINT('ICRS'," + str(ra) + "," + str(dec) + ")) AS dist, * \
@@ -227,12 +409,9 @@ def conesearch(id, ra, dec,rad_deg,delta_t):
     if 'SOURCE_ID' in r.colnames:
         r.rename_column('SOURCE_ID', 'source_id')
 
-    # isolate the columns we're interested in
     r_sub = r['ra', 'dec', 'pmra', 'pmdec', 'source_id', 'phot_g_mean_mag', 'bp_rp', 'g_rp', 'parallax', 'teff_gspphot']
 
     matches = len(r_sub['pmra'])
-    # print ra['ra']
-    # print ra['dec']
 
     if matches == 1:
 
@@ -247,7 +426,7 @@ def conesearch(id, ra, dec,rad_deg,delta_t):
 
         print(r_sep)
 
-        r_dr3_id = r_sub['source_id'][0]  # This is now DR3 ID
+        r_dr3_id = r_sub['source_id'][0]
         r_dr2_id = get_dr2_id_from_dr3(r_dr3_id)
         r_pmra = r_sub['pmra'][0]
         r_pmdec = r_sub['pmdec'][0]
@@ -261,36 +440,32 @@ def conesearch(id, ra, dec,rad_deg,delta_t):
         sep = []
         oldsep = []
         for m in range(matches):
-            # new method
             if not np.ma.is_masked(r_sub['pmra'][m]):
-                new_ra = r_sub['ra'][m] + (delta_t * (r_sub['pmra'][m]/1000.)/3600.)
-                new_dec = r_sub['dec'][m] + (delta_t * (r_sub['pmdec'][m]/1000.)/3600.)
+                new_ra = r_sub['ra'][m] + (delta_t * (r_sub['pmra'][m] / 1000.) / 3600.)
+                new_dec = r_sub['dec'][m] + (delta_t * (r_sub['pmdec'][m] / 1000.) / 3600.)
                 coord_gaia = SkyCoord(new_ra, new_dec, unit=(u.deg, u.deg), frame='icrs')
                 sep.append(coord.separation(coord_gaia).radian)
             else:
                 coord_gaia = SkyCoord(r_sub['ra'][m], r_sub['dec'][m], unit=(u.deg, u.deg), frame='icrs')
                 sep.append(coord.separation(coord_gaia).radian)
 
-            # old method
             coord_gaia = SkyCoord(r_sub['ra'][m], r_sub['dec'][m], unit=(u.deg, u.deg), frame='icrs')
             oldsep.append(coord.separation(coord_gaia).radian)
 
         min_sep = np.argmin(sep)
-        # print "NEW method: " + str(min_sep) + ", OLD method: " + str(np.argmin(oldsep))
         if min_sep != np.argmin(oldsep):
             print("MISMATCH")
             for m in range(matches):
                 print(r_sub['ra'][m])
-                print(delta_t * (r_sub['pmra'][m]/1000.)/3600.)
+                print(delta_t * (r_sub['pmra'][m] / 1000.) / 3600.)
                 print(r_sub['pmra'][m])
                 print(type(r_sub['pmra'][m]))
                 print(r_sub['dec'][m])
                 print(delta_t * (r_sub['pmdec'][m] / 1000.) / 3600.)
 
-
         print(sep[min_sep])
-        r_dr3_id = r_sub['source_id'][min_sep]  # DR3 ID
-        r_dr2_id = get_dr2_id_from_dr3(r_dr3_id)  # Get corresponding DR2 ID
+        r_dr3_id = r_sub['source_id'][min_sep]
+        r_dr2_id = get_dr2_id_from_dr3(r_dr3_id)
         r_pmra = r_sub['pmra'][min_sep]
         r_pmdec = r_sub['pmdec'][min_sep]
         r_gmag = r_sub['phot_g_mean_mag'][min_sep]
@@ -302,8 +477,8 @@ def conesearch(id, ra, dec,rad_deg,delta_t):
 
     if r_sep > 0.00001:
         print('hold')
-        r_dr3_id = np.nan  # DR3 ID
-        r_dr2_id = np.nan  # DR2 ID
+        r_dr3_id = np.nan
+        r_dr2_id = np.nan
         r_pmra = np.nan
         r_pmdec = np.nan
         r_gmag = np.nan
@@ -315,14 +490,17 @@ def conesearch(id, ra, dec,rad_deg,delta_t):
         r_teff = np.nan
         r_sep = np.nan
 
+    return (r_dr3_id, r_dr2_id, r_pmra, r_pmdec, r_gmag, r_g_rp, r_bp_rp, r_parallax, r_teff, r_sep)
 
-    return (r_dr3_id,r_dr2_id,r_pmra,r_pmdec, r_gmag, r_g_rp, r_bp_rp, r_parallax, r_teff,r_sep)
 
-def write_to_output(output, dict,outfits):
+# ---------------------------------------------------------------------------
+# Output writing
+# ---------------------------------------------------------------------------
+
+def write_to_output(output, dict, outfits):
     colnames = ['GAIA_DR2_ID', 'GAIA_DR3_ID', 'parallax', 'Gmag', 'G_RP', 'BP_RP', 'Teff', 'pmra', 'pmdec']
     colnames_upper = [colname.upper() for colname in colnames]
 
-    # Convert both DR2 and DR3 IDs to strings
     gaia_dr2_id = np.array([str(x) for x in dict['dr2_id']])
     gaia_dr3_id = np.array([str(x) for x in dict['dr3_id']])
 
@@ -333,23 +511,19 @@ def write_to_output(output, dict,outfits):
             'parallax': dict['parallax'], 'Gmag': dict['gmag'], 'G_RP': dict['g_rp'], 'BP_RP': dict['bp_rp'],
             'Teff': dict['teff_val']}
 
-    for k,v in list(cols.items()):
+    for k, v in list(cols.items()):
         cols[k] = np.array(v)
 
-    for k,v in list(cols_upper.items()):
+    for k, v in list(cols_upper.items()):
         cols_upper[k] = np.array(v)
 
     if outfits == False:
         with fits.open(output, mode='update') as hdulist_update:
             print('update gaia crossmatch data')
             name = 'Gaia_Crossmatch'
-            # import_cat = hdulist_update[name]
-            # orig_cols = import_cat.columns
             columns = []
-            # names = orig_cols.names
 
             for c in colnames_upper:
-                # if c not in names:
                 print("Adding " + c + " from new crossmatch")
                 if c == "GAIA_DR2_ID" or c == "GAIA_DR3_ID":
                     new_col = fits.ColDefs([fits.Column(name=c, format='26A', array=cols_upper[c])])
@@ -373,35 +547,6 @@ def write_to_output(output, dict,outfits):
             hdulist_update.append(new_cat)
             hdulist_update.flush()
 
-            # with fitsio.FITS(output, 'rw') as infile:
-            #     print "CAREFUL WITH CAPITALS"
-            #     if 'Gaia_Crossmatch' in infile:
-            #         # try:
-            #         print "Gaia Crossmatch already exists, overwriting..."
-            #
-            #         x = infile['Gaia_Crossmatch']
-            #         # for c in colnames:
-            #         #     if c not in infile['Gaia_Crossmatch'].get_colnames():
-            #                 # infile['Gaia_Crossmatch'].insert_column(c, cols[c])
-            #                 # del cols[c]
-            #
-            #         infile['Gaia_Crossmatch'].write(data=cols.values(), names=cols.keys())
-
-            # else:
-            #     print "Writing Gaia_Crossmatch table to " + str(output)
-            #     infile.write(data=cols.values(),names=cols.keys(),extname='Gaia_Crossmatch')
-            # for n in colnames:
-            #     if n not in orig_cols:
-            #         # if the new columns don't already exist in the file then
-            #         print "First time Gaia crossmatch, insert columns:"
-            #         print n
-            #         cat.insert_column(n,cols[n])
-            #
-            # for n in orig_cols:
-            #     if n not in colnames:
-            #         cols[n] = cat[n].read()
-            #
-            # cat.write(cols.values(), names=cols.keys())
     else:
         with fits.open(output, mode='update') as hdulist_update:
             print('update catalogue data')
@@ -412,15 +557,12 @@ def write_to_output(output, dict,outfits):
             names = orig_cols.names
 
             for c in names:
-                # print c
-                if c.upper()!="PM_RA" and c.upper()!="PM_DEC":
+                if c.upper() != "PM_RA" and c.upper() != "PM_DEC":
                     if c.upper() not in colnames_upper:
                         print("Copying " + c + " from old fits file")
-                        # cols = cols + orig_cols[c]
                         if columns == []:
                             columns = fits.ColDefs([orig_cols[c]])
                         else:
-                            # print type(orig_cols[c])
                             columns = columns + orig_cols[c]
                     else:
                         print("Replacing " + c + " with new Crossmatch")
@@ -428,7 +570,7 @@ def write_to_output(output, dict,outfits):
                             new_col = fits.ColDefs([fits.Column(name=c.upper(), format='26A', array=cols_upper[c.upper()])])
                             columns = columns + new_col
                         else:
-                            new_col = fits.ColDefs([fits.Column(name=c.upper(), format='D',array=cols_upper[c.upper()])])
+                            new_col = fits.ColDefs([fits.Column(name=c.upper(), format='D', array=cols_upper[c.upper()])])
                             columns = columns + new_col
 
             for c in colnames_upper:
@@ -446,37 +588,32 @@ def write_to_output(output, dict,outfits):
             hdulist_update.flush()
 
 
-def colappend_fits_tables(hdu1,hdu2):
-    # print("col append")
-    # print(hdu1.data.shape[0])
-    # print(hdu2.data.shape[0])
-    hdu1.data = np.append(hdu1.data,hdu2.data,axis=1)
+def colappend_fits_tables(hdu1, hdu2):
+    hdu1.data = np.append(hdu1.data, hdu2.data, axis=1)
     return hdu1
 
-def run_all_targets(outputdir,logfile,n,ext):
+
+def run_all_targets(outputdir, logfile, n, ext):
     fitslist = glob.glob("%s/*_stack_catalogue_*.%s" % (outputdir, ext))
 
     for f in fitslist:
         if "pm" not in f:
             print(f)
             with fits.open(f) as fname:
-                # dates = fname[0].header['HISTORY'][0]
-                dates = fname[0].header['DATE-OBS'][:10].replace("-","")
+                dates = fname[0].header['DATE-OBS'][:10].replace("-", "")
                 print(dates)
-            # outfitsname = f.split("/")[-1]
-            # target = outfitsname.split("_")[0]
-            # filter = outfitsname.split("_")[1]
-            # only run for speculoos targets
-            # if 'Sp' in target:
             p = crossmatch(f, logfile, n, ext, dates)
+
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('fitsfile')
-    parser.add_argument('-l', '--logfile',required=False)
-    parser.add_argument('-n','--nproc',required=True)
+    parser.add_argument('-l', '--logfile', required=False)
+    parser.add_argument('-n', '--nproc', required=True)
     parser.add_argument('-e', '--ext', required=True)
-    parser.add_argument('-d','--date',required=False)
+    parser.add_argument('-d', '--date', required=False)
+    parser.add_argument('--archive', action='store_true',
+                        help='Query the Gaia archive instead of the local database')
     args = parser.parse_args()
 
     fitsfile = args.fitsfile
@@ -484,11 +621,10 @@ def main():
     n = args.nproc
     ext = args.ext
     date = args.date
+    use_local_db = not args.archive
 
-    # run_all_targets(fitsfile,logfile,n,ext)
+    p = crossmatch(fitsfile, logfile, n, ext, date, use_local_db=use_local_db)
 
-    p = crossmatch(fitsfile,logfile,n,ext,date)
-    # run_all_targets(outputdir,logfile,n,ext)
 
 if __name__ == '__main__':
     main()
