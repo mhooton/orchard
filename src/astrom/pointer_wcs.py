@@ -296,22 +296,29 @@ def gaia_db_query(
     else:
         table = table.sort_values(by=["phot_g_mean_mag"]).reset_index(drop=True)
 
-    # Fix for pandas FutureWarning - separate replace and infer_objects calls
-    table = table.replace("", np.nan)
-    table = table.infer_objects(copy=False)
-    table.dropna(inplace=True)
+        # Replace empty strings with NaN across all columns
+        table = table.replace("", np.nan)
+        table = table.infer_objects(copy=False)
 
-    # limit number of stars
-    table = table[0:limit]
+        # Only drop rows missing the columns essential for plate solving
+        table.dropna(subset=["ra", "dec", "phot_g_mean_mag", "j_m"], inplace=True)
 
-    # add proper motion to ra and dec
-    if dateobs is not None:
-        # calculate fractional year
-        dateobs = dateobs.year + (dateobs.timetuple().tm_yday - 1) / 365.25  # type: ignore
+        # Fill missing proper motions with zero so stars are still usable
+        # (their static RA/Dec positions will be used without epoch correction)
+        table["pmra"] = table["pmra"].fillna(0.0)
+        table["pmdec"] = table["pmdec"].fillna(0.0)
 
-        years = dateobs - 2015.5  # type: ignore
-        table["ra"] += years * table["pmra"] / 1000 / 3600
-        table["dec"] += years * table["pmdec"] / 1000 / 3600
+        # limit number of stars
+        table = table[0:limit]
+
+        # add proper motion to ra and dec
+        if dateobs is not None:
+            # calculate fractional year
+            dateobs = dateobs.year + (dateobs.timetuple().tm_yday - 1) / 365.25  # type: ignore
+
+            years = dateobs - 2015.5  # type: ignore
+            table["ra"] += years * table["pmra"] / 1000 / 3600
+            table["dec"] += years * table["pmdec"] / 1000 / 3600
 
     return np.array([table["ra"].values, table["dec"].values]).T
 

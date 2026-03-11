@@ -6,6 +6,7 @@
         "saturation_threshold": 62000,
         "naxis2": 2088,
         "dark_matching_exptime": false,
+        "arcsec_per_pixel": 0.34,
         "overscan": {
           "top_row": -15,
           "bottom_row": null,
@@ -26,6 +27,7 @@
         "saturation_threshold": 62000,
         "naxis2": 2088,
         "dark_matching_exptime": false,
+        "arcsec_per_pixel": 0.34,
         "overscan": {
           "top_row": -15,
           "bottom_row": null,
@@ -46,6 +48,7 @@
         "saturation_threshold": 62000,
         "naxis2": 2088,
         "dark_matching_exptime": false,
+        "arcsec_per_pixel": 0.34,
         "overscan": {
           "top_row": -15,
           "bottom_row": null,
@@ -66,6 +69,7 @@
         "saturation_threshold": 62000,
         "naxis2": 2088,
         "dark_matching_exptime": false,
+        "arcsec_per_pixel": 0.34,
         "overscan": {
           "top_row": -15,
           "bottom_row": null,
@@ -84,6 +88,7 @@
         "saturation_threshold": 11000,
         "naxis2": 1280,
         "dark_matching_exptime": true,
+        "arcsec_per_pixel": 0.31,
         "bad_pixel_correction": {
           "preferred_flat_filter": "zYJ",
           "hot_sigma_threshold": 5,
@@ -99,6 +104,7 @@
         "saturation_threshold": 62000,
         "naxis2": 2088,
         "dark_matching_exptime": false,
+        "arcsec_per_pixel": 0.34,
         "overscan": {
           "top_row": -15,
           "bottom_row": null,
@@ -123,6 +129,7 @@
         "saturation_threshold": 62000,
         "naxis2": 2088,
         "dark_matching_exptime": false,
+        "arcsec_per_pixel": 0.34,
         "overscan": {
           "top_row": -15,
           "bottom_row": null,
@@ -143,6 +150,7 @@
         "saturation_threshold": 62000,
         "naxis2": 2048,
         "dark_matching_exptime": false,
+        "arcsec_per_pixel": "FILL",
         "trim": {
           "top_row": 1,
           "bottom_row": -1,

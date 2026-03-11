@@ -117,11 +117,13 @@ def make_localfits_table(image_path, output_path, fov_padding=LOCAL_DB_FOV_PADDI
     ra_out = []
     dec_out = []
     for ra, dec, pmra, pmdec in rows:
-        if pmra is not None and pmdec is not None:
-            ra_corr  = ra  + delta_t * (pmra  / 1000.) / 3600.
-            dec_corr = dec + delta_t * (pmdec / 1000.) / 3600.
-        else:
-            ra_corr  = ra
+        try:
+            pmra_f = float(pmra)
+            pmdec_f = float(pmdec)
+            ra_corr = ra + delta_t * (pmra_f / 1000.) / 3600.
+            dec_corr = dec + delta_t * (pmdec_f / 1000.) / 3600.
+        except (TypeError, ValueError):
+            ra_corr = ra
             dec_corr = dec
         ra_out.append(ra_corr)
         dec_out.append(dec_corr)
@@ -323,6 +325,7 @@ def casu_solve(casuin, thresh=2, verbose=False, catsrc='vizgaia3', rcore=4, ipix
         make_localfits_table(casuin, localfits_path)
         casutools.wcsfit(casuin, catfile_name, catsrc=catsrc, verbose=verbose,
                          wcsref=localfits_path)
+
     finally:
         if os.path.exists(localfits_path):
             os.remove(localfits_path)
