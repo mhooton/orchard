@@ -511,11 +511,19 @@ def write_to_output(output, dict, outfits):
             'parallax': dict['parallax'], 'Gmag': dict['gmag'], 'G_RP': dict['g_rp'], 'BP_RP': dict['bp_rp'],
             'Teff': dict['teff_val']}
 
+    string_cols = {'GAIA_DR2_ID', 'GAIA_DR3_ID'}
+
     for k, v in list(cols.items()):
-        cols[k] = np.array(v)
+        if k.upper() in string_cols:
+            cols[k] = np.array(v)
+        else:
+            cols[k] = np.array([np.nan if x is None else x for x in v], dtype=np.float64)
 
     for k, v in list(cols_upper.items()):
-        cols_upper[k] = np.array(v)
+        if k.upper() in string_cols:
+            cols_upper[k] = np.array(v)
+        else:
+            cols_upper[k] = np.array([np.nan if x is None else x for x in v], dtype=np.float64)
 
     if outfits == False:
         with fits.open(output, mode='update') as hdulist_update:
