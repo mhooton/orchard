@@ -96,7 +96,7 @@ def subtract_time_buffer(timestamp_str, buffer_minutes=2):
         print(f"Warning: Could not subtract buffer from {timestamp_str}: {e}")
         return timestamp_str
 
-def get_images(tel, telname, stime, etime, date, imgdir, down_im, test_mode=False, verbose=False, query_only=False):
+def get_images(tel, telname, stime, etime, date, imgdir, down_im, test_mode=False, verbose=False, query_only=False, skip_transform=False):
     """
     Download images from ESO archive using modern API
 
@@ -267,8 +267,8 @@ def get_images(tel, telname, stime, etime, date, imgdir, down_im, test_mode=Fals
                             query_only=query_only
                         )
 
-                        # Skip astra_transform in query_only mode
-                        if not query_only:
+                        # Skip astra_transform in query_only or skip_transform mode
+                        if not query_only and not skip_transform:
                             # Run astra_transform on downloaded files
                             dp_ids = [file_row[0] for file_row in files_to_download]
                             astra_transform(dp_ids, imgdir, 1)
@@ -298,8 +298,8 @@ def get_images(tel, telname, stime, etime, date, imgdir, down_im, test_mode=Fals
                         parallel=True  # Use parallel downloads for efficiency
                     )
 
-                    # Skip astra_transform in query_only mode
-                    if not query_only:
+                    # Skip astra_transform in query_only or skip_transform mode
+                    if not query_only and not skip_transform:
                         # Run astra_transform on downloaded files
                         dp_ids = [file_row[0] for file_row in files_to_download]
                         astra_transform(dp_ids, imgdir, 1)
@@ -541,7 +541,7 @@ RECOMMENDED ACTIONS:
 
 
 def eso_download(dir, telname, sdate, edate, wait, test_mode=False, query_only=False, verbose=False,
-                 transfer_log_grace_days=5, max_retries=13):
+                 transfer_log_grace_days=5, max_retries=13, skip_transform=False):
     """
     Main download function with retry logic
 
@@ -672,7 +672,7 @@ def eso_download(dir, telname, sdate, edate, wait, test_mode=False, query_only=F
 
                 # Download images
                 num_i, num_i_eso = get_images(tel[t], telname[t], stime, etime, date, imgdir,
-                                              downloaded_files, test_mode, verbose, query_only)
+                                              downloaded_files, test_mode, verbose, query_only, skip_transform)
 
                 # Calculate totals
                 total_downloaded = len(downloaded_files) + num_i
@@ -860,6 +860,8 @@ Examples:
                         help='Query only: list matching files without downloading')
     parser.add_argument('--verbose', action='store_true',
                         help='Verbose mode: show detailed download progress')
+    parser.add_argument('--skip-transform', action='store_true',
+                        help='Skip astra_transform after downloading (download raw files only)')
     parser.add_argument('--transfer-log-grace-days', type=int, default=5,
                         help='Number of days after observation to check transfer log and retry (default: 5)')
     parser.add_argument('--max-retries', type=int, default=13,
@@ -884,6 +886,9 @@ Examples:
     if args.verbose:
         print("*** VERBOSE MODE ENABLED ***")
 
+    if args.skip_transform:
+        print("*** SKIP TRANSFORM MODE - astra_transform will not be run ***")
+
     print(dt.datetime.now())
     eso_download(
         dir=args.dir,
@@ -895,5 +900,6 @@ Examples:
         query_only=args.query_only,
         verbose=args.verbose,
         transfer_log_grace_days=args.transfer_log_grace_days,
-        max_retries=args.max_retries
+        max_retries=args.max_retries,
+        skip_transform=args.skip_transform
     )
