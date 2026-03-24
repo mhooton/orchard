@@ -396,8 +396,21 @@ class ImageStarMapping:
     gaia_stars_in_image: np.ndarray
 
     @classmethod
-    def from_gaia_coordinates(cls, stars_in_image: np.ndarray, gaia_stars: np.ndarray):
+    def from_gaia_coordinates(cls, stars_in_image: np.ndarray, gaia_stars: np.ndarray,
+                              expected_plate_scale: float = None, plate_scale_tolerance: float = 0.1):
         wcs = twirl.compute_wcs(stars_in_image, gaia_stars)
+        if wcs is None:
+            raise ValueError("twirl failed to compute a WCS solution")
+        if expected_plate_scale is not None:
+            from astropy.wcs.utils import proj_plane_pixel_scales
+            solved_plate_scale = np.mean(proj_plane_pixel_scales(wcs))  # degrees/pixel
+            deviation = abs(solved_plate_scale - expected_plate_scale) / expected_plate_scale
+            if deviation > plate_scale_tolerance:
+                raise ValueError(
+                    f"Plate scale sanity check failed: solved={solved_plate_scale * 3600:.3f} arcsec/px, "
+                    f"expected={expected_plate_scale * 3600:.3f} arcsec/px, "
+                    f"deviation={deviation * 100:.1f}%"
+                )
         gaia_stars_in_image = np.array(SkyCoord(gaia_stars, unit="deg").to_pixel(wcs)).T
         return cls(wcs, stars_in_image, gaia_stars_in_image)
 
@@ -789,7 +802,9 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                     print(f"Starting WCS computation...")
 
                 image_star_mapping = ImageStarMapping.from_gaia_coordinates(
-                    stars_in_image, gaia_stars
+                    stars_in_image, gaia_stars,
+                    expected_plate_scale=plate_scale,
+                    plate_scale_tolerance=0.1
                 )
 
                 if verbose:

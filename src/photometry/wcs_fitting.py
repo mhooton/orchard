@@ -182,9 +182,16 @@ def m_solve_images(filelist, outfile,
     outdir = os.path.dirname(os.path.realpath(infiles[0]))
     print('\n**m_solve_images:**\n')
     # print outdir
-    # pass second (first doesn't have all nec. info) processed image file to initialise wcs cache
-    #  by performing imcore and wcsfit on it:
-    initialise_wcs_cache(infiles[0], outdir, catsrc, thresh, verbose)
+    # Try each image in turn until one successfully initialises the wcs cache
+    for i, candidate in enumerate(infiles):
+        try:
+            initialise_wcs_cache(candidate, outdir, catsrc, thresh, verbose)
+            break
+        except Exception as e:
+            print(f"initialise_wcs_cache failed for {candidate}: {e}")
+            if i == len(infiles) - 1:
+                raise RuntimeError("initialise_wcs_cache failed for all images in filelist") from e
+            print("Trying next image...")
 
     #run casu_solve on the images
     print(ext)
