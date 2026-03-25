@@ -15,6 +15,7 @@ import timeit
 import numpy as np
 from download.request_eso import ESODownloader
 from download.astra_transform import astra_transform, transformation_check
+from download.unpack_datacubes import is_datacube, unpack_datacube
 from dotenv import load_dotenv
 # Load .env file from src/reporting directory
 env_path = os.path.join(os.path.dirname(__file__), '..', 'reporting', '.env')
@@ -96,6 +97,44 @@ def subtract_time_buffer(timestamp_str, buffer_minutes=2):
         print(f"Warning: Could not subtract buffer from {timestamp_str}: {e}")
         return timestamp_str
 
+
+def _unpack_if_datacube(dp_ids, imgdir):
+    """
+    For each dp_id in dp_ids, check whether the downloaded file is a datacube.
+    If it is, unpack it into individual 2D FITS files and replace the datacube's
+    dp_id in the list with the dp_ids of the unpacked frames.
+    Files that are not datacubes are passed through unchanged.
+
+    Parameters
+    ----------
+    dp_ids  : list of str — dp_ids as returned by the TAP query
+    imgdir  : str         — directory containing the downloaded files
+
+    Returns
+    -------
+    tuple : (list of str, int)
+        - flat list of dp_ids ready for astra_transform
+        - total number of frames extracted from cubes (0 if no cubes found)
+    """
+    result_ids = []
+    total_frames_extracted = 0
+
+    for dp_id in dp_ids:
+        filepath = os.path.join(imgdir, dp_id + '.fits')
+        if os.path.exists(filepath) and is_datacube(filepath):
+            print(f"Datacube detected: {dp_id} — unpacking...")
+            unpacked_ids, n_frames = unpack_datacube(filepath, imgdir)
+            if unpacked_ids:
+                result_ids.extend(unpacked_ids)
+                total_frames_extracted += n_frames
+            else:
+                print(f"Warning: unpacking produced no frames for {dp_id}")
+        else:
+            result_ids.append(dp_id)
+
+    return result_ids, total_frames_extracted
+
+
 def get_images(tel, telname, stime, etime, date, imgdir, down_im, test_mode=False, verbose=False, query_only=False, skip_transform=False):
     """
     Download images from ESO archive using modern API
@@ -112,6 +151,8 @@ def get_images(tel, telname, stime, etime, date, imgdir, down_im, test_mode=Fals
 
     Returns:
         tuple: (num_downloaded, total_eso_files)
+        Both values are frame-level counts: if datacubes were downloaded and
+        unpacked, these reflect the number of individual frames, not cubes.
     """
     print("Getting images from ESO archive")
     if test_mode:
@@ -269,8 +310,12 @@ def get_images(tel, telname, stime, etime, date, imgdir, down_im, test_mode=Fals
 
                         # Skip astra_transform in query_only or skip_transform mode
                         if not query_only and not skip_transform:
-                            # Run astra_transform on downloaded files
                             dp_ids = [file_row[0] for file_row in files_to_download]
+                            dp_ids, frames_extracted = _unpack_if_datacube(dp_ids, imgdir)
+                            if frames_extracted > 0:
+                                # Replace cube count with frame count in total
+                                total_eso_files -= len(files_to_download)
+                                total_eso_files += frames_extracted
                             astra_transform(dp_ids, imgdir, 1)
 
                         downloaded_files.extend(batch_downloaded)
@@ -300,8 +345,14 @@ def get_images(tel, telname, stime, etime, date, imgdir, down_im, test_mode=Fals
 
                     # Skip astra_transform in query_only or skip_transform mode
                     if not query_only and not skip_transform:
-                        # Run astra_transform on downloaded files
                         dp_ids = [file_row[0] for file_row in files_to_download]
+                        dp_ids, frames_extracted = _unpack_if_datacube(dp_ids, imgdir)
+                        if frames_extracted > 0:
+                            # Replace cube count with frame count in total
+                            n_cubes_in_batch = len(files_to_download)
+                            total_eso_files -= n_cubes_in_batch
+                            total_eso_files += frames_extracted
+                            print(f"Datacube unpacking: {n_cubes_in_batch} cubes -> {frames_extracted} frames")
                         astra_transform(dp_ids, imgdir, 1)
 
                     downloaded_files.extend(batch_downloaded)
@@ -333,7 +384,7 @@ def check_num_images(imgdir, num_im_eso):
             if x[-5:] == ".fits" or x[-4:] == ".fts":
                 num_im_dir = num_im_dir + 1
 
-        print(num_im_dir, num_im_eso)
+        print(f"Images on disk: {num_im_dir}, expected from archive: {num_im_eso}")
     except Exception as e:
         print(e)
         num_im_dir = 0
@@ -671,6 +722,8 @@ def eso_download(dir, telname, sdate, edate, wait, test_mode=False, query_only=F
                 print(f"Already downloaded: {len(downloaded_files)} files")
 
                 # Download images
+                # num_i and num_i_eso are both frame-level counts: if datacubes were
+                # downloaded and unpacked, these reflect individual frames not cubes.
                 num_i, num_i_eso = get_images(tel[t], telname[t], stime, etime, date, imgdir,
                                               downloaded_files, test_mode, verbose, query_only, skip_transform)
 
