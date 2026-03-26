@@ -135,7 +135,8 @@ def _unpack_if_datacube(dp_ids, imgdir):
     return result_ids, total_frames_extracted
 
 
-def get_images(tel, telname, stime, etime, date, imgdir, down_im, test_mode=False, verbose=False, query_only=False, skip_transform=False):
+def get_images(tel, telname, stime, etime, date, imgdir, down_im, test_mode=False, verbose=False,
+               query_only=False, skip_transform=False, skip_unpack=False):
     """
     Download images from ESO archive using modern API
 
@@ -148,11 +149,14 @@ def get_images(tel, telname, stime, etime, date, imgdir, down_im, test_mode=Fals
         imgdir: Destination directory
         down_im: List of already downloaded images
         test_mode: If True, only download the first image found
+        skip_transform: If True, skip astra_transform after downloading
+        skip_unpack: If True, skip datacube detection and unpacking entirely;
+                     cube files are left on disk as downloaded
 
     Returns:
         tuple: (num_downloaded, total_eso_files)
-        Both values are frame-level counts: if datacubes were downloaded and
-        unpacked, these reflect the number of individual frames, not cubes.
+        Both values are frame-level counts when cubes are unpacked. When
+        skip_unpack=True, counts reflect the number of cube files, not frames.
     """
     print("Getting images from ESO archive")
     if test_mode:
@@ -295,7 +299,6 @@ def get_images(tel, telname, stime, etime, date, imgdir, down_im, test_mode=Fals
             if test_mode and files_to_download:
                 print("*** TEST MODE: Skipping remaining data types ***")
                 total_eso_files += num_files  # Still count all available files
-                # Download the single test file
                 if files_to_download:
                     print(f"Downloading 1 test file from {data_type}...")
                     print(dt.datetime.now())
@@ -308,15 +311,19 @@ def get_images(tel, telname, stime, etime, date, imgdir, down_im, test_mode=Fals
                             query_only=query_only
                         )
 
-                        # Skip astra_transform in query_only or skip_transform mode
-                        if not query_only and not skip_transform:
+                        if not query_only:
                             dp_ids = [file_row[0] for file_row in files_to_download]
-                            dp_ids, frames_extracted = _unpack_if_datacube(dp_ids, imgdir)
-                            if frames_extracted > 0:
-                                # Replace cube count with frame count in total
-                                total_eso_files -= len(files_to_download)
-                                total_eso_files += frames_extracted
-                            astra_transform(dp_ids, imgdir, 1)
+
+                            # Unpacking is independent of skip_transform but
+                            # can be suppressed explicitly with skip_unpack.
+                            if not skip_unpack:
+                                dp_ids, frames_extracted = _unpack_if_datacube(dp_ids, imgdir)
+                                if frames_extracted > 0:
+                                    total_eso_files -= len(files_to_download)
+                                    total_eso_files += frames_extracted
+
+                            if not skip_transform:
+                                astra_transform(dp_ids, imgdir, 1)
 
                         downloaded_files.extend(batch_downloaded)
                         print(dt.datetime.now())
@@ -343,17 +350,22 @@ def get_images(tel, telname, stime, etime, date, imgdir, down_im, test_mode=Fals
                         parallel=True  # Use parallel downloads for efficiency
                     )
 
-                    # Skip astra_transform in query_only or skip_transform mode
-                    if not query_only and not skip_transform:
+                    if not query_only:
                         dp_ids = [file_row[0] for file_row in files_to_download]
-                        dp_ids, frames_extracted = _unpack_if_datacube(dp_ids, imgdir)
-                        if frames_extracted > 0:
-                            # Replace cube count with frame count in total
-                            n_cubes_in_batch = len(files_to_download)
-                            total_eso_files -= n_cubes_in_batch
-                            total_eso_files += frames_extracted
-                            print(f"Datacube unpacking: {n_cubes_in_batch} cubes -> {frames_extracted} frames")
-                        astra_transform(dp_ids, imgdir, 1)
+
+                        # Unpacking is independent of skip_transform but
+                        # can be suppressed explicitly with skip_unpack.
+                        if not skip_unpack:
+                            dp_ids, frames_extracted = _unpack_if_datacube(dp_ids, imgdir)
+                            if frames_extracted > 0:
+                                n_cubes_in_batch = len(files_to_download)
+                                total_eso_files -= n_cubes_in_batch
+                                total_eso_files += frames_extracted
+                                print(f"Datacube unpacking: {n_cubes_in_batch} cubes -> "
+                                      f"{frames_extracted} frames")
+
+                        if not skip_transform:
+                            astra_transform(dp_ids, imgdir, 1)
 
                     downloaded_files.extend(batch_downloaded)
                     print(dt.datetime.now())
@@ -592,13 +604,15 @@ RECOMMENDED ACTIONS:
 
 
 def eso_download(dir, telname, sdate, edate, wait, test_mode=False, query_only=False, verbose=False,
-                 transfer_log_grace_days=5, max_retries=13, skip_transform=False):
+                 transfer_log_grace_days=5, max_retries=13, skip_transform=False, skip_unpack=False):
     """
     Main download function with retry logic
 
     Args:
         transfer_log_grace_days: Number of days after observation to enforce transfer log checking (default 5)
         max_retries: Maximum number of download attempts (default 13, covering ~12 hours)
+        skip_transform: If True, skip astra_transform after downloading
+        skip_unpack: If True, skip datacube detection and unpacking entirely
     """
 
     # Generate retry intervals: [15, 30, 60, 60, 60, ...] up to max_retries-1 intervals
@@ -721,11 +735,12 @@ def eso_download(dir, telname, sdate, edate, wait, test_mode=False, query_only=F
 
                 print(f"Already downloaded: {len(downloaded_files)} files")
 
-                # Download images
-                # num_i and num_i_eso are both frame-level counts: if datacubes were
-                # downloaded and unpacked, these reflect individual frames not cubes.
+                # Download images.
+                # num_i and num_i_eso are frame-level counts when skip_unpack=False.
+                # When skip_unpack=True, they reflect cube-level counts.
                 num_i, num_i_eso = get_images(tel[t], telname[t], stime, etime, date, imgdir,
-                                              downloaded_files, test_mode, verbose, query_only, skip_transform)
+                                              downloaded_files, test_mode, verbose, query_only,
+                                              skip_transform, skip_unpack)
 
                 # Calculate totals
                 total_downloaded = len(downloaded_files) + num_i
@@ -887,9 +902,12 @@ Examples:
 
   # Verbose mode
   python SSO_download.py --dir /data/SPECULOOSPipeline --telescope Io --sdate 20250728 --edate 20250729 --verbose
-  
+
   # Custom retry settings
   python SSO_download.py --dir /data/SPECULOOSPipeline --telescope Io --sdate 20250728 --edate 20250729 --transfer-log-grace-days 7 --max-retries 10
+
+  # Download raw cube files only, no unpacking or transform
+  python SSO_download.py --dir /data/SPECULOOSPipeline --telescope Callisto --sdate 20260321 --edate 20260322 --skip-unpack --skip-transform
         """
     )
 
@@ -915,6 +933,8 @@ Examples:
                         help='Verbose mode: show detailed download progress')
     parser.add_argument('--skip-transform', action='store_true',
                         help='Skip astra_transform after downloading (download raw files only)')
+    parser.add_argument('--skip-unpack', action='store_true',
+                        help='Skip datacube detection and unpacking; cube files are left on disk as downloaded')
     parser.add_argument('--transfer-log-grace-days', type=int, default=5,
                         help='Number of days after observation to check transfer log and retry (default: 5)')
     parser.add_argument('--max-retries', type=int, default=13,
@@ -938,9 +958,10 @@ Examples:
         print("*** QUERY ONLY MODE - Will list files but not download ***")
     if args.verbose:
         print("*** VERBOSE MODE ENABLED ***")
-
     if args.skip_transform:
         print("*** SKIP TRANSFORM MODE - astra_transform will not be run ***")
+    if args.skip_unpack:
+        print("*** SKIP UNPACK MODE - datacubes will not be unpacked ***")
 
     print(dt.datetime.now())
     eso_download(
@@ -954,5 +975,6 @@ Examples:
         verbose=args.verbose,
         transfer_log_grace_days=args.transfer_log_grace_days,
         max_retries=args.max_retries,
-        skip_transform=args.skip_transform
+        skip_transform=args.skip_transform,
+        skip_unpack=args.skip_unpack
     )
