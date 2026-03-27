@@ -10,6 +10,9 @@ from reporting.QC import main as QC
 import pipeutils
 import fnmatch
 from collections import defaultdict
+import warnings
+from astropy.io.fits.verify import VerifyWarning
+warnings.filterwarnings('ignore', category=VerifyWarning)
 
 def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ=None):
     """

@@ -7,6 +7,9 @@ from calibration.pipeutils import get_instrument_parameters, apply_image_slice, 
 from astropy.io import fits
 from astropy.stats import sigma_clip
 from reporting.QC import main as QC
+import warnings
+from astropy.io.fits.verify import VerifyWarning
+warnings.filterwarnings('ignore', category=VerifyWarning)
 
 def biasmaker(inlist, biasname, outdir, reportdir, run, targ):
     # Get parameters once from the first file

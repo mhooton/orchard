@@ -28,6 +28,9 @@ import numpy as np
 from astropy.io import fits as pyfits
 from astropy.stats import sigma_clip
 from calibration.pipeutils import apply_image_slice, open_fits_file, get_jd_header_name
+import warnings
+from astropy.io.fits.verify import VerifyWarning
+warnings.filterwarnings('ignore', category=VerifyWarning)
 
 
 def render_total_file(data, fname, nfiles):

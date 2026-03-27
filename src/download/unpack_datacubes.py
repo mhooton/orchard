@@ -58,7 +58,9 @@ from astropy.io import fits
 from astropy.time import Time
 from astropy.coordinates import SkyCoord, EarthLocation, AltAz
 import astropy.units as u
-
+import warnings
+from astropy.io.fits.verify import VerifyWarning
+warnings.filterwarnings('ignore', category=VerifyWarning)
 
 def is_datacube(filepath):
     """

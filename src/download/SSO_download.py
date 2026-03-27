@@ -16,6 +16,9 @@ import numpy as np
 from download.request_eso import ESODownloader
 from download.astra_transform import astra_transform, transformation_check
 from download.unpack_datacubes import is_datacube, unpack_datacube
+import warnings
+from astropy.io.fits.verify import VerifyWarning
+warnings.filterwarnings('ignore', category=VerifyWarning)
 from dotenv import load_dotenv
 # Load .env file from src/reporting directory
 env_path = os.path.join(os.path.dirname(__file__), '..', 'reporting', '.env')

@@ -5,6 +5,9 @@ import numpy as np
 from calibration.pipeutils import get_instrument_parameters, open_fits_file, create_dark_dict, create_flat_dict
 from astropy.io import fits
 from matplotlib import pyplot as pl
+import warnings
+from astropy.io.fits.verify import VerifyWarning
+warnings.filterwarnings('ignore', category=VerifyWarning)
 
 def detect_bad_pixels(dark, hot_sigma=5, cold_sigma=5):
     """

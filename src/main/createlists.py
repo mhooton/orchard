@@ -33,6 +33,9 @@ from functools import partial
 from datetime import datetime,timedelta
 from reporting.QC import main as QC
 from calibration.pipeutils import open_fits_file
+import warnings
+from astropy.io.fits.verify import VerifyWarning
+warnings.filterwarnings('ignore', category=VerifyWarning)
 
 DIRECTORY = os.getcwd()
 DEBUG = 0

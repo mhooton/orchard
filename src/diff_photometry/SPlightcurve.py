@@ -34,6 +34,8 @@ warnings.filterwarnings('ignore', message="Input data contains invalid values.*"
 warnings.filterwarnings('default', message=".*", category=FutureWarning)
 warnings.filterwarnings('default', message=".*", category=DeprecationWarning)
 warnings.filterwarnings('ignore', message="Warning: 'partition' will ignore the 'mask' of the MaskedArray.*", category=UserWarning)
+from astropy.io.fits.verify import VerifyWarning
+warnings.filterwarnings('ignore', category=VerifyWarning)
 
 init_zp = 24.16
 # gain = 1.0032

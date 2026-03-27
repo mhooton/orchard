@@ -14,10 +14,7 @@ import pandas as pd
 from itertools import compress
 import warnings
 from astropy.io.fits.verify import VerifyWarning
-
-from calibration.pipeutils import create_dark_dict
-
-warnings.filterwarnings('ignore', category=VerifyWarning, message=".*Invalid 'BLANK' keyword.*")
+warnings.filterwarnings('ignore', category=VerifyWarning)
 
 def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, bpm, ron, darkcur, version):
 

@@ -11,6 +11,10 @@ import fnmatch
 import shutil
 from astrom.twirl_speculoos import twirl_wcs
 from astrom.pointer_wcs import pointer_wcs
+import warnings
+from astropy.io.fits.verify import VerifyWarning
+warnings.filterwarnings('ignore', category=VerifyWarning)
+
 def has_valid_wcs(header):
     """
     Check if header contains valid WCS data, not just WCS keywords.
