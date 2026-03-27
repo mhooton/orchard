@@ -1,5 +1,3 @@
 src/reporting/.env
-docker/casutools-1.0.44pre.tar.gz
-docker/orchard-pipeline.tar
 docker/docker-compose.server-autosave.yml
 .idea/
