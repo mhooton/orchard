@@ -164,6 +164,7 @@ readonly OUTEXT="fits"
 readonly VERSION='v3'
 #readonly TLIST="/appct/data/SPECULOOSPipeline/tests/target_list_ids_201905.txt"
 readonly TLIST=$(abspath ${2})/ml_40pc.txt
+readonly TOI_TABLE=${SCRIPTDIR}/condense/toi_gaia_ids.csv
 #readonly EXT='fts'
 
 # Add this with other readonly declarations
@@ -503,7 +504,6 @@ create_stack_image() {
     fi
     IMAGELISTS=${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}/*_processed.dat
 
-
     if $(any_filelists ${IMAGELISTS}); then
 
         for IMAGELIST in ${IMAGELISTS}
@@ -512,29 +512,22 @@ create_stack_image() {
             SUBLIST=${IMAGELIST#${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}/}
             FILTER=${SUBLIST%_processed.dat}
 
-#            correct_i="$(python ${SCRIPTDIR}/correct_target_names.py ${IMAGELIST} ${i})"
-#            echo "${correct_i}"
-
-#            #check if stack catalogue already exists
-#            if [ -e ${OUTPUTDIR}/StackImages/${correct_i}_stack_catalogue_${FILTER}.${OUTEXT} ]; then
-#                echo "The stack catalogue for target " ${correct_i} " with filter " ${FILTER} " already exists"
-#            else
-
-
-            CMD="python ${SCRIPTDIR}/photometry/ZLP_create_cat.py
+            CMD="python ${SCRIPTDIR}/photometry/catalogue_fov.py
                 $IMAGELIST
-                ${correct_i}_outstack_${FILTER}.${OUTEXT}
-                ${correct_i}_stack_catalogue_${FILTER}.${OUTEXT}
                 ${OUTPUTDIR}/${DATE}/${i}
-                ${OUTPUTDIR}/StackImages
+                ${STACKIMAGESDIR}
                 ${REPORTDIR}
                 $FILTER
                 $DATE
+                ${OBSDIR}
+                ${i}
+                ${TEL}
+                ${TLIST}
+                ${TOI_TABLE}
                 False
                 $CTHRESH
                 $STHRESH
                 False
-                $NUMSTACK
                 $IPIX
                 $XMATCH
                 $APSIZE
@@ -542,15 +535,20 @@ create_stack_image() {
                 $OUTEXT"
             echo ${CMD}
             ${CMD}
+            T8_EXIT=$?
 
-#            fi
+            if [ ${T8_EXIT} -ne 0 ]; then
+                echo "WARNING: catalogue_fov.py exited with code ${T8_EXIT} for target ${i}, filter ${FILTER} — no valid catalogue available"
+                echo "Skipping remaining pipeline stages for target ${i}"
+                T8_FAILED=1
+            fi
+
         done
 
     else
         continue
     fi
-#    done
-#    fi
+
     CMD="python ${SCRIPTDIR}/reporting/report.py ${report} ${DATE} ${i} ${TEL} ${RUNNAME} 8"
     ${CMD}
     echo "END T8"
@@ -596,10 +594,42 @@ single_perform_aperture_photometry() {
             SUBLIST=${filelist#${OUTPUTDIR}/${DATE}/${1}/${RUNNAME}/}
             FILTER=${SUBLIST%_processed.dat}
             echo "For filter = ${FILTER}"
-            echo "Using Stack Catalogue ${OUTPUTDIR}/StackImages/${2}_stack_catalogue_${FILTER}.${OUTEXT}"
+
+            # Locate the stack catalogue for this filter. Under the new naming
+            # scheme (catalogue_fov.py) it is named by Gaia DR2 ID rather than
+            # target name. If two catalogues exist (tonight's failed stack and
+            # a restored backup), prefer the one that does NOT match tonight's
+            # telescope and date — i.e. the backup. If only one exists, use it.
+            # Use sidecar file to identify tonight's expected catalogue name.
+            # Prefer any catalogue that is NOT the expected one (i.e. a backup).
+            # Fall back to the expected catalogue if no backup is present.
+            CATFILE=""
+            EXPECTED_CAT=""
+            SIDECAR="${output_directory}/.expected_stack_catalogue"
+            if [ -f "${SIDECAR}" ]; then
+                EXPECTED_CAT=$(cat "${SIDECAR}" | tr -d '[:space:]')
+            fi
+            for f in ${output_directory}/[0-9]*_stack_catalogue_*.${OUTEXT}; do
+                [ -f "$f" ] || continue
+                fname=$(basename "$f")
+                if [ -n "${EXPECTED_CAT}" ] && [ "${fname}" = "${EXPECTED_CAT}" ]; then
+                    continue
+                fi
+                CATFILE="$f"
+                break
+            done
+            # Fall back to expected catalogue if no backup was found
+            if [ -z "${CATFILE}" ] && [ -n "${EXPECTED_CAT}" ]; then
+                CATFILE="${output_directory}/${EXPECTED_CAT}"
+            fi
+            if [ -z "${CATFILE}" ]; then
+                echo "WARNING: No stack catalogue found for filter ${FILTER} in ${output_directory} — skipping T9"
+                continue
+            fi
+            echo "Using Stack Catalogue ${CATFILE}"
 
             CMD="python ${SCRIPTDIR}/photometry/ZLP_app_photom.py \
-                --catfile ${output_directory}/${2}_stack_catalogue_${FILTER}.${OUTEXT}\
+                --catfile ${CATFILE}\
                 --filter ${FILTER} \
                 --nproc ${CORES} \
                 --filelist ${filelist} \
@@ -632,19 +662,37 @@ condense_photometry() {
 
     printf "\n**Condensing images into one ${outname}**\n"
 
-    CMD="python ${SCRIPTDIR}/condense/zlp_condense.py \
+    CMD="python ${SCRIPTDIR}/condense/condense_photometry.py \
         --outputdir ${OUTPUTDIR}
-        --obsdir ${OBSDIR}
-        --target ${2}
-        --oldtarget ${i}
+        --targname ${i}
         --outname ${outname}
         $( cat ${filelist} | sed 's/.${OUTEXT}/.${OUTEXT}.phot/' )
         --date ${DATE}
         --filter ${FILTER}
         --ext ${OUTEXT}
         --version ${VERSION}
-        --tlist ${TLIST}
-        --cat ${OUTPUTDIR}/${DATE}/${i}/${correct_i}_stack_catalogue_${FILTER}.${OUTEXT}"
+        --cat $(
+            CONDENSE_CAT=""
+            CONDENSE_EXPECTED=""
+            CONDENSE_SIDECAR="${OUTPUTDIR}/${DATE}/${i}/.expected_stack_catalogue"
+            if [ -f "${CONDENSE_SIDECAR}" ]; then
+                CONDENSE_EXPECTED=$(cat "${CONDENSE_SIDECAR}" | tr -d '[:space:]')
+            fi
+            for f in ${OUTPUTDIR}/${DATE}/${i}/[0-9]*_stack_catalogue_*.${OUTEXT}; do
+                [ -f "$f" ] || continue
+                fname=$(basename "$f")
+                if [ -n "${CONDENSE_EXPECTED}" ] && [ "${fname}" = "${CONDENSE_EXPECTED}" ]; then
+                    continue
+                fi
+                CONDENSE_CAT="$f"
+                break
+            done
+            if [ -z "${CONDENSE_CAT}" ] && [ -n "${CONDENSE_EXPECTED}" ]; then
+                CONDENSE_CAT="${OUTPUTDIR}/${DATE}/${i}/${CONDENSE_EXPECTED}"
+            fi
+            echo "$CONDENSE_CAT"
+        )
+        --tlist ${TLIST}"
     echo "${CMD}"
 
     # add to global output fits file:
@@ -1151,7 +1199,12 @@ main() {
                 fi
 
                 [ "$T7" = "1" ] && check_astrometry
+                T8_FAILED=0
                 [ "$T8" = "1" ] && create_stack_image
+                if [ ${T8_FAILED} -ne 0 ]; then
+                    echo "T8 failed for target ${i} — skipping T9, T10"
+                    continue
+                fi
                 [ "$T9" = "1" ] && perform_aperture_photometry
                 [ "$T10" = "1" ] && perform_differential_photometry
 
@@ -1205,11 +1258,13 @@ do
     BASEDIR=$(abspath ${2})
     OBSDIR=${BASEDIR}/Observations/${TEL}
     DATDIR=${BASEDIR}/PipelineOutput/${VERSION}/${TEL}
+    STACKIMAGESDIR=${BASEDIR}/PipelineOutput/v2/StackImages
     IMGDIRS=${OBSDIR}/images/${DATE} #** #*/*
     OUTPUTDIR=${DATDIR}/output
     REPORTDIR=${DATDIR}/reports
     ensure_directory "${REPORTDIR}"
     ensure_directory "${OUTPUTDIR}"
+    ensure_directory "${STACKIMAGESDIR}"
     ensure_directory "${DATDIR}/logs"
 
     BIASLIST=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_bias.list

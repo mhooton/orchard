@@ -29,23 +29,15 @@ start_time = timeit.default_timer()
 # Local database connection
 # ---------------------------------------------------------------------------
 
-_db_connection = None
-
-
-def _get_db_connection():
-    """Get or create a cached SQLite connection to the local Gaia database."""
-    global _db_connection
-    if _db_connection is None:
-        db_path = os.environ.get('GAIADATABASEPATH',
-                                 '/gaia_database/gaia_dr3_unified_16jcut.db')
-        _db_connection = sqlite3.connect(db_path)
-    return _db_connection
-
-
 def _db_query(min_dec, max_dec, min_ra, max_ra):
     """
     Query the unified local Gaia database for sources within the given
     RA/dec bounding box. Returns a list of row dicts.
+
+    A fresh SQLite connection is created and closed on each call. This is
+    required for correctness under multiprocessing — SQLite connections
+    cannot be safely shared across processes, so a module-level cached
+    connection must not be used here.
 
     Inputs:
         min_dec, max_dec : float  dec limits in degrees
@@ -55,7 +47,9 @@ def _db_query(min_dec, max_dec, min_ra, max_ra):
         list of dicts with keys: ra, dec, pmra, pmdec, phot_g_mean_mag,
         g_rp, bp_rp, parallax, teff_gspphot, source_id, dr2_source_id
     """
-    conn = _get_db_connection()
+    db_path = os.environ.get('GAIADATABASEPATH',
+                             '/gaia_database/gaia_dr3_unified_16jcut.db')
+    conn = sqlite3.connect(db_path)
 
     min_dec = max(min_dec, -90.0)
     max_dec = min(max_dec, 90.0)
@@ -79,6 +73,7 @@ def _db_query(min_dec, max_dec, min_ra, max_ra):
         except Exception as e:
             print(f"DB query error for shard {shard}: {e}")
 
+    conn.close()
     return rows
 
 
@@ -193,7 +188,7 @@ def crossmatch(fitsfile,
         print(f"Objects with valid Teff values: {teffs_valid}", file=oldstdout)
         print("*" * 50, file=oldstdout)
 
-        perc = 100 * n_dr3_targets / float(len(crossmatch))
+        perc = 100 * n_dr3_targets / float(len(ra))
 
         elapsed = timeit.default_timer() - start_time
         print('Total time taken: ' + str(elapsed / 60.) + ' minutes')
@@ -226,6 +221,17 @@ def crossmatch(fitsfile,
 
         try:
             write_to_output(fitsfile, crossmatch, outfits)
+            # Write crossmatch quality metric to Gaia_Crossmatch header
+            # so that backup management can compare catalogue quality
+            if not outfits:
+                with fits.open(fitsfile, mode='update') as hdul:
+                    ext_names = [hdu.name.upper() for hdu in hdul]
+                    if 'GAIA_CROSSMATCH' in ext_names:
+                        hdul['GAIA_CROSSMATCH'].header['N_MATCH'] = (
+                            n_dr3_targets,
+                            'Number of sources crossmatched with Gaia DR3'
+                        )
+                        hdul.flush()
         except Exception as e:
             print("Gaia Crossmatch Failed: ")
             print(e)
