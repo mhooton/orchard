@@ -899,6 +899,42 @@ perform_version_migration(){
                     cp -r "${v3_reduction_src}" "${v3_reduction_dst}"
                 fi
 
+                # Move v2 log file to v2_old (once, before v3 log is moved in)
+                local v2_log_file=$(find "${V2_DATDIR}/logs" -name "${DATE}_1*" 2>/dev/null | head -1)
+                if [ -n "${v2_log_file}" ]; then
+                    local v2_log_dst="${V2_OLD_DATDIR}/logs/$(basename ${v2_log_file})"
+                    ensure_directory "$(dirname ${v2_log_dst})"
+                    echo "    MOVING: ${v2_log_file} -> ${v2_log_dst}"
+                    mv "${v2_log_file}" "${v2_log_dst}"
+                fi
+
+                # Move v2 report file to v2_old (once, before v3 report is moved in)
+                local v2_report_file=$(find "${V2_DATDIR}/reports" -name "*${TEL}_${DATE}*" 2>/dev/null | head -1)
+                if [ -n "${v2_report_file}" ]; then
+                    local v2_report_dst="${V2_OLD_DATDIR}/reports/$(basename ${v2_report_file})"
+                    ensure_directory "$(dirname ${v2_report_dst})"
+                    echo "    MOVING: ${v2_report_file} -> ${v2_report_dst}"
+                    mv "${v2_report_file}" "${v2_report_dst}"
+                fi
+
+                # Move v3 log file to v2 (once, while it still exists in v3)
+                local v3_log_file=$(find "${V3_DATDIR}/logs" -name "${DATE}_1*" 2>/dev/null | head -1)
+                if [ -n "${v3_log_file}" ]; then
+                    local v3_log_dst="${V2_DATDIR}/logs/$(basename ${v3_log_file})"
+                    ensure_directory "$(dirname ${v3_log_dst})"
+                    echo "    MOVING: ${v3_log_file} -> ${v3_log_dst}"
+                    mv "${v3_log_file}" "${v3_log_dst}"
+                fi
+
+                # Move v3 report file to v2 (once, while it still exists in v3)
+                local v3_report_file=$(find "${V3_DATDIR}/reports" -name "*${TEL}_${DATE}*" 2>/dev/null | head -1)
+                if [ -n "${v3_report_file}" ]; then
+                    local v3_report_dst="${V2_DATDIR}/reports/$(basename ${v3_report_file})"
+                    ensure_directory "$(dirname ${v3_report_dst})"
+                    echo "    MOVING: ${v3_report_file} -> ${v3_report_dst}"
+                    mv "${v3_report_file}" "${v3_report_dst}"
+                fi
+
                 reduction_processed=true
             fi
 
@@ -911,49 +947,13 @@ perform_version_migration(){
                 mv "${v2_target_src}" "${v2_target_dst}"
             fi
 
-            # 3. Move v2 log file to v2_old
-            local v2_log_file=$(find "${V2_DATDIR}/logs" -name "${DATE}_1*" 2>/dev/null | head -1)
-            if [ -n "${v2_log_file}" ]; then
-                local v2_log_dst="${V2_OLD_DATDIR}/logs/$(basename ${v2_log_file})"
-                ensure_directory "$(dirname ${v2_log_dst})"
-                echo "    MOVING: ${v2_log_file} -> ${v2_log_dst}"
-                mv "${v2_log_file}" "${v2_log_dst}"
-            fi
-
-            # 4. Move v2 report file to v2_old
-            local v2_report_file=$(find "${V2_DATDIR}/reports" -name "*${TEL}_${DATE}*" 2>/dev/null | head -1)
-            if [ -n "${v2_report_file}" ]; then
-                local v2_report_dst="${V2_OLD_DATDIR}/reports/$(basename ${v2_report_file})"
-                ensure_directory "$(dirname ${v2_report_dst})"
-                echo "    MOVING: ${v2_report_file} -> ${v2_report_dst}"
-                mv "${v2_report_file}" "${v2_report_dst}"
-            fi
-
-            # 5. Move v3 target_dir to v2
+            # 2. Move v3 target_dir to v2
             local v3_target_src="${V3_OUTPUTDIR}/${DATE}/${target}"
             local v3_target_dst="${V2_OUTPUTDIR}/${DATE}/${target}"
             if [ -d "${v3_target_src}" ]; then
                 ensure_directory "$(dirname ${v3_target_dst})"
                 echo "    MOVING: ${v3_target_src} -> ${v3_target_dst}"
                 mv "${v3_target_src}" "${v3_target_dst}"
-            fi
-
-            # 7. Move v3 log file to v2
-            local v3_log_file=$(find "${V3_DATDIR}/logs" -name "${DATE}_1*" 2>/dev/null | head -1)
-            if [ -n "${v3_log_file}" ]; then
-                local v3_log_dst="${V2_DATDIR}/logs/$(basename ${v3_log_file})"
-                ensure_directory "$(dirname ${v3_log_dst})"
-                echo "    MOVING: ${v3_log_file} -> ${v3_log_dst}"
-                mv "${v3_log_file}" "${v3_log_dst}"
-            fi
-
-            # 8. Move v3 report file to v2
-            local v3_report_file=$(find "${V3_DATDIR}/reports" -name "*${TEL}_${DATE}*" 2>/dev/null | head -1)
-            if [ -n "${v3_report_file}" ]; then
-                local v3_report_dst="${V2_DATDIR}/reports/$(basename ${v3_report_file})"
-                ensure_directory "$(dirname ${v3_report_dst})"
-                echo "    MOVING: ${v3_report_file} -> ${v3_report_dst}"
-                mv "${v3_report_file}" "${v3_report_dst}"
             fi
 
             echo "  >>> COMPLETED MOVES FOR: telescope=${TEL}, date=${DATE}, target=${target}"
