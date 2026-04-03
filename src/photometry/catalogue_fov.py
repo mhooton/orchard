@@ -101,8 +101,9 @@ def select_images(all_images):
     Select the subset of images to include in the stack.
 
     The target number of images N is determined by the integration time
-    threshold: N = ceil(1200 / EXPTIME). If the total number of available
-    images is less than N, all images are used as the target.
+    threshold: N = max(ceil(1200 / EXPTIME), 40). A minimum of 40 images
+    is always targeted regardless of exposure time. If the total number of
+    available images is less than N, all images are used as the target.
 
     Selection proceeds in two passes:
         Pass 1: Start at the midpoint of the night, work forward (later
@@ -144,9 +145,9 @@ def select_images(all_images):
         )
         n_target = len(all_images)
     else:
-        n_target = min(math.ceil(1200.0 / exptime), len(all_images))
+        n_target = min(max(math.ceil(1200.0 / exptime), 40), len(all_images))
         logger.info(
-            "EXPTIME=%.1fs → target stack size N=%d (threshold 1200s)",
+            "EXPTIME=%.1fs → target stack size N=%d (threshold 1200s, minimum 40)",
             exptime, n_target
         )
 
@@ -180,7 +181,7 @@ def select_images(all_images):
     if len(selected) < n_target:
         logger.warning(
             "Integration time threshold not met: selected %d image(s), "
-            "total integration %.0fs (target 1200s)",
+            "total integration %.0fs (target 1200s, minimum 40 images)",
             len(selected), actual_exptime
         )
     else:
