@@ -1530,6 +1530,26 @@ def iter_algorithm(comp,targ):
 
     return alc, comp, count_w
 
+
+def cap_comparison_stars(lcurves, max_stars=10):
+    weights = extract(lcurves, 'weight')
+    nonzero = np.count_nonzero(weights)
+    if nonzero <= max_stars:
+        print(f"Number of comparison stars ({nonzero}) is within cap of {max_stars}, no change.")
+        return lcurves
+
+    # Zero out all but the top max_stars by weight
+    top_indices = np.argsort(weights)[-max_stars:]
+    for i in range(len(lcurves)):
+        if i not in top_indices:
+            lcurves[i].w1 = 0
+            lcurves[i].w2 = 1.
+            lcurves[i].w3 = 0
+
+    lcurves = set_all_weights(lcurves)
+    print(f"Capped comparison stars from {nonzero} to {max_stars}.")
+    return lcurves
+
 def bin_data(jd, y, b):
     mins_jd = float(b) / 1440.
     t = np.array(jd)
@@ -2901,10 +2921,12 @@ def main(date, targ_gaia, ap, filt, outfits, goutfits, globallc, binning, versio
             l.sep = sep
         # comp_lcurves = distweight(comp_lcurves,target_lcurve)
 
-        # PERFORM ITERATIVE ALGORITHM using the std dev of differential LCs as new weights and return final ALC
-        alc, comp_lcurves, num_comp = iter_algorithm(comp_lcurves,target_lcurve)
+        alc, comp_lcurves, num_comp = iter_algorithm(comp_lcurves, target_lcurve)
         if alc == None:
             return None
+        # CAP COMPARISON STARS AND RECOMPUTE ALC
+        comp_lcurves = cap_comparison_stars(comp_lcurves, max_stars=10)
+        alc = ArtificialLightCurve(comp_lcurves)
         # FINAL TARGET DIFFERENTIAL LC (using final ALC)
         target_lcurve.diff_photom(alc)
 
@@ -3124,11 +3146,11 @@ if __name__ == "__main__":
         if not os.path.exists(lcdir):
             os.mkdir(lcdir)
 
-    lc = main(args.date, gaia_dr2_id, int(args.ap), args.filt, outfits, goutfits, globallc, args.bin, version, outdir,
-              lcdir, args.teff, args.targlist, oldtarglists, args.basedir, saturation_limit)
+    # lc = main(args.date, gaia_dr2_id, int(args.ap), args.filt, outfits, goutfits, globallc, args.bin, version, outdir,
+    #           lcdir, args.teff, args.targlist, oldtarglists, args.basedir, saturation_limit)
 
-    # try:
-    #     lc = main(args.date,gaia_dr2_id,int(args.ap), args.filt, outfits, goutfits, globallc, args.bin,version,outdir,lcdir,args.teff,args.targlist,oldtarglists,args.basedir)
-    #
-    # except Exception as e:
-    #     print(e)
+    try:
+        lc = main(args.date,gaia_dr2_id,int(args.ap), args.filt, outfits, goutfits, globallc, args.bin,version,outdir,lcdir,args.teff,args.targlist,oldtarglists,args.basedir)
+
+    except Exception as e:
+        print(e)
