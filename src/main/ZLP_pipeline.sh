@@ -29,6 +29,7 @@ T12="1" # sweep from v3 to v2
 filtered_args=()
 only_task=""
 FORCE_PLATESOLVE="0"
+USE_EXISTING_CALIBRATIONS="0"
 CORES_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
@@ -58,6 +59,7 @@ while [[ $# -gt 0 ]]; do
         --only_T11) only_task="11"; shift ;;
         --only_T12) only_task="12"; shift ;;
         --force-platesolve) FORCE_PLATESOLVE="1"; shift ;;
+        --use-existing-calibrations) USE_EXISTING_CALIBRATIONS="1"; shift ;;
         --cores) CORES_OVERRIDE="$2"; shift 2 ;;
         *) filtered_args+=("$1"); shift ;; # Keep non-task arguments
     esac
@@ -86,7 +88,7 @@ fi
 set -- "${filtered_args[@]}"
 
 # Make variables readonly after parsing
-readonly T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12 FORCE_PLATESOLVE CORES_OVERRIDE
+readonly T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12 FORCE_PLATESOLVE USE_EXISTING_CALIBRATIONS CORES_OVERRIDE
 
 #if [[ $# -ne 8 ]] && [[ $# -ne 8 ]]; then
 #    cat >&2 <<-EOF
@@ -281,6 +283,10 @@ create_master_bias() {
     echo "START T2"
     # Create MasterBias
     echo "Create MasterBias"
+    if [ "${USE_EXISTING_CALIBRATIONS}" = "1" ] && [ -f "${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_MasterBias.fits" ]; then
+        echo "Skipping T2: existing MasterBias found at ${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_MasterBias.fits"
+        return
+    fi
     CMD="python ${SCRIPTDIR}/calibration/pipebias.py $BIASLIST ${RUNNAME}_MasterBias.fits ${OUTPUTDIR}/${DATE}/reduction ${REPORTDIR} ${RUNNAME} ${i}"
     echo ${CMD}
     ${CMD}
@@ -294,7 +300,9 @@ create_master_dark() {
     echo "START T3"
     #Create MasterDark
     echo "Create MasterDark"
-    CMD="python ${SCRIPTDIR}/calibration/pipedark.py $DARKLIST ${RUNNAME}_MasterBias.fits ${RUNNAME}_MasterDark.fits ${OUTPUTDIR}/${DATE}/reduction ${REPORTDIR} ${RUNNAME} ${i}" #/Reduction/output/${RUNNAME}
+    DARK_CMD="python ${SCRIPTDIR}/calibration/pipedark.py $DARKLIST ${RUNNAME}_MasterBias.fits ${RUNNAME}_MasterDark.fits ${OUTPUTDIR}/${DATE}/reduction ${REPORTDIR} ${RUNNAME} ${i}"
+    [ "${USE_EXISTING_CALIBRATIONS}" = "1" ] && DARK_CMD="${DARK_CMD} --use-existing-calibrations"
+    CMD="${DARK_CMD}"
     echo ${CMD}
     ${CMD}
 
@@ -317,6 +325,26 @@ create_master_flat() {
     echo "START T4"
     #Create MasterFlat
     echo "Create MasterFlat"
+    if [ "${USE_EXISTING_CALIBRATIONS}" = "1" ]; then
+        shopt -s nullglob
+        FLATLISTS=(${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_flat_*.list)
+        shopt -u nullglob
+        ALL_FLATS_EXIST=1
+        for FLIST in "${FLATLISTS[@]}"; do
+            FNAME=$(basename "${FLIST}")
+            FILTER=${FNAME#${RUNNAME}_flat_}
+            FILTER=${FILTER%.list}
+            MFLAT="${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_MasterFlat_${FILTER}.fits"
+            if [ ! -f "${MFLAT}" ]; then
+                ALL_FLATS_EXIST=0
+                break
+            fi
+        done
+        if [ ${#FLATLISTS[@]} -gt 0 ] && [ "${ALL_FLATS_EXIST}" = "1" ]; then
+            echo "Skipping T4: existing MasterFlat found for all filters in ${OUTPUTDIR}/${DATE}/reduction"
+            return
+        fi
+    fi
 #    CMD="python ${SCRIPTDIR}/calibration/pipeflat.py $FLATLIST ${T2} ${T3} ${RUNNAME}_MasterBias.fits ${RUNNAME}_MasterDark.fits ${RUNNAME}_MasterFlat.fits ${OUTPUTDIR}/${DATE}/reduction ${REPORTDIR}"
     #SET USEBIAS AND USEDARK TO 1, TO DECOUPLE FROM STAGES
     CMD="python ${SCRIPTDIR}/calibration/pipeflat.py $FLATLIST 1 1 ${RUNNAME}_MasterBias.fits ${RUNNAME}_MasterDark.fits ${RUNNAME}_MasterFlat.fits ${OUTPUTDIR}/${DATE}/reduction ${REPORTDIR}"
@@ -332,6 +360,10 @@ create_bad_pixel_map() {
     echo "START T5"
     #Create MasterFlat
     echo "Create Bad Pixel Map"
+    if [ "${USE_EXISTING_CALIBRATIONS}" = "1" ] && [ -f "${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_BadPixelMap.fits" ]; then
+        echo "Skipping T5: existing BadPixelMap found at ${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_BadPixelMap.fits"
+        return
+    fi
 
     MASTERFLATS=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_MasterFlat_*.fits
     MASTERFLAT=""
