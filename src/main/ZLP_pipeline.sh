@@ -643,7 +643,7 @@ single_perform_aperture_photometry() {
             if [ -f "${SIDECAR}" ]; then
                 EXPECTED_CAT=$(cat "${SIDECAR}" | tr -d '[:space:]')
             fi
-            for f in ${output_directory}/[0-9]*_stack_catalogue_*.${OUTEXT}; do
+            for f in ${output_directory}/[0-9]*_stack_catalogue_[!p]*.${OUTEXT}; do
                 [ -f "$f" ] || continue
                 fname=$(basename "$f")
                 if [ -n "${EXPECTED_CAT}" ] && [ "${fname}" = "${EXPECTED_CAT}" ]; then
@@ -712,7 +712,7 @@ condense_photometry() {
             if [ -f "${CONDENSE_SIDECAR}" ]; then
                 CONDENSE_EXPECTED=$(cat "${CONDENSE_SIDECAR}" | tr -d '[:space:]')
             fi
-            for f in ${OUTPUTDIR}/${DATE}/${i}/[0-9]*_stack_catalogue_*.${OUTEXT}; do
+            for f in ${OUTPUTDIR}/${DATE}/${i}/[0-9]*_stack_catalogue_[!p]*.${OUTEXT}; do
                 [ -f "$f" ] || continue
                 fname=$(basename "$f")
                 if [ -n "${CONDENSE_EXPECTED}" ] && [ "${fname}" = "${CONDENSE_EXPECTED}" ]; then
