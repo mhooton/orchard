@@ -10,7 +10,7 @@ import matplotlib.gridspec as gridspec
 import os
 import csv
 from functools import partial
-from scipy.ndimage import interpolation as interp
+from scipy.ndimage import shift
 from skimage.registration import phase_cross_correlation
 import astropy.io.fits as pyfits
 import astropy.visualization as pyvis
@@ -22,6 +22,9 @@ from astropy.time import Time
 import math
 matplotlib.use('pdf')
 import warnings
+from astropy.io.fits.verify import VerifyWarning
+warnings.filterwarnings('ignore', category=VerifyWarning)
+
 
 def get_chronological_order(jdstart):
     order = np.argsort(jdstart)
@@ -711,15 +714,15 @@ def align_image(image_args):
 
         try:
             # New API (scikit-image >= 0.18)
-            shift, error, diffphase = phase_cross_correlation(im1, im2, upsample_factor=100)
-            result = shift
+            shifted, error, diffphase = phase_cross_correlation(im1, im2, upsample_factor=100)
+            result = shifted
         except Exception as e:
             print(f"Warning: Phase cross correlation failed for {image2}: {e}")
             # Fallback to no shift if registration fails
             result = [0.0, 0.0]
 
     # Rest of the function
-    shifted_im2 = interp.shift(im2, result)
+    shifted_im2 = shift(im2, result)
     path, filename = os.path.split(image2)
     outname = datdir + "/reports/temp/" + filename[:-5] + '_aligned.fits'
 
