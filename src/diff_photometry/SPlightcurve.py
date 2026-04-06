@@ -3150,7 +3150,8 @@ if __name__ == "__main__":
     #           lcdir, args.teff, args.targlist, oldtarglists, args.basedir, saturation_limit)
 
     try:
-        lc = main(args.date,gaia_dr2_id,int(args.ap), args.filt, outfits, goutfits, globallc, args.bin,version,outdir,lcdir,args.teff,args.targlist,oldtarglists,args.basedir)
+        lc = main(args.date,gaia_dr2_id,int(args.ap), args.filt, outfits, goutfits, globallc, args.bin,version,outdir,
+                  lcdir,args.teff,args.targlist,oldtarglists,args.basedir, saturation_limit)
 
     except Exception as e:
         print(e)
