@@ -1,3 +1,4 @@
+import argparse
 import math
 import sys
 import os
@@ -14,7 +15,7 @@ import warnings
 from astropy.io.fits.verify import VerifyWarning
 warnings.filterwarnings('ignore', category=VerifyWarning)
 
-def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ=None):
+def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ=None, use_existing=False):
     """
     Create master dark frame(s) from a list of dark images.
 
@@ -171,6 +172,10 @@ def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ
             outname = outdir + darkname
 
         # Write master dark
+        if use_existing and os.path.exists(outname):
+            print(f"Skipping T3: existing master dark found at {outname}")
+            output_files.append(outname)
+            continue
         if os.path.exists(outname):
             os.remove(outname)
 
@@ -222,15 +227,19 @@ def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ
 
 
 def main():
-    inlist = str(sys.argv[1])
-    biasname = str(sys.argv[2])
-    darkname = str(sys.argv[3])
-    outdir = str(sys.argv[4]) + '/'
-    reportdir = str(sys.argv[5]) + '/'
-    run = sys.argv[6]
-    targ = sys.argv[7]
+    parser = argparse.ArgumentParser()
+    parser.add_argument('inlist')
+    parser.add_argument('biasname')
+    parser.add_argument('darkname')
+    parser.add_argument('outdir')
+    parser.add_argument('reportdir')
+    parser.add_argument('run')
+    parser.add_argument('targ')
+    parser.add_argument('--use-existing-calibrations', action='store_true', default=False)
+    args = parser.parse_args()
 
-    darkmaker(inlist, biasname, darkname, outdir, reportdir, run, targ)
+    darkmaker(args.inlist, args.biasname, args.darkname, args.outdir + '/', args.reportdir + '/', args.run, args.targ,
+              use_existing=args.use_existing_calibrations)
 
 
 if __name__ == '__main__':
