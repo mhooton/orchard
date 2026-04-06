@@ -1,3 +1,5 @@
 src/reporting/.env
 docker/docker-compose.server-autosave.yml
 .idea/
+condense/zlp_condense.py
+photometry/ZLP_create_cat.py
