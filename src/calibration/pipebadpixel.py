@@ -65,7 +65,7 @@ def detect_flatbad_pixels(master_flat, flat_threshold):
 
     return flatbad_map
 
-def bad_pixel_maps(inlist, caldir, outdir, darknames, flatnames, bpmname, biasname):
+def bad_pixel_maps(inlist, caldir, darknames, flatnames, bpmname, biasname):
     """
     Find bad pixels in the dark image based on a given threshold
 
@@ -233,7 +233,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('inlist')
     parser.add_argument('-c', '--caldir')
-    parser.add_argument('-o', '--outdir')
     parser.add_argument('-d', '--darknames', nargs='+')
     parser.add_argument('-f', '--flatnames', nargs='+')
     parser.add_argument('-bpm', '--bpmname')
@@ -242,13 +241,12 @@ def main():
 
     inlist = args.inlist
     caldir = args.caldir + '/'
-    outdir = args.outdir + '/'
     darknames = [caldir + d for d in args.darknames]
     flatnames = [caldir + f for f in args.flatnames]
     bpmname = args.bpmname
     biasname = args.biasname
 
-    bad_pixel_maps(inlist, caldir, outdir, darknames, flatnames, bpmname, biasname)
+    bad_pixel_maps(inlist, caldir, darknames, flatnames, bpmname, biasname)
 
 if __name__ == '__main__':
     main()

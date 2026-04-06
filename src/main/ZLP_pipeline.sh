@@ -363,7 +363,7 @@ create_bad_pixel_map() {
     # Use target name directly since files are created with underscores
     IMAGELIST=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_image_${i}.list
 
-    CMD="python ${SCRIPTDIR}/calibration/pipebadpixel.py ${IMAGELIST} --caldir ${OUTPUTDIR}/${DATE}/reduction --outdir ${OUTPUTDIR}/${DATE}/${i}/${RUNNAME} --darknames $MASTERDARK --flatnames $MASTERFLAT --bpmname ${RUNNAME}_BadPixelMap.fits --biasname ${RUNNAME}_MasterBias.fits"
+    CMD="python ${SCRIPTDIR}/calibration/pipebadpixel.py ${IMAGELIST} --caldir ${OUTPUTDIR}/${DATE}/reduction --darknames $MASTERDARK --flatnames $MASTERFLAT --bpmname ${RUNNAME}_BadPixelMap.fits --biasname ${RUNNAME}_MasterBias.fits"
     echo ${CMD}
     ${CMD}
 
