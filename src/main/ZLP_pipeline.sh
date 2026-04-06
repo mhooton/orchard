@@ -534,8 +534,10 @@ create_stack_image() {
                 $CORES
                 $OUTEXT"
             echo ${CMD}
+            set +e
             ${CMD}
             T8_EXIT=$?
+            set -e
 
             if [ ${T8_EXIT} -ne 0 ]; then
                 echo "WARNING: catalogue_fov.py exited with code ${T8_EXIT} for target ${i}, filter ${FILTER} — no valid catalogue available"
