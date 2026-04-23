@@ -47,9 +47,11 @@ RAM on open. For very large cubes this is unavoidable.
 
 Deletion
 --------
-The source cube is deleted only after all frames have been successfully
-written. If the number of written frames does not match NAXIS3, the cube
-is retained and a warning is printed.
+The source cube is renamed to a temporary name before unpacking begins, to
+prevent any unpacked frame from overwriting it if filenames collide. It is
+deleted only after all frames have been successfully written. If the number
+of written frames does not match NAXIS3, the cube is renamed back to its
+original name and a warning is printed.
 """
 
 import os
@@ -58,9 +60,7 @@ from astropy.io import fits
 from astropy.time import Time
 from astropy.coordinates import SkyCoord, EarthLocation, AltAz
 import astropy.units as u
-import warnings
-from astropy.io.fits.verify import VerifyWarning
-warnings.filterwarnings('ignore', category=VerifyWarning)
+
 
 def is_datacube(filepath):
     """
@@ -231,17 +231,29 @@ def unpack_datacube(filepath, output_dir):
     """
     print(f"Unpacking datacube: {os.path.basename(filepath)}")
 
+    # Rename the cube to a temporary name before unpacking. This prevents any
+    # unpacked frame from overwriting the source cube if their filenames collide
+    # (both follow the SPECU#.YYYY-MM-DDTHH:MM:SS.sss.fits convention).
+    tmp_filepath = filepath + '.unpacking'
+    try:
+        os.rename(filepath, tmp_filepath)
+    except Exception as e:
+        print(f"Error renaming cube to temporary name {os.path.basename(tmp_filepath)}: {e}")
+        return [], 0
+
     try:
         # memmap=False required: BZERO/BSCALE/BLANK keywords prevent astropy
         # from memory-mapping scaled integer arrays.
-        hdul = fits.open(filepath, memmap=False)
+        hdul = fits.open(tmp_filepath, memmap=False, do_not_scale_image_data=True)
     except Exception as e:
         print(f"Error opening datacube {os.path.basename(filepath)}: {e}")
+        os.rename(tmp_filepath, filepath)
         return [], 0
 
     try:
         if 'METADATA' not in hdul:
             print(f"Error: no METADATA extension found in {os.path.basename(filepath)}")
+            os.rename(tmp_filepath, filepath)
             return [], 0
 
         metadata       = hdul['METADATA'].data
@@ -253,6 +265,7 @@ def unpack_datacube(filepath, output_dir):
 
         if n_frames_cube == 0:
             print(f"Error: NAXIS3=0 in {os.path.basename(filepath)}, nothing to unpack")
+            os.rename(tmp_filepath, filepath)
             return [], 0
 
         if n_frames_meta != n_frames_cube:
@@ -280,6 +293,18 @@ def unpack_datacube(filepath, output_dir):
                    'CUBETYPE', 'CUBEKEY', 'NFRAMES', 'CREATED'):
             while kw in base_header:
                 del base_header[kw]
+
+        # Patch missing BZERO/BSCALE for BITPIX=16 cubes created before
+        # create_datacubes.py was fixed to write these keywords explicitly.
+        # Each is checked independently in case only one is absent.
+        # BZERO=32768 + BSCALE=1 is the standard FITS uint16 encoding convention
+        # for signed int16 data; without these keywords downstream readers cannot
+        # recover the correct physical pixel values.
+        if base_header.get('BITPIX') == 16:
+            if 'BZERO' not in base_header:
+                base_header['BZERO'] = (32768, 'Offset for unsigned 16-bit integer encoding')
+            if 'BSCALE' not in base_header:
+                base_header['BSCALE'] = (1, 'Scale factor for integer encoding')
 
         written_ids = []
 
@@ -351,7 +376,9 @@ def unpack_datacube(filepath, output_dir):
 
             # --- Write frame to disk -----------------------------------------
             try:
-                fits.writeto(output_path, frame_data, frame_header, overwrite=True)
+                new_hdu = fits.PrimaryHDU(data=frame_data, header=frame_header)
+                new_hdu._do_not_scale_image_data = True
+                fits.HDUList([new_hdu]).writeto(output_path, overwrite=True)
                 dp_id = original_filename.replace('.fits', '')
                 written_ids.append(dp_id)
                 print(f"  ✓ {i + 1}/{n_frames} {original_filename}")
@@ -363,14 +390,21 @@ def unpack_datacube(filepath, output_dir):
 
     n_written = len(written_ids)
 
-    # Delete the cube only if all frames were written successfully
+    # Delete the cube only if all frames were written successfully.
+    # The cube is currently named tmp_filepath; restore the original name
+    # if deletion is not appropriate.
     if n_written == n_frames:
         try:
-            os.remove(filepath)
+            os.remove(tmp_filepath)
             print(f"Deleted cube: {os.path.basename(filepath)}")
         except Exception as e:
             print(f"Warning: could not delete cube {os.path.basename(filepath)}: {e}")
     else:
+        # Restore original filename so the cube is not silently lost
+        try:
+            os.rename(tmp_filepath, filepath)
+        except Exception as e:
+            print(f"Warning: could not restore cube filename {os.path.basename(filepath)}: {e}")
         print(f"Warning: only {n_written}/{n_frames} frames written — "
               f"cube retained: {os.path.basename(filepath)}")
 
