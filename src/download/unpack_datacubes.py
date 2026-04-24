@@ -379,6 +379,18 @@ def unpack_datacube(filepath, output_dir):
                 new_hdu = fits.PrimaryHDU(data=frame_data, header=frame_header)
                 new_hdu._do_not_scale_image_data = True
                 fits.HDUList([new_hdu]).writeto(output_path, overwrite=True)
+
+                # Restore BZERO/BSCALE explicitly after write — astropy strips
+                # them during HDU construction regardless of do_not_scale_image_data.
+                bzero = base_header.get('BZERO', None)
+                bscale = base_header.get('BSCALE', None)
+                if bzero is not None or bscale is not None:
+                    with fits.open(output_path, mode='update') as hdul_out:
+                        if bzero is not None:
+                            hdul_out[0].header['BZERO'] = bzero
+                        if bscale is not None:
+                            hdul_out[0].header['BSCALE'] = bscale
+
                 dp_id = original_filename.replace('.fits', '')
                 written_ids.append(dp_id)
                 print(f"  ✓ {i + 1}/{n_frames} {original_filename}")
