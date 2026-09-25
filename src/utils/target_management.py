@@ -274,6 +274,62 @@ def get_target_from_toi(targname, toi_table_path):
     return dr2_id
 
 
+def get_target_from_target_list_by_name(targname, target_list_path,
+                                        catalogue_ids=None):
+    """
+    Resolve a target NAME (the scheduler's Sp_ID) to a Gaia ID and a J2000
+    position via the 40 pc target list.  Used when there is no schedule
+    plan file for the night, which is the case for roughly half of the
+    observed nights of some targets.
+
+    Duplicated Sp_IDs (resolved binaries sharing a coordinate-derived name)
+    are disambiguated by preferring a row whose ID is in `catalogue_ids`;
+    otherwise the first row is used and a warning is logged.
+
+    Output: (gaia_id: str, ra_deg, dec_deg, teff) with None for unknown
+            values, or None if the name is absent or has no usable ID.
+    """
+    try:
+        data = ascii.read(target_list_path, delimiter=' ',
+                          header_start=0, data_start=1)
+    except Exception as e:
+        logger.warning("Could not read target list '%s': %s", target_list_path, e)
+        return None
+    cols = {c.strip(',').strip().upper(): c for c in data.colnames}
+    if 'SP_ID' not in cols or 'GAIA_ID' not in cols:
+        return None
+    want = _norm_name(targname)
+    rows = [i for i, n in enumerate(data[cols['SP_ID']]) if _norm_name(str(n)) == want]
+    rows = [i for i in rows if _clean_id(data[cols['GAIA_ID']][i]) and
+            set(_clean_id(data[cols['GAIA_ID']][i])) != {'0'}]
+    if not rows:
+        return None
+    if len(rows) > 1:
+        in_fov = [i for i in rows if catalogue_ids and
+                  _clean_id(data[cols['GAIA_ID']][i]) in catalogue_ids]
+        if len(in_fov) == 1:
+            rows = in_fov
+        else:
+            logger.warning(
+                "Target name '%s' matches %d target-list rows with different "
+                "IDs; using the first (%s)", targname, len(rows),
+                _clean_id(data[cols['GAIA_ID']][rows[0]]))
+    i = rows[0]
+    gaia_id = _clean_id(data[cols['GAIA_ID']][i])
+    ra = dec = teff = None
+    try:
+        ra = float(data[cols['RA']][i])
+        dec = float(data[cols['DEC']][i])
+    except (KeyError, ValueError, TypeError):
+        pass
+    try:
+        teff = int(float(data[cols['T_EFF']][i]))
+    except (KeyError, ValueError, TypeError):
+        pass
+    logger.info("Target '%s' resolved via target list to Gaia ID %s", targname, gaia_id)
+    return gaia_id, ra, dec, teff
+
+
 def get_targets_from_target_list(catalogue_dr2_ids, target_list_path):
     """
     Crossmatch Gaia DR2 IDs from the FOV catalogue against the 40pc
@@ -404,6 +460,8 @@ def identify_targets(obsdir, date, targname, catalogue_dr2_ids,
 
     Identification hierarchy:
         1.  Schedule plan file (with ID aliases)      → primary target
+        1a. Target name looked up in the 40 pc list if there is no plan
+            file (ID and J2000 position)               → primary target
         1b. Coordinate fallback if the schedule ID matched no row and
             catalogue_coords were supplied              → primary target
         2.  TOI lookup table (if schedule failed)       → primary target
@@ -466,18 +524,38 @@ def identify_targets(obsdir, date, targname, catalogue_dr2_ids,
     # ------------------------------------------------------------------
     dr2 = get_target_from_schedule(obsdir, date, targname, aliases=aliases)
     info['schedule_id'] = dr2
+    id_source = 'schedule'
+    list_coords = None
+    list_teff = None
+
+    # ------------------------------------------------------------------
+    # Step 1a: no plan file for this night — resolve the target NAME via
+    # the 40 pc target list instead (roughly half of some targets' nights
+    # have no plan file on disk).
+    # ------------------------------------------------------------------
+    if dr2 is None:
+        by_name = get_target_from_target_list_by_name(
+            targname, target_list_path, catalogue_ids=set(clean_ids))
+        if by_name is not None:
+            dr2, lra, ldec, list_teff = by_name
+            dr2, _ = apply_id_alias(dr2, targname, date, aliases)
+            id_source = 'target_list_name'
+            info['schedule_id'] = dr2
+            if lra is not None and ldec is not None:
+                list_coords = (lra, ldec)
 
     if dr2 is not None:
         if dr2 in id_rows:
             match_gaia.append((dr2, 'primary', None))
             primary_found = True
-            info.update(status='OK', primary_method='schedule',
+            info.update(status='OK', primary_method=id_source,
                         primary_id=dr2, primary_row=id_rows[dr2])
             logger.info(
-                "Primary target identified from schedule: %s", dr2
+                "Primary target identified from %s: %s", id_source, dr2
             )
         else:
-            plan_coords = get_coords_from_schedule(obsdir, date, targname)
+            plan_coords = get_coords_from_schedule(obsdir, date, targname) \
+                or list_coords
             dec_hint = None
             if plan_coords is not None:
                 dec_hint = plan_coords[1]
@@ -517,6 +595,7 @@ def identify_targets(obsdir, date, targname, catalogue_dr2_ids,
                     info.update(status='OK_COORDINATES',
                                 primary_method='coordinates',
                                 primary_id=dr2, primary_row=row)
+                    info['id_source'] = id_source
 
     # ------------------------------------------------------------------
     # Step 2: TOI fallback (only if schedule failed)
@@ -577,6 +656,8 @@ def identify_targets(obsdir, date, targname, catalogue_dr2_ids,
             tlist_match = [t for (d, t) in additional if d == dr2_id]
             if tlist_match:
                 match_gaia[i] = (dr2_id, role, tlist_match[0])
+            elif list_teff is not None:
+                match_gaia[i] = (dr2_id, role, list_teff)
 
     logger.info(
         "Identified %d target(s) in FOV in total (%d primary, %d secondary)",

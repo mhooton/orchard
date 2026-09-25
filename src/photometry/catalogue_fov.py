@@ -55,6 +55,8 @@ from calibration.pipeutils import detect_instrument
 from utils.target_management import (
     identify_targets,
     load_id_aliases,
+    apply_id_alias,
+    get_target_from_target_list_by_name,
     catalogue_is_valid,
     update_backup,
     restore_backup,
@@ -435,6 +437,11 @@ def main(filelist, outdir, backupcatdir, reportdir, filter, date,
     aliases = load_id_aliases()
     primary_gaia_id = get_target_from_schedule(obsdir, date, targname,
                                                aliases=aliases)
+    if primary_gaia_id is None:
+        # no plan file for tonight: resolve the name via the 40 pc list
+        _by_name = get_target_from_target_list_by_name(targname, target_list_path)
+        if _by_name is not None:
+            primary_gaia_id = apply_id_alias(_by_name[0], targname, date, aliases)[0]
     if primary_gaia_id is None and 'toi' in targname.lower():
         primary_gaia_id = get_target_from_toi(targname, toi_table_path)
 

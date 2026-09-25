@@ -159,12 +159,12 @@ def crossmatch(fitsfile,
 
         # Set Gaia epoch based on catalog version
         if catsrc == 'vizgaia3':
-            gaia_epoch = 2457754.5  # J2016.0 for Gaia DR3
+            gaia_epoch = 2457389.0  # J2016.0 for Gaia DR3 (was 2457754.5 = 2017-01-01, a year late)
         elif catsrc == 'vizgaia2' or catsrc == 'vizgaia':
-            gaia_epoch = 2457174.5  # J2015.5 for Gaia DR2
+            gaia_epoch = 2457206.375  # J2015.5 for Gaia DR2 (was 2457174.5 = 2015-06-01)
         else:
             # Default to DR3
-            gaia_epoch = 2457754.5
+            gaia_epoch = 2457389.0  # J2016.0 for Gaia DR3 (was 2457754.5 = 2017-01-01, a year late)
 
         obs_epoch = Time(dt.datetime.strptime(date, "%Y%m%d")).jd
         # convert delta_t into years
@@ -322,7 +322,7 @@ def conesearch_local(id, ra, dec, rad_deg, delta_t):
             pmra = row['pmra']
             pmdec = row['pmdec']
             if pmra is not None and pmdec is not None:
-                new_ra = row['ra'] + (delta_t * (pmra / 1000.) / 3600.)
+                new_ra = row['ra'] + (delta_t * (pmra / 1000.) / 3600.) / np.cos(np.radians(row['dec']))  # pmra is mu_alpha*
                 new_dec = row['dec'] + (delta_t * (pmdec / 1000.) / 3600.)
             else:
                 new_ra = row['ra']

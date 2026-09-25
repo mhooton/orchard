@@ -71,7 +71,12 @@ def main():
     check(cats, "stack catalogue present")
     wolf_cats = [c for c in cats if os.path.basename(c).startswith(WOLF + "_")]
     check(wolf_cats, "stack catalogue named by Wolf 359 DR3 ID")
+    # prefer the catalogue with positions at the night's epoch over the
+    # proper-motion-shifted copy (*_stack_catalogue_pm_*) used for reuse
+    wolf_cats.sort(key=lambda c: "_stack_catalogue_pm_" in os.path.basename(c))
     cat = wolf_cats[0] if wolf_cats else (cats[0] if cats else None)
+    if cat:
+        print("checking:", os.path.basename(cat))
     era, edec = expected(a.date)
     if cat:
         with fits.open(cat) as h:
@@ -117,6 +122,14 @@ def main():
     check(wolf_outs, "photometry output named by Wolf 359 DR3 ID")
     if wolf_outs:
         with fits.open(wolf_outs[0]) as h:
+            ph = h[0].header
+            print("   output header: GAIA_DR2_ID=%s TARGET_ROLE=%s SP_ID=%s TEFF=%s" % (
+                ph.get("GAIA_DR2_ID"), ph.get("TARGET_ROLE"), ph.get("SP_ID"), ph.get("TEFF")))
+            check(str(ph.get("TARGET_ROLE", "")).strip() == "primary", "output header marks the target as primary")
+            try:
+                check(2000 < float(ph.get("TEFF")) < 3500, "output header carries a Teff for the PWV correction (%s)" % ph.get("TEFF"))
+            except (TypeError, ValueError):
+                check(False, "output header carries a Teff for the PWV correction (%s)" % ph.get("TEFF"))
             c = h["CATALOGUE"].data
             cols = [n.upper() for n in c.columns.names]
             ids = []

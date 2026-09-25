@@ -268,3 +268,65 @@ def test_db_query_includes_custom_sources(tmp_path, monkeypatch):
     rows = gx._db_query(6.9, 7.2, 164.0, 164.3)
     ids = {r["source_id"] for r in rows}
     assert WOLF in ids and "9000000000000000001" in ids
+
+
+# --------------------------------------------------------------------------
+# name lookup through the 40 pc list (nights without a plan file)
+TLIST_HEADER = ("Sp_ID, 2MASS_ID, Gaia_ID, RA, DEC, G, I, J, H, K, Dis, e_Dis, M, e_M, R, e_R,  T_eff, "
+                "e_Teff, SpT, e_Spt, SNR_TESS_temp, SNR_Spec_temp, SNR_TESS_HZ, SNR_Spec_HZ, "
+                "SNR_JWST_HZ_tr, SNR_JWST_HZ_occ, SNR_JWST_temp_occ, Program\n")
+
+
+def write_tlist(path, rows):
+    tail = "50.00  9.02  7.09 50.00  6.09  2.4200  0.0100 0.11 0.00 0.13 0.02 %s  154.  6.0  1.0 134.96 15.24 95.43 10.78  5.66  3.90 12.79 1"
+    with open(path, "w") as f:
+        f.write(TLIST_HEADER)
+        for name, gid, ra, dec, teff in rows:
+            f.write("%s  00000000-0000000 %s %.7f %.7f %s\n" % (name, gid, ra, dec, tail % teff))
+
+
+def test_name_lookup_in_target_list(tmp_path):
+    tl = tmp_path / "ml_40pc.txt"
+    write_tlist(str(tl), [("Sp1056+0700", WOLF, 164.1207917, 7.0144444, "2831."),
+                          ("Sp0000+0000", "0000000000000000000", 0.0, 0.0, "2500."),
+                          ("Sp0251-0352", "111", 42.9, -3.87, "1822."),
+                          ("Sp0251-0352", "222", 42.9, -3.87, "1500.")])
+    got = tm.get_target_from_target_list_by_name("Sp1056+0700", str(tl))
+    assert got[0] == WOLF and abs(got[1] - 164.1207917) < 1e-6 and abs(got[2] - 7.0144444) < 1e-6
+    assert tm.get_target_from_target_list_by_name("sp1056--0700".replace("--", "+"), str(tl))[0] == WOLF
+    assert tm.get_target_from_target_list_by_name("Sp0000+0000", str(tl)) is None      # zero ID
+    assert tm.get_target_from_target_list_by_name("Sp9999+9999", str(tl)) is None      # absent
+    # duplicated name: prefer the row whose ID is in the field
+    assert tm.get_target_from_target_list_by_name("Sp0251-0352", str(tl), catalogue_ids={"222"})[0] == "222"
+    assert tm.get_target_from_target_list_by_name("Sp0251-0352", str(tl))[0] == "111"
+
+
+def test_identification_without_plan_file_uses_name_lookup(tmp_path):
+    tl = tmp_path / "ml_40pc.txt"
+    write_tlist(str(tl), [("Sp1056+0700", WOLF, 164.1207917, 7.0144444, "2831.")])
+    os.makedirs(str(tmp_path / "schedule" / "Plans_by_date"))
+    info = {}
+    targets = tm.identify_targets(
+        str(tmp_path), "20240422", "Sp1056+0700",
+        catalogue_dr2_ids=["nan", "nan"], target_list_path=str(tl),
+        toi_table_path="/nonexistent", catalogue_dr3_ids=["123", WOLF], info=info)
+    assert targets == [(WOLF, "primary", 2831)]
+    assert info["primary_method"] == "target_list_name" and info["primary_row"] == 1
+
+
+def test_identification_without_plan_file_falls_back_to_coordinates(tmp_path):
+    tl = tmp_path / "ml_40pc.txt"
+    write_tlist(str(tl), [("Sp1056+0700", WOLF, 164.1207917, 7.0144444, "2831.")])
+    os.makedirs(str(tmp_path / "schedule" / "Plans_by_date"))
+    db = make_db(str(tmp_path / "gaia.db"), [WOLF_DB_ROW])
+    date = "20240422"
+    ra_now, dec_now = tm._propagate(WOLF_RA, WOLF_DEC, WOLF_PMRA, WOLF_PMDEC, 2016.0, tm._date_to_epoch(date))
+    info = {}
+    targets = tm.identify_targets(
+        str(tmp_path), date, "Sp1056+0700",
+        catalogue_dr2_ids=["nan", "nan"], target_list_path=str(tl),
+        toi_table_path="/nonexistent", catalogue_dr3_ids=["123", "nan"],
+        catalogue_coords=np.array([[164.09, 7.0], [ra_now, dec_now]]), db_path=db, info=info)
+    assert [t for t in targets if t[1] == "primary"] == [(WOLF, "primary", 2831)]
+    assert info["primary_method"] == "coordinates" and info["inject"]["row"] == 1
+    assert info["id_source"] == "target_list_name"
