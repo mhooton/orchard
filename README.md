@@ -678,15 +678,60 @@ Creates deep stacked images from multiple science frames and generates source ca
    - Detects ~100-1000 sources per field depending on crowding
 
 4. **Gaia Cross-Matching:**
-   - Matches detected sources to Gaia DR3 via CDS VizieR
+   - Matches detected sources to Gaia DR3 from the local database (`GAIADATABASEPATH`),
+     propagating every catalogue position from J2016.0 to the night with its proper motion
    - Retrieves proper motions, parallaxes, G-band magnitudes
-   - Stores cross-match in `Gaia_Crossmatch` FITS extension
+   - Stores cross-match in `Gaia_Crossmatch` FITS extension (both `GAIA_DR2_ID` and `GAIA_DR3_ID`)
+   - Also returns hand-added objects from the database's `custom_sources` table (see below)
    - Reports match percentage for quality assessment
 
-5. **Backup System:**
+5. **Target Identification** (`utils/target_management.py`):
+   - Reads the primary target's Gaia ID from the night's schedule plan file, then applies
+     `calibration/target_id_aliases.csv` for plan files known to carry a wrong ID
+   - Matches that ID against **either** `GAIA_DR2_ID` or `GAIA_DR3_ID` of the crossmatch
+   - If nothing matches, looks the ID up directly in the local database and logs one of two
+     distinct statuses: `PRIMARY_NOT_IN_DB` (the star is missing from our database, a build
+     problem that will fail on every night) or `PRIMARY_NOT_IN_FOV` (the star is in the
+     database but not in tonight's catalogue)
+   - Coordinate fallback: propagates the star's position to the night with its proper motion
+     (from the database, else the plan-file J2000 position without proper motion) and accepts
+     the nearest detection within 2 arcsec, provided it carries no conflicting Gaia ID. The
+     schedule ID and any database astrometry/photometry are then injected into that catalogue
+     row so every later stage keys on it as usual
+   - Falls back to the TOI table for `TOI-*` names, and always adds 40 pc target-list stars
+     in the field as secondary targets
+   - Records `PRIM_HOW`, `PRIM_ST`, `PRIM_ID` and `SCHED_ID` in the `Gaia_Crossmatch` header
+     so the method used on each night is auditable
+
+6. **Backup System:**
    - Preserves best stack catalogue when subsequent runs fail
    - Automatically restores backup if current run produces poor results
+   - A backup is validated by content (the target must be in it, by DR2 or DR3 ID) and is
+     rejected when more than 30 days old for a target without proper motion, because catalogue
+     positions are propagated to the night and a row without proper motion stays put
    - Useful for nights with degraded data quality
+
+**Targets missing from Gaia DR2, from the local database, or from Gaia altogether**
+
+Wolf 359 (Sp1056+0700) is the cautionary example: it has no Gaia DR2 entry, so the scheduler
+wrote the ID of a G=16 neighbour into its 2021 to 2022 plan files, and the database build
+dropped it because it required a DR2 counterpart. Every product from four years of data was
+either the neighbour's light curve or no photometry at all. Three cases are handled:
+
+- *In DR3 but not DR2* (bright, very high proper-motion nearby stars): keep the database
+  built with `gaia-tmass-sqlite/db_maker.py` at or after the `g_cut_dr3_only` change, or run
+  `augment_dr3_only.py` on an existing database. Nothing else is needed.
+- *Name resolves to no ID* (missing from schedule, TOI table and target list): the coordinate
+  fallback above finds it; `utils/resolve_master_list_gaia_ids.py` fills zero IDs in
+  `ml_40pc.txt` from DR3.
+- *Not in Gaia at all* (faint T/Y dwarfs): add a row to
+  `calibration/supplementary_sources.csv` with a synthetic numeric ID above 9e18 and load it
+  with `python -m utils.supplementary_sources load`. Estimate G and colours from the spectral
+  type; Teff feeds the PWV correction.
+
+For a coordinate fallback to work on a fast-moving star the proper motion must be known, so
+put the star in the database or the supplementary table rather than relying on plan-file
+coordinates alone.
 
 **Output:**
 - `{GAIA_ID}_outstack_{filter}.fits` - Deep stacked image (~50× deeper than single frame)
@@ -781,7 +826,7 @@ Generates final calibrated light curves through differential photometry. Selects
 **Process:**
 
 1. **Target Identification:**
-   - Matches target to Gaia DR3 source ID
+   - Matches the target's Gaia DR2 or DR3 source ID (from the output filename) to the catalogue
    - Retrieves effective temperature from Filippazzo catalogue or FITS header
    - Locates target in photometry catalogues
 
