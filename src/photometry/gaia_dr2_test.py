@@ -135,7 +135,7 @@ def crossmatch(fitsfile,
     print("ext: " + ext)
     # choose a cone radius of approx. 5 arcseconds = 0.0014 degrees
     # rad_deg = 0.0028
-    rad_deg = 0.0084
+    rad_deg = 0.0084   # 30" box; widened below once delta_t is known
     outfits = False
 
     try:
@@ -169,6 +169,13 @@ def crossmatch(fitsfile,
         obs_epoch = Time(dt.datetime.strptime(date, "%Y%m%d")).jd
         # convert delta_t into years
         delta_t = (obs_epoch - gaia_epoch) / 365.
+        # A star moving 10"/yr covers the fixed 30" box in three years, so
+        # widen the candidate box with the time baseline (0.003 deg/yr =
+        # 10.8"/yr). Candidates are still selected by proper-motion-
+        # propagated separation, so the wider box only costs a few more
+        # rows per source.
+        rad_deg = rad_deg + 0.003 * abs(delta_t)
+        print("candidate box half-width: %.1f arcsec for delta_t = %.2f yr" % (rad_deg * 3600, delta_t))
 
         pool = ThreadPool(int(n))
 
