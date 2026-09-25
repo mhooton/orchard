@@ -10,7 +10,7 @@
 # $LOGDIR/<TEL>_<DATE>.log, a one-line summary per night to $LOGDIR/summary.txt.
 #
 # Environment (all optional):
-#   ORCHARD_PATH       pipeline source dir (default: this script's ../ )
+#   (the source tree containing this script is always the one used)
 #   BASEDIR            data root inside the container (default /data/SPECULOOSPipeline)
 #   GAIADATABASEPATH   Gaia database
 #   TARGET_LIST        40 pc target list override
@@ -23,10 +23,15 @@
 #     TARGET_LIST=/gaia_database/orchard-missing-gaia/ml_40pc.txt \
 #     bash tests/reprocess_nights.sh ../nights_Io.txt Sp1056+0700 --no_T12 --force-platesolve"
 set -u
-NIGHTS=$1; TARGET=$2; shift 2; FLAGS="$*"
+NIGHTS=$(readlink -f "$1"); TARGET=$2; shift 2; FLAGS="$*"
 HERE=$(cd "$(dirname "$0")" && pwd)
-export ORCHARD_PATH=${ORCHARD_PATH:-$(dirname "$HERE")}
+# The source tree this script lives in is the one that runs. The container
+# environment defines ORCHARD_PATH for the production checkout, so an
+# inherited value must not win silently.
+export ORCHARD_PATH=$(dirname "$HERE")
 export PYTHONPATH=$ORCHARD_PATH
+echo "ORCHARD_PATH=$ORCHARD_PATH NIGHTS=$NIGHTS TARGET=$TARGET FLAGS=$FLAGS"
+[ -f "$NIGHTS" ] || { echo "night list not found: $NIGHTS"; exit 2; }
 export N_CORES=${N_CORES:-20}
 BASEDIR=${BASEDIR:-/data/SPECULOOSPipeline}
 LOGDIR=${LOGDIR:-$(dirname "$ORCHARD_PATH")/reprocess_logs}
