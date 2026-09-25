@@ -102,6 +102,7 @@ def select_images(all_images):
 
     The target number of images N is determined by the integration time
     threshold: N = max(ceil(1200 / EXPTIME), 40). A minimum of 40 images
+    and a maximum of 400 images
     is always targeted regardless of exposure time. If the total number of
     available images is less than N, all images are used as the target.
 
@@ -145,9 +146,9 @@ def select_images(all_images):
         )
         n_target = len(all_images)
     else:
-        n_target = min(max(math.ceil(1200.0 / exptime), 40), len(all_images))
+        n_target = min(max(math.ceil(1200.0 / exptime), 40), 400, len(all_images))
         logger.info(
-            "EXPTIME=%.1fs → target stack size N=%d (threshold 1200s, minimum 40)",
+            "EXPTIME=%.1fs → target stack size N=%d (threshold 1200s, minimum 40, maximum 400)",
             exptime, n_target
         )
 
@@ -181,7 +182,7 @@ def select_images(all_images):
     if len(selected) < n_target:
         logger.warning(
             "Integration time threshold not met: selected %d image(s), "
-            "total integration %.0fs (target 1200s, minimum 40 images)",
+            "total integration %.0fs (target 1200s, minimum 40 images, maximum 400)",
             len(selected), actual_exptime
         )
     else:

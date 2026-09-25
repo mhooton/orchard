@@ -208,10 +208,13 @@ create_input_lists() {
 
 # get the names of all targets observed this night
 find_target_names(){
-    IMAGELISTS=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_image_*.list
+    shopt -s nullglob
+    IMAGELISTS=(${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_image_*.list)
+    shopt -u nullglob
     TARGET=()  # Initialize as an empty array
 
-    for IMAGELIST in ${IMAGELISTS}
+    [[ ${#IMAGELISTS[@]} -eq 0 ]] && return
+    for IMAGELIST in ${IMAGELISTS[@]+"${IMAGELISTS[@]}"}
     do
         IMAGELIST=${IMAGELIST#${OUTPUTDIR}/${DATE}/reduction}
         SUBLIST=${IMAGELIST#/${RUNNAME}_image_}
@@ -1160,6 +1163,8 @@ main() {
     setup_directory_structure
 
     cd ${DATDIR}
+    rm -f match_proc*.fits
+    rm -f core.*
     date
     echo "Using ${CORES} cores"
 
@@ -1188,11 +1193,12 @@ main() {
             echo "Using specified targets: ${TARGET[@]}"
         else
             TARGET="$(find_target_names)"
+            echo "DEBUG TARGET: '${TARGET}'"
             echo "Using discovered targets: ${TARGET[@]}"
         fi
 
         # if there are no science images then attempt to create master calibration images and produce report
-        if [[ " ${TARGET[@]} " =~ "logs" ]]; then
+        if [[ -z "${TARGET}" ]]; then
             echo "There are no science images for ${DATE}!"
             TARGET="N/A"
             echo $TARGET

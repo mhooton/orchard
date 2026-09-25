@@ -3,3 +3,5 @@ docker/docker-compose.server-autosave.yml
 .idea/
 condense/zlp_condense.py
 photometry/ZLP_create_cat.py
+# Local shutterless-modelling data pulled from ETH (large, not source)
+shutterless_tests/
