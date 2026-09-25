@@ -165,7 +165,10 @@ readonly XMATCH='vizgaia3'
 readonly OUTEXT="fits"
 readonly VERSION='v3'
 #readonly TLIST="/appct/data/SPECULOOSPipeline/tests/target_list_ids_201905.txt"
-readonly TLIST=$(abspath ${2})/ml_40pc.txt
+# 40 pc target list. TARGET_LIST in the environment overrides the default
+# copy in the data root (e.g. to run with a corrected list before it is
+# adopted in production).
+readonly TLIST=${TARGET_LIST:-$(abspath ${2})/ml_40pc.txt}
 readonly TOI_TABLE=${SCRIPTDIR}/condense/toi_gaia_ids.csv
 #readonly EXT='fts'
 
