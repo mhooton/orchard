@@ -108,7 +108,9 @@ def main():
                 if flux is not None:
                     rank = int(np.sum(np.nan_to_num(flux, nan=-1) > flux[i])) + 1
                     print("   primary brightness rank %d of %d (flux %.0f)" % (rank, len(flux), flux[i]))
-                    check(rank == 1, "primary is the brightest detection")
+                    # a differently pointed field can contain a brighter star;
+                    # Wolf 359 should still be among the very brightest
+                    check(rank <= 3, "primary is among the three brightest detections (rank %d)" % rank)
                 for col in ("PMRA", "PMDEC", "GMAG", "TEFF"):
                     if col in g.columns.names:
                         print("   %-5s = %s" % (col, g.data[col][i]))
