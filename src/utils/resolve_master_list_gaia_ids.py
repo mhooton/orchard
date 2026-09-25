@@ -166,17 +166,21 @@ def main():
     report = []
     resolved = {}
     if a.from_report:
-        by_name = {}
+        # Key on name AND position: duplicated Sp_IDs (resolved binaries
+        # sharing one coordinate-derived name) are different stars.
+        by_key = {}
         with open(a.from_report, newline="") as f:
             for rr in csv.DictReader(f):
                 if rr.get("status") == "RESOLVED" and rr.get("gaia_dr3_id"):
                     note = rr.get("note", "")
                     weak = ("; weak" in note) or (
                         not rr.get("J_2MASS", "").strip() and "pm=(," in note)
-                    by_name[rr["Sp_ID"]] = (rr["gaia_dr3_id"], "weak" if weak else "strong")
+                    key = (rr["Sp_ID"], round(_f(rr["RA"]), 5), round(_f(rr["DEC"]), 5))
+                    by_key[key] = (rr["gaia_dr3_id"], "weak" if weak else "strong")
         for k, r in targets:
-            if r[ni] in by_name:
-                resolved[k] = by_name[r[ni]]
+            key = (r[ni], round(_f(r[ri]), 5), round(_f(r[di]), 5))
+            if key in by_key:
+                resolved[k] = by_key[key]
         print("from report %s: %d resolved rows apply to this file" % (a.from_report, len(resolved)))
         targets = []
     for n, (k, r) in enumerate(targets, 1):
