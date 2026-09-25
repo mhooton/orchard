@@ -73,6 +73,23 @@ def _db_query(min_dec, max_dec, min_ra, max_ra):
         except Exception as e:
             print(f"DB query error for shard {shard}: {e}")
 
+    # Hand-added sources (objects in neither Gaia release, see
+    # utils.supplementary_sources). Same columns as the band tables, so
+    # callers cannot tell them apart — which is the point.
+    try:
+        cursor = conn.execute(
+            "SELECT ra, dec, pmra, pmdec, phot_g_mean_mag, g_rp, bp_rp, "
+            "parallax, teff_gspphot, source_id, dr2_source_id "
+            "FROM custom_sources "
+            f"WHERE dec BETWEEN {min_dec} AND {max_dec} "
+            f"AND ra BETWEEN {min_ra} AND {max_ra}"
+        )
+        cols = [d[0] for d in cursor.description]
+        for row in cursor.fetchall():
+            rows.append(dict(zip(cols, row)))
+    except sqlite3.OperationalError:
+        pass  # database predates the custom_sources table
+
     conn.close()
     return rows
 

@@ -54,6 +54,7 @@ from reporting.QC import main as QC
 from calibration.pipeutils import detect_instrument
 from utils.target_management import (
     identify_targets,
+    load_id_aliases,
     catalogue_is_valid,
     update_backup,
     restore_backup,
@@ -227,10 +228,16 @@ def write_target_roles(catalogue_path, targets):
 
             gaia_ext = hdul['GAIA_CROSSMATCH']
             dr2_ids = gaia_ext.data['GAIA_DR2_ID']
-
+            if 'GAIA_DR3_ID' in gaia_ext.columns.names:
+                dr3_ids = gaia_ext.data['GAIA_DR3_ID']
+            else:
+                dr3_ids = [''] * len(dr2_ids)
+            # Targets may be identified by a DR2 or a DR3 ID; a row takes
+            # the role of whichever of its IDs is in the target map.
             roles = np.array([
-                target_role_map.get(dr2_id.strip(), '')
-                for dr2_id in dr2_ids
+                target_role_map.get(str(d2).strip(), '')
+                or target_role_map.get(str(d3).strip(), '')
+                for d2, d3 in zip(dr2_ids, dr3_ids)
             ])
 
             existing_cols = gaia_ext.columns
@@ -280,10 +287,96 @@ def write_target_roles(catalogue_path, targets):
     )
 
 
+def read_catalogue_info(path):
+    """
+    Read what target identification needs from a stack catalogue:
+    both Gaia ID columns of Gaia_Crossmatch, plus RA/Dec (degrees) and
+    isophotal flux of every detection from the imcore table.
+    """
+    with fits.open(path) as hdul:
+        g = hdul['GAIA_CROSSMATCH'].data
+        dr2 = [str(x) for x in g['GAIA_DR2_ID']]
+        dr3 = ([str(x) for x in g['GAIA_DR3_ID']]
+               if 'GAIA_DR3_ID' in g.columns.names else None)
+        coords = None
+        flux = None
+        try:
+            apm = hdul[1].data
+            names = [n.upper() for n in apm.columns.names]
+            ra = np.asarray(apm[apm.columns.names[names.index('RA')]], dtype=float)
+            dec = np.asarray(apm[apm.columns.names[names.index('DEC')]], dtype=float)
+            if np.nanmax(np.abs(ra)) <= 2 * np.pi + 1e-6:   # radians
+                ra, dec = np.degrees(ra), np.degrees(dec)
+            coords = np.column_stack([ra, dec])
+            if 'ISOPHOTAL_FLUX' in names:
+                flux = np.asarray(apm[apm.columns.names[names.index('ISOPHOTAL_FLUX')]], dtype=float)
+            if len(coords) != len(dr2):
+                coords, flux = None, None
+        except Exception as e:
+            logger.warning("Could not read detection positions from '%s': %s", path, e)
+    return {'dr2': dr2, 'dr3': dr3, 'coords': coords, 'flux': flux}
+
+
+def inject_primary_identity(catalogue_path, row, gaia_id, db_row=None):
+    """
+    Write the schedule's Gaia ID (and, if the star is in the local
+    database, its proper motion, parallax, magnitudes and Teff) into the
+    Gaia_Crossmatch row that the coordinate fallback identified as the
+    primary target.  Only blank/NaN cells are filled; nothing is overridden.
+    The extension header records the injection.
+    """
+    try:
+        with fits.open(catalogue_path, mode='update') as hdul:
+            ext = hdul['GAIA_CROSSMATCH']
+            g = ext.data
+            cols = list(g.columns.names)
+            id_col = 'GAIA_DR3_ID' if 'GAIA_DR3_ID' in cols else 'GAIA_DR2_ID'
+            if str(g[id_col][row]).strip().lower() in ('', 'nan', 'none'):
+                g[id_col][row] = str(gaia_id)
+            if db_row is not None:
+                for col, key in (('PMRA', 'pmra'), ('PMDEC', 'pmdec'),
+                                 ('PARALLAX', 'parallax'),
+                                 ('GMAG', 'phot_g_mean_mag'), ('G_RP', 'g_rp'),
+                                 ('BP_RP', 'bp_rp'), ('TEFF', 'teff_gspphot')):
+                    val = db_row.get(key)
+                    if col in cols and val is not None:
+                        try:
+                            if not np.isfinite(float(g[col][row])):
+                                g[col][row] = float(val)
+                        except (ValueError, TypeError):
+                            pass
+                if 'GAIA_DR2_ID' in cols and db_row.get('dr2_source_id') \
+                        and str(g['GAIA_DR2_ID'][row]).strip().lower() in ('', 'nan', 'none'):
+                    g['GAIA_DR2_ID'][row] = str(db_row['dr2_source_id'])
+            ext.header['PRIMINJ'] = (str(gaia_id),
+                                     'primary ID injected by coordinate identification')
+            ext.header['PRIMIROW'] = (int(row), 'catalogue row of injected primary')
+            hdul.flush()
+        logger.info("Injected Gaia ID %s into row %d of '%s'", gaia_id, row, catalogue_path)
+        return True
+    except Exception as e:
+        logger.error("Failed to inject primary identity into '%s': %s", catalogue_path, e)
+        return False
+
+
+def record_primary_provenance(catalogue_path, info):
+    """Record how the primary target was identified in the Gaia_Crossmatch header."""
+    try:
+        with fits.open(catalogue_path, mode='update') as hdul:
+            h = hdul['GAIA_CROSSMATCH'].header
+            h['PRIM_ST'] = (str(info.get('status', ''))[:60], 'primary identification status')
+            h['PRIM_HOW'] = (str(info.get('primary_method') or 'none')[:20], 'how the primary was identified')
+            h['PRIM_ID'] = (str(info.get('primary_id') or '')[:30], 'primary Gaia ID used')
+            if info.get('schedule_id'):
+                h['SCHED_ID'] = (str(info['schedule_id'])[:30], 'Gaia ID from schedule (after aliases)')
+            hdul.flush()
+    except Exception as e:
+        logger.warning("Could not record primary provenance in '%s': %s", catalogue_path, e)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-
 def main(filelist, outdir, backupcatdir, reportdir, filter, date,
          obsdir, targname, target_list_path, toi_table_path,
          telescope='unknown',
@@ -339,8 +432,9 @@ def main(filelist, outdir, backupcatdir, reportdir, filter, date,
     # identify_targets() is still called after the crossmatch to validate
     # presence in the catalogue and identify secondary targets.
     # ------------------------------------------------------------------
-    primary_gaia_id = get_target_from_schedule(obsdir, date, targname)
-
+    aliases = load_id_aliases()
+    primary_gaia_id = get_target_from_schedule(obsdir, date, targname,
+                                               aliases=aliases)
     if primary_gaia_id is None and 'toi' in targname.lower():
         primary_gaia_id = get_target_from_toi(targname, toi_table_path)
 
@@ -505,26 +599,38 @@ def main(filelist, outdir, backupcatdir, reportdir, filter, date,
     dir_date = dirsplit[-3]
     tel = dirsplit[-5]
 
-    def _read_catalogue_dr2_ids(path):
-        with fits.open(path) as hdul:
-            return list(hdul['GAIA_CROSSMATCH'].data['GAIA_DR2_ID'])
-
     try:
-        catalogue_dr2_ids = _read_catalogue_dr2_ids(cat_path)
+        cat_info = read_catalogue_info(cat_path)
     except Exception as e:
         logger.error(
-            "Could not read DR2 IDs from catalogue '%s': %s", cat_path, e
+            "Could not read Gaia IDs from catalogue '%s': %s", cat_path, e
         )
         return 1
 
+    ident_info = {}
     targets = identify_targets(
         obsdir=obsdir,
         date=date,
         targname=targname,
-        catalogue_dr2_ids=catalogue_dr2_ids,
+        catalogue_dr2_ids=cat_info['dr2'],
         target_list_path=target_list_path,
         toi_table_path=toi_table_path,
+        catalogue_dr3_ids=cat_info['dr3'],
+        catalogue_coords=cat_info['coords'],
+        catalogue_fluxes=cat_info['flux'],
+        aliases=aliases,
+        info=ident_info,
     )
+    logger.info("Primary identification status: %s (method %s)",
+                ident_info.get('status'), ident_info.get('primary_method'))
+
+    # Coordinate fallback found the star but the crossmatch had no ID for
+    # it: write the identity into the catalogue so every later stage
+    # (TARGET_ROLE, condense, light curves) can key on it as usual.
+    if ident_info.get('inject'):
+        inj = ident_info['inject']
+        inject_primary_identity(cat_path, inj['row'], inj['gaia_id'],
+                                inj.get('db_row'))
 
     primary_targets = [t for t in targets if t[1] == 'primary']
 
@@ -585,21 +691,26 @@ def main(filelist, outdir, backupcatdir, reportdir, filter, date,
 
             # Re-identify targets using the restored catalogue
             try:
-                catalogue_dr2_ids = _read_catalogue_dr2_ids(active_cat_path)
+                backup_info = read_catalogue_info(active_cat_path)
             except Exception as e:
                 logger.error(
-                    "Could not read DR2 IDs from backup catalogue '%s': %s",
+                    "Could not read Gaia IDs from backup catalogue '%s': %s",
                     active_cat_path, e
                 )
                 return 1
-
+            # No coordinate fallback on a backup: its positions belong to
+            # another night's epoch.
+            ident_info = {}
             targets = identify_targets(
                 obsdir=obsdir,
                 date=date,
                 targname=targname,
-                catalogue_dr2_ids=catalogue_dr2_ids,
+                catalogue_dr2_ids=backup_info['dr2'],
                 target_list_path=target_list_path,
                 toi_table_path=toi_table_path,
+                catalogue_dr3_ids=backup_info['dr3'],
+                aliases=aliases,
+                info=ident_info,
             )
             primary_targets = [t for t in targets if t[1] == 'primary']
 
@@ -635,6 +746,7 @@ def main(filelist, outdir, backupcatdir, reportdir, filter, date,
     # Step 10: write TARGET_ROLE column into the active catalogue
     # ------------------------------------------------------------------
     write_target_roles(active_cat_path, targets)
+    record_primary_provenance(active_cat_path, ident_info)
 
     # ------------------------------------------------------------------
     # Step 11: backup management

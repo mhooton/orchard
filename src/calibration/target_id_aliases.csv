@@ -1,0 +1,15 @@
+# Gaia ID aliases applied when a schedule plan file names the wrong source.
+#
+# Each row maps an ID that appears in plan files to the ID the pipeline
+# should use instead, optionally restricted to a date range (YYYYMMDD,
+# inclusive; blank = unbounded) and to a target name.  Matching on the
+# target name is case-insensitive and ignores '--'/space differences.
+#
+# The canonical example: SPOCK resolved Sp1056+0700 (Wolf 359) by position
+# against Gaia DR2, which does not contain Wolf 359, and so wrote the ID of
+# a G=16.3 background star 3" from Wolf 359's 2015 position into every plan
+# file from April 2021 to April 2022.  Plan files from 2023 on carry the
+# correct DR3 ID.
+#
+# target,schedule_id,use_id,from_date,to_date,note
+Sp1056+0700,3864972728150826368,3864972938605115520,20210101,20221231,Wolf 359: DR2 neighbour written by SPOCK; star absent from DR2

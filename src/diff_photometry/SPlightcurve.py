@@ -2703,7 +2703,11 @@ def import_outfits(outfits,goutfits,ap,targ_gaia):
             try:
                 print("Use Gaia ID provided by user: " + str(targ_gaia))
                 # print(gaia_id)
-                i = np.where(np.array(gaia_dr2_id) == targ_gaia)[0]
+                # The target ID may be a DR2 or a DR3 source ID; match either.
+                _ids2 = np.array([str(x).strip() for x in gaia_dr2_id])
+                _ids3 = np.array([str(x).strip() for x in gaia_dr3_id])
+                _want = str(targ_gaia).strip()
+                i = np.where((_ids2 == _want) | (_ids3 == _want))[0]
                 # print(i)
                 if len(i)>1:
                     print("WARNING: More than one star with same Gaia ID!")
@@ -2867,7 +2871,11 @@ def main(date, targ_gaia, ap, filt, outfits, goutfits, globallc, binning, versio
             print("TRY FINDING TARGET IN OLDER TARGET LIST: "+ otlist)
             try:
                 targ_id, match_gaia, multitarg, intarg = find_targ_id(gaia_dr2_id, np.nanmedian(flux, axis=1), id,
-                                                                      otlist)  # Continue using DR2 for matching
+                                                                      otlist)
+                if not intarg:
+                    # target list may carry DR3 IDs (stars absent from DR2)
+                    targ_id, match_gaia, multitarg, intarg = find_targ_id(gaia_dr3_id, np.nanmedian(flux, axis=1),
+                                                                          id, otlist)
             except Exception as e:
                 print(e)
             if intarg == True:
