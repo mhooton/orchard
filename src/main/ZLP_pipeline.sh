@@ -158,6 +158,9 @@ else
     readonly CORES=1
     echo "Using default of 1 core (serial processing)"
 fi
+# Wall-clock ceiling for the nightly PDF report (T11).  It is a presentation
+# stage, so it must never be able to hold up the stages after it.
+readonly PDF_REPORT_TIMEOUT=${PDF_REPORT_TIMEOUT:-3600}
 readonly APSIZE=4
 readonly NUMSTACK=50
 readonly IPIX=6
@@ -866,16 +869,38 @@ pdf_report(){
         fi
     done
 
-    CMD="python ${SCRIPTDIR}/reporting/pdf_report_catriona.py \
+    # One BLAS/OpenMP thread per process.  The report aligns the night's images
+    # over a multiprocessing pool, and each worker otherwise sizes its own thread
+    # pool from the host core count; several nights reprocessed at once then
+    # exhaust RLIMIT_NPROC and OpenBLAS deadlocks on "pthread_create failed".
+    export OMP_NUM_THREADS=1
+    export OPENBLAS_NUM_THREADS=1
+    export MKL_NUM_THREADS=1
+    export NUMEXPR_NUM_THREADS=1
+    export VECLIB_MAXIMUM_THREADS=1
+
+    CMD="timeout --kill-after=60 ${PDF_REPORT_TIMEOUT} \
+        python ${SCRIPTDIR}/reporting/pdf_report_catriona.py \
         --datdir \"${DATDIR}\" \
         --obsdir \"${OBSDIR}\" \
         --date \"${DATE}\" \
         --target \"${DISPLAY_TARGETS}\" \
         --ap \"5\" \
         --telescope \"${TEL}\" \
-        --version \"${VERSION}\""
+        --version \"${VERSION}\" \
+        --nproc \"${CORES}\""
     echo "${CMD}"
-    eval "${CMD}"
+
+    # Never let the report abort the night: the stages after it (in particular the
+    # v3 -> v2 sweep the portal reads from) matter more than the PDF.
+    local rc=0
+    eval "${CMD}" || rc=$?
+    if [ ${rc} -eq 124 ] || [ ${rc} -eq 137 ]; then
+        echo "WARNING: PDF report for ${DATE} exceeded ${PDF_REPORT_TIMEOUT}s and was killed - continuing"
+    elif [ ${rc} -ne 0 ]; then
+        echo "WARNING: PDF report for ${DATE} failed with exit code ${rc} - continuing"
+    fi
+    return 0
 }
 
 # Perform version migration from v3 to v2
