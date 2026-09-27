@@ -693,6 +693,23 @@ def create_output_file(filename):
     yield outfile
     outfile.writeto(filename, overwrite=True)
 
+def header_id(value):
+    """A Gaia ID as a FITS header value, or "N" when the catalogue had none.
+
+    Nights condensed before the DR3 crossmatch have no gaia_dr3_id column, so
+    import_outfits fills the array with NaN, and astropy refuses a NaN header with
+    "Floating point nan values are not allowed in FITS headers.". That aborted the
+    whole _diff.fits write. "N" is the convention the pipeline already uses for an
+    absent value, as PHOT_ZP does just below and as zlp_condense does for SP_ID.
+    """
+    try:
+        if value is None or np.isnan(float(value)):
+            return "N"
+    except (TypeError, ValueError):
+        pass
+    return str(value)
+
+
 def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
     # SAVE all differential lightcurves to an outputfits file
     # MAIN TABLE: All differential LCs: NUMBER OF STARS BY TIME - N x T THIS SHOULD INCLUDE TARGET: 1 x T
@@ -929,8 +946,8 @@ def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
         hdulist.append(fits.BinTableHDU(alc_table, name='ALC_' + str(ap)))
         print('add flags')
         hdulist.append(fits.BinTableHDU(flag_table, name='FLAGS'))
-        hdulist[0].header['DR2ID'] = targ.gaia_dr2_id
-        hdulist[0].header['DR3ID'] = targ.gaia_dr3_id
+        hdulist[0].header['DR2ID'] = header_id(targ.gaia_dr2_id)
+        hdulist[0].header['DR3ID'] = header_id(targ.gaia_dr3_id)
         hdulist[0].header['PIPE_V'] = version
 
         if ~np.isnan(phot_zp):
@@ -2569,7 +2586,14 @@ def import_outfits(outfits,goutfits,ap,targ_gaia):
         numstars = len(ra)
         dec = cat['dec'].read()
         peak = infile['peak'].read()
-        exposure = imagelist['exptime'].read()
+        try:
+            exposure = imagelist['exptime'].read()
+        except Exception:
+            # Nights condensed before the column was renamed carry 'exposure'. Every
+            # night up to and including early 2024 is in the old schema, so without this
+            # the T8 step cannot even open them: it fails with
+            # "column name 'exptime' not found (case insensitive)".
+            exposure = imagelist['exposure'].read()
         rcore = imagelist['rcore'].read()
         obj_id = cat['obj_id'].read()
         azimuth = imagelist['azimuth'].read()
@@ -2845,7 +2869,12 @@ def main(date, targ_gaia, ap, filt, outfits, goutfits, globallc, binning, versio
 
     if intarg == False:
         if len(oldtlists)==0:
-            oldtlists = ["/appct/data/SPECULOOSPipeline/tests/target_list_ids_201905.txt"]
+            # Build this from basedir, as filippazzo_teff does for its own CSV. The
+            # literal /appct/... path this used to carry is an appcs host path and does
+            # not exist inside the orchard-server container, where only
+            # /data/SPECULOOSPipeline is mounted, so the lookup raised OSError, the
+            # except below swallowed it, and intarg stayed False.
+            oldtlists = [os.path.join(basedir, "tests", "target_list_ids_201905.txt")]
 
         for otlist in oldtlists:
             # tlist = basedir + "/" + tel + "/target_list_ids.txt"
