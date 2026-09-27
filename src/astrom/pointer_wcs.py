@@ -568,7 +568,8 @@ def clear_wcs_headers(header, wcs_keywords, verbose=False):
     return removed_count
 
 
-def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, verbose=False):
+def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, verbose=False,
+                max_stars=16, plate_scale_tolerance=0.1, min_matches=4):
     """
     Perform WCS solving on a FITS file using local Gaia database and multiscale star detection.
 
@@ -589,6 +590,21 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
         If True, remove existing WCS headers before plate solving
     verbose : bool, optional
         Whether to print verbose debugging information
+    max_stars : int, optional
+        Number of brightest detections handed to twirl for pattern matching; the
+        Gaia reference list is twice this. Raising it costs time (twirl builds
+        asterisms from these) and, on the nights measured, does not buy accuracy.
+    plate_scale_tolerance : float, optional
+        Fractional deviation from the header plate scale at which a twirl solution
+        is rejected. The check fires before star matching, so a rejected solution
+        never gets a match count -- relax it only with a matches-based check in
+        hand.
+    min_matches : int, optional
+        Star matches required to accept a solution. The default of 4 is the bare
+        minimum and is too permissive: measured over 36 (night, target) groups,
+        frames accepted on exactly 4 matches sit 183 arcsec from the field centre
+        in the median (28 of 29 beyond 10 arcsec), against 0.36 arcsec for frames
+        with >=12. 6.7% of v3's "successfully solved" frames pass on exactly 4.
 
     Returns
     -------
@@ -754,7 +770,7 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                     return result
 
                 # Limit number of stars to prevent memory issues
-                star_limit = min(16, len(stars_in_image))
+                star_limit = min(max_stars, len(stars_in_image))
                 stars_in_image = stars_in_image[0:star_limit]
                 result['sources_used'] = len(stars_in_image)
 
@@ -804,7 +820,7 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 image_star_mapping = ImageStarMapping.from_gaia_coordinates(
                     stars_in_image, gaia_stars,
                     expected_plate_scale=plate_scale,
-                    plate_scale_tolerance=0.1
+                    plate_scale_tolerance=plate_scale_tolerance
                 )
 
                 if verbose:
@@ -822,7 +838,6 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 if verbose:
                     print(f"Number of matched stars: {matches}")
 
-                min_matches = 4
                 if matches < min_matches:
                     result['error'] = f"Plate solve failed, not enough stars matched ({matches}/{min_matches})"
                     return result
