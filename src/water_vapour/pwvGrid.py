@@ -224,6 +224,28 @@ def deltaFluxPlot(coords, data, name=''):
 
     return fig, ax
 
+def _lhatpro_text(col):
+    """A wdb column as stripped strings, whatever pandas inferred it to be.
+
+    The ESO wdb pads every field with spaces, so a column normally arrives as
+    object dtype. But when a window happens to contain no blank cells at all,
+    pandas parses the whole column as float64 and the .str accessor raises
+    AttributeError. That is dtype inference reacting to the contents of one
+    query, not a difference in the data, so never reach for .str directly.
+    """
+    return col.astype(str).str.strip()
+
+
+def _lhatpro_numeric(col):
+    """A wdb column as floats, with blank and unparseable cells as NaN."""
+    return pd.to_numeric(_lhatpro_text(col), errors='coerce')
+
+
+def _lhatpro_blank(col):
+    """Mask of cells that carry no value (the wdb writes these as all spaces)."""
+    return _lhatpro_text(col) == ''
+
+
 # @memory2.cache
 def getLHATPROdata(dateS, dateE, peakR=False, format='jd'):
     data = {
@@ -246,22 +268,21 @@ def getLHATPROdata(dateS, dateE, peakR=False, format='jd'):
     df = pd.read_csv(io.StringIO(response.text), delimiter='\t')
 
     if peakR:
-        indexes = df[df['IR temperature [Celsius]'] == '                              '].index
+        indexes = df[_lhatpro_blank(df['IR temperature [Celsius]'])].index
         # Apply filtering to a COPY of the dataframe
         df_filtered = df.copy()
         df_filtered = df_filtered.drop(indexes[:-2] + 1)
-        indexes = df_filtered[df_filtered['IR temperature [Celsius]'] == '                              '].index
+        indexes = df_filtered[_lhatpro_blank(df_filtered['IR temperature [Celsius]'])].index
         df_filtered = df_filtered.drop(indexes)
 
         # Extract timestamps and PWV from the FILTERED dataframe
         try:
-            time = pd.to_datetime(df_filtered['Date time'].str.strip(), format='%Y-%m-%dT%H:%M:%S')
+            time = pd.to_datetime(_lhatpro_text(df_filtered['Date time']), format='%Y-%m-%dT%H:%M:%S')
         except Exception as e:
             return None
 
         # Extract PWV values from the FILTERED dataframe
-        pwv_values = df_filtered['Precipitable Water Vapour [mm]'].str.strip()
-        pwv_values = pd.to_numeric(pwv_values, errors='coerce')
+        pwv_values = _lhatpro_numeric(df_filtered['Precipitable Water Vapour [mm]'])
         pwv_array = pwv_values.values
 
         pwvData = pd.DataFrame({'pwv': pwv_array}, index=time)
@@ -279,13 +300,12 @@ def getLHATPROdata(dateS, dateE, peakR=False, format='jd'):
     else:
         # Parse timestamps first and check for failures
         try:
-            time = pd.to_datetime(df['Date time'].str.strip(), format='%Y-%m-%dT%H:%M:%S', errors='coerce')
+            time = pd.to_datetime(_lhatpro_text(df['Date time']), format='%Y-%m-%dT%H:%M:%S', errors='coerce')
         except Exception as e:
             return None
 
         # Clean and convert PWV values
-        pwv_values = df['Precipitable Water Vapour [mm]'].str.strip()
-        pwv_values = pd.to_numeric(pwv_values, errors='coerce')
+        pwv_values = _lhatpro_numeric(df['Precipitable Water Vapour [mm]'])
 
         # Create DataFrame and remove rows where EITHER timestamp OR PWV is invalid
         valid_mask = ~(time.isna() | pwv_values.isna())
