@@ -32,6 +32,17 @@ warnings.filterwarnings("ignore", message=".*Input data contains invalid values.
                         module="astropy.stats.sigma_clipping")
 
 
+# Number of stars in the asterisms twirl matches on (its `asterism` argument).
+# Both lists handed to it need MORE than this many stars: with exactly this many
+# on either side there is one asterism on that side and no redundancy, and
+# min_matches can then only be cleared by matching every source. Measured over
+# 148,265 v3 plate-solve summaries, frames with exactly four usable sources
+# solved 3.9% of the time (23 of 582) against 91% at ten or more, every one of
+# those 23 on exactly 4 matches - the class that sits 183 arcsec off the field
+# centre - and no frame has ever solved from four or fewer catalogue stars.
+TWIRL_ASTERISM = 4
+
+
 def find_stars_dao(
         data: np.ndarray, threshold: float = 5.0, fwhm: float = 3.0
 ) -> np.ndarray:
@@ -283,6 +294,8 @@ def gaia_db_query(
         The field-of-view of the FOV in degrees. If a float is given, it is assumed to be in degrees.
     limit : int, optional
         The maximum number of sources to retrieve from the Gaia archive. By default, it is set to 1000.
+        Ignored when tmass is set: that path returns every star in the box, brightest in J first, and
+        the caller cuts it down (see the comment at the slice below).
     tmass : bool, optional
         Whether to retrieve the 2MASS J magnitudes catelog. By default, it is set to False.
     dateobs : datetime.datetime, optional
@@ -316,37 +329,59 @@ def gaia_db_query(
     table = db_query(
         db_path, min_dec, max_dec, min_ra, max_ra
     )
+    if table.empty:
+        # An empty box used to raise a KeyError out of sort_values; the caller
+        # can say "no catalogue stars in the field" far more usefully.
+        return np.zeros((0, 2))
+
+    # Everything from here to the epoch correction used to sit inside the `else`,
+    # so none of it ran in the tmass mode the plate solve uses. Some shards store
+    # a missing value as an empty string, which makes pandas read the whole column
+    # as objects, so coerce what is used to a number before looking for NaNs.
+    for column in ("ra", "dec", "pmra", "pmdec", "phot_g_mean_mag", "j_m"):
+        if column in table:
+            table[column] = pd.to_numeric(table[column], errors="coerce")
+
+    # Only drop rows missing the columns essential for plate solving
+    if tmass:
+        table.dropna(subset=["ra", "dec", "j_m"], inplace=True)
+    else:
+        table.dropna(subset=["ra", "dec", "phot_g_mean_mag", "j_m"], inplace=True)
+
+    # Fill missing proper motions with zero so stars are still usable
+    # (their static RA/Dec positions will be used without epoch correction)
+    has_proper_motions = "pmra" in table and "pmdec" in table
+    if has_proper_motions:
+        table["pmra"] = table["pmra"].fillna(0.0)
+        table["pmdec"] = table["pmdec"].fillna(0.0)
+
+    # Brightest first, in whichever band the caller is matching against
     if tmass:
         table = table.sort_values(by=["j_m"]).reset_index(drop=True)
     else:
         table = table.sort_values(by=["phot_g_mean_mag"]).reset_index(drop=True)
 
-        # Replace empty strings with NaN across all columns
-        table = table.replace("", np.nan)
-        table = table.infer_objects(copy=False)
-
-        # Only drop rows missing the columns essential for plate solving
-        table.dropna(subset=["ra", "dec", "phot_g_mean_mag", "j_m"], inplace=True)
-
-        # Fill missing proper motions with zero so stars are still usable
-        # (their static RA/Dec positions will be used without epoch correction)
-        table["pmra"] = table["pmra"].fillna(0.0)
-        table["pmdec"] = table["pmdec"].fillna(0.0)
-
-        # limit number of stars
+    # limit number of stars. The tmass path deliberately returns the whole box and
+    # leaves the cut to its caller, so that the plate-solve log keeps reporting how
+    # rich the field is ("Gaia: 472->32") - that count is the only record of field
+    # richness, and reading it as a cap repeated back at itself would be useless.
+    if not tmass:
         table = table[0:limit]
 
-        # add proper motion to ra and dec
-        if dateobs is not None:
-            # calculate fractional year
-            dateobs = dateobs.year + (dateobs.timetuple().tm_yday - 1) / 365.25  # type: ignore
+    # add proper motion to ra and dec
+    if dateobs is not None and has_proper_motions:
+        # calculate fractional year
+        dateobs = dateobs.year + (dateobs.timetuple().tm_yday - 1) / 365.25  # type: ignore
 
-            # Reference epoch of the local database is Gaia DR3 (J2016.0).
-            # This used to say 2015.5 (the DR2 epoch), a 0.5 yr error that
-            # moves a 4"/yr star by 2" — enough to fail a 2" crossmatch.
-            years = dateobs - 2016.0  # type: ignore
-            table["ra"] += years * table["pmra"] / 1000 / 3600
-            table["dec"] += years * table["pmdec"] / 1000 / 3600
+        # Reference epoch of the local database is Gaia DR3 (J2016.0).
+        # This used to say 2015.5 (the DR2 epoch), a 0.5 yr error that
+        # moves a 4"/yr star by 2" — enough to fail a 2" crossmatch.
+        years = dateobs - 2016.0  # type: ignore
+        # pmra is Gaia's pmra*, i.e. already multiplied by cos(dec), so divide it
+        # back out to get the change in the RA coordinate. Without this a field
+        # near the pole is moved far too little - by a factor of 2.5 at Dec -66.
+        table["ra"] += years * table["pmra"] / 1000 / 3600 / np.cos(np.radians(table["dec"]))
+        table["dec"] += years * table["pmdec"] / 1000 / 3600
 
     return np.array([table["ra"].values, table["dec"].values]).T
 
@@ -388,6 +423,33 @@ def clean_image(data: np.ndarray) -> np.ndarray:
     return image_clean
 
 
+def image_field_of_view(shape: Tuple[int, int], plate_scale: float, dec_rad: float) -> np.ndarray:
+    """
+    Angular extent of an image, as the (RA, Dec) pair gaia_db_query expects.
+
+    Parameters
+    ----------
+    shape : tuple
+        Image shape as numpy reports it, (rows, columns)
+    plate_scale : float
+        Degrees per pixel
+    dec_rad : float
+        Declination of the field centre, in radians
+
+    Returns
+    -------
+    np.ndarray
+        (RA extent, Dec extent) in degrees. The RA extent is in coordinate degrees,
+        i.e. already divided by cos(dec), because that is what the min_ra/max_ra of
+        a database query needs.
+    """
+    rows, columns = shape[0], shape[1]
+    return np.array([
+        (1 / np.abs(np.cos(dec_rad))) * columns * plate_scale,
+        rows * plate_scale,
+    ])
+
+
 @dataclass
 class PointingCorrection:
     """Class to store the pointing correction between the desired target center and the plating center."""
@@ -425,10 +487,35 @@ class ImageStarMapping:
 
     @classmethod
     def from_gaia_coordinates(cls, stars_in_image: np.ndarray, gaia_stars: np.ndarray,
-                              expected_plate_scale: float = None, plate_scale_tolerance: float = 0.1):
-        wcs = twirl.compute_wcs(stars_in_image, gaia_stars)
+                              expected_plate_scale: float = None, plate_scale_tolerance: float = 0.1,
+                              asterism: int = TWIRL_ASTERISM):
+        inputs = (f"{len(stars_in_image)} image source{'' if len(stars_in_image) == 1 else 's'} and "
+                  f"{len(gaia_stars)} catalogue star{'' if len(gaia_stars) == 1 else 's'}")
+        if len(stars_in_image) <= asterism or len(gaia_stars) <= asterism:
+            raise ValueError(
+                f"Plate solve failed, too few stars for a {asterism}-star asterism: {inputs} "
+                f"(more than {asterism} of each are needed)"
+            )
+        try:
+            wcs = twirl.compute_wcs(stars_in_image, gaia_stars, asterism=asterism)
+        except (ValueError, RuntimeError, TypeError, IndexError, np.linalg.LinAlgError) as e:
+            # twirl's final least-squares fit raises rather than returning None,
+            # e.g. scipy's "`x0` is infeasible." out of fit_wcs_from_points. The
+            # timeout exception from astrometry.py is deliberately not caught here.
+            raise ValueError(
+                f"Plate solve failed, twirl could not fit a WCS to {inputs}: "
+                f"{type(e).__name__}: {e}"
+            ) from e
         if wcs is None:
-            raise ValueError("twirl failed to compute a WCS solution")
+            # compute_wcs returns None when no asterism hash from the image landed
+            # within quads_tolerance of one from the catalogue. Handing that None to
+            # astropy is where "'NoneType' object has no attribute 'cpdis1'" came
+            # from: skycoord_to_pixel below asks _has_distortion(wcs) first, and
+            # cpdis1 is simply the first attribute in the list it checks. The
+            # distortion table was never involved; the fit had failed.
+            raise ValueError(
+                f"Plate solve failed, twirl found no {asterism}-star asterism shared by {inputs}"
+            )
         if expected_plate_scale is not None:
             from astropy.wcs.utils import proj_plane_pixel_scales
             solved_plate_scale = np.mean(proj_plane_pixel_scales(wcs))  # degrees/pixel
@@ -597,7 +684,8 @@ def clear_wcs_headers(header, wcs_keywords, verbose=False):
 
 
 def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, verbose=False,
-                max_stars=16, plate_scale_tolerance=0.1, min_matches=4, progress=None):
+                max_stars=16, plate_scale_tolerance=0.1, min_matches=4, asterism=TWIRL_ASTERISM,
+                progress=None):
     """
     Perform WCS solving on a FITS file using local Gaia database and multiscale star detection.
 
@@ -633,6 +721,9 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
         frames accepted on exactly 4 matches sit 183 arcsec from the field centre
         in the median (28 of 29 beyond 10 arcsec), against 0.36 arcsec for frames
         with >=12. 6.7% of v3's "successfully solved" frames pass on exactly 4.
+    asterism : int, optional
+        Stars per asterism for twirl's pattern matching, and so the minimum size of
+        both the detection list and the catalogue list: see TWIRL_ASTERISM.
     progress : dict, optional
         If given, this dict is used as the result dict, so a caller that abandons
         the solve part-way (the SIGALRM timeout in astrometry.py) can still see
@@ -777,9 +868,14 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                     return result
 
                 plate_scale = plate_scale_arcsec / 3600.0
-                fovx = (1 / np.abs(np.cos(center.dec.rad))) * shape[0] * plate_scale
-                fovy = shape[1] * plate_scale
-                fov = np.array([fovx, fovy])
+                # The RA extent comes from the column count and the Dec extent from
+                # the row count. These were the other way round, which is invisible
+                # on a square detector - Andor frames are 2046x2044 - but on SPIRIT's
+                # 1024x1280 it made the catalogue box a quarter too wide in RA and 4%
+                # too short in Dec, dropping real stars off the top and bottom of the
+                # field and adding stars that are not in the field at all.
+                fov = image_field_of_view(shape, plate_scale, center.dec.rad)
+                fovx, fovy = fov
 
                 if verbose:
                     print(f"Plate scale: {plate_scale * 3600:.3f} arcsec/pixel")
@@ -811,8 +907,12 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                     print(f"[TIMING] Star detection: {elapsed:.3f}s (Total: {total_elapsed:.3f}s)")
                     last_time = current_time
 
-                if len(stars_in_image) < 4:
-                    result['error'] = "Not enough stars detected for plate solve"
+                if len(stars_in_image) <= asterism:
+                    result['error'] = (
+                        f"Not enough stars detected for plate solve: {len(stars_in_image)} "
+                        f"(more than {asterism} are needed to match an "
+                        f"{asterism}-star asterism)"
+                    )
                     return result
 
                 # Limit number of stars to prevent memory issues
@@ -846,8 +946,12 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                     print(f"[TIMING] Gaia database query: {elapsed:.3f}s (Total: {total_elapsed:.3f}s)")
                     last_time = current_time
 
-                if len(gaia_stars) < 4:
-                    result['error'] = "Not enough Gaia stars found in field"
+                if len(gaia_stars) <= asterism:
+                    result['error'] = (
+                        f"Not enough Gaia stars found in field: {len(gaia_stars)} "
+                        f"(more than {asterism} are needed to match an "
+                        f"{asterism}-star asterism)"
+                    )
                     return result
 
                 # Limit Gaia stars
@@ -868,7 +972,8 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 image_star_mapping = ImageStarMapping.from_gaia_coordinates(
                     stars_in_image, gaia_stars,
                     expected_plate_scale=plate_scale,
-                    plate_scale_tolerance=plate_scale_tolerance
+                    plate_scale_tolerance=plate_scale_tolerance,
+                    asterism=asterism
                 )
 
                 if verbose:
