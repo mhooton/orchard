@@ -1251,32 +1251,36 @@ def pwv_correct(targ, tel, dir, outfits, pltname, lcurves, multilc):
 
         # Save PWV files after successful correction
         save_dir = os.path.dirname(outfits)
-        date_str = targ.date if hasattr(targ, 'date') else 'unknown'
+        # Name these the same way as the MCMC and _diff.fits products, which are built
+        # from the Gaia ID the pipeline was invoked with (matched against DR2 in main).
+        gaia_id = targ.gaia_dr2_id
+        date_str = targ.date if getattr(targ, 'date', None) else 'unknown'
 
         # 1. Save original LHATPRO PWV data (if available)
-        if hasattr(tel, 'pwv_original') and hasattr(tel, 'pwv_t_original'):
-            original_file = os.path.join(save_dir, f"{targ.gaia_id}_{targ.filt}_{date_str}_pwv_original.fits")
+        if len(getattr(tel, 'pwv_t_original', [])) > 0:
+            original_file = os.path.join(save_dir, f"{gaia_id}_{targ.filt}_{date_str}_pwv_original.fits")
             save_pwv_fits(tel.pwv_t_original, tel.pwv_original, original_file,
                           "Original LHATPRO PWV data before peak removal",
-                          targ.gaia_id, targ.filt, date_str, tel.telname)
+                          gaia_id, targ.filt, date_str, tel.telname)
 
         # 2. Save processed PWV data (after peak removal)
-        if hasattr(tel, 'pwv') and hasattr(tel, 'pwv_t'):
-            processed_file = os.path.join(save_dir, f"{targ.gaia_id}_{targ.filt}_{date_str}_pwv_processed.fits")
+        if len(getattr(tel, 'pwv_t', [])) > 0:
+            processed_file = os.path.join(save_dir, f"{gaia_id}_{targ.filt}_{date_str}_pwv_processed.fits")
             save_pwv_fits(tel.pwv_t, tel.pwv, processed_file,
                           "Processed LHATPRO PWV data after peak removal",
-                          targ.gaia_id, targ.filt, date_str, tel.telname)
+                          gaia_id, targ.filt, date_str, tel.telname)
 
         # 3. Save interpolated PWV data (aligned with observations)
         if hasattr(tel, 'pwv_spline') and len(tel.pwv_spline) > 1:
-            # Get the observation times that correspond to the interpolated PWV
-            targ_jd_sub = tel.add_water_vapour(targ.jd, multilc)  # This returns the indices
+            # Get the observation times that correspond to the interpolated PWV.
+            # targ_jd_sub already holds those indices from the add_water_vapour call
+            # above, so reuse it rather than querying the LHATPRO archive again.
             obs_times = targ.jd[targ_jd_sub[0]:targ_jd_sub[1] + 1]
 
-            interp_file = os.path.join(save_dir, f"{targ.gaia_id}_{targ.filt}_{date_str}_pwv_interpolated.fits")
+            interp_file = os.path.join(save_dir, f"{gaia_id}_{targ.filt}_{date_str}_pwv_interpolated.fits")
             save_pwv_fits(obs_times, tel.pwv_spline, interp_file,
                           "PWV data interpolated to observation timestamps",
-                          targ.gaia_id, targ.filt, date_str, tel.telname)
+                          gaia_id, targ.filt, date_str, tel.telname)
 
     else:
         print("PWV correction unsuccessful.")
