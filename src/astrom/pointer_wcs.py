@@ -568,7 +568,8 @@ def clear_wcs_headers(header, wcs_keywords, verbose=False):
     return removed_count
 
 
-def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, verbose=False):
+def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, verbose=False,
+                max_stars=16):
     """
     Perform WCS solving on a FITS file using local Gaia database and multiscale star detection.
 
@@ -589,6 +590,10 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
         If True, remove existing WCS headers before plate solving
     verbose : bool, optional
         Whether to print verbose debugging information
+    max_stars : int, optional
+        Number of brightest detections handed to twirl for pattern matching; the
+        Gaia reference list is twice this. Raising it costs time (twirl builds
+        asterisms from these) and, on the nights measured, does not buy accuracy.
 
     Returns
     -------
@@ -754,7 +759,7 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                     return result
 
                 # Limit number of stars to prevent memory issues
-                star_limit = min(16, len(stars_in_image))
+                star_limit = min(max_stars, len(stars_in_image))
                 stars_in_image = stars_in_image[0:star_limit]
                 result['sources_used'] = len(stars_in_image)
 
