@@ -319,3 +319,29 @@ def test_distance_flag_criteria(plx, err, low, gt40, flagged):
 def test_no_distance_without_a_usable_parallax(plx, err):
     """Unknown is left empty, not False: it is not the same as unflagged."""
     assert btt.distance_fields(plx, err) == ("", "", "", "", "")
+
+
+# --------------------------------------------------------------------------
+# the resolver is report-only
+
+def test_resolver_refuses_to_write_dr3_into_a_dr2_column(tmp_path, capsys):
+    """
+    It used to write the DR3 source_id into Gaia_ID, which holds a DR2
+    source_id — so the column meant DR2 on some rows and DR3 on others.
+    """
+    from utils import resolve_master_list_gaia_ids as rml
+
+    src = tmp_path / "ml_40pc.txt"
+    write_legacy(str(src), [("SpA", "0", 1.0, 2.0, "2500.")])
+    report = tmp_path / "report.csv"
+    report.write_text(
+        "Sp_ID,RA,DEC,J_list,T_eff,status,gaia_dr3_id,sep_arcsec,G,J_2MASS,note\n"
+        "SpA,1.0,2.0,13.0,2500.,RESOLVED,999,0.50,15.0,13.0,"
+        "epoch2000; pm=(1,1) mas/yr; Jdiff=0.01; strong\n")
+
+    rc = rml.main([str(src), "--report", str(report),
+                   "--from-report", str(report), "--write"])
+    assert rc == 2
+    assert "refusing to write" in capsys.readouterr().err
+    # and the list really is untouched
+    assert "0000000000000000000" in src.read_text() or " 0 " in src.read_text()

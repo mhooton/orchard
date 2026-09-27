@@ -27,26 +27,30 @@ accepted if it lies within --match arcsec AND its 2MASS J agrees with the
 master-list J to within --jtol mag.  A J disagreement is treated as a
 different star, which protects against picking a neighbour.
 
-Rows that resolve are written back with the DR3 source_id in the Gaia_ID
-column.  Rows that do not resolve are listed in the report as candidates
-for the supplementary source table (they are probably not in Gaia at all).
+Rows that do not resolve are listed in the report as candidates for the
+supplementary source table (they are probably not in Gaia at all).
 
-Nothing is modified unless --write is given; the original file is copied
-to <file>.bak-<date> first.
+This tool is report-only and never modifies the master list.  It once
+wrote the DR3 source_id back into the Gaia_ID column, which holds a DR2
+source_id: the two releases number sources differently, so that produced a
+list whose identifier meant DR2 on some rows and DR3 on others.  --write
+is kept only to explain where to go instead.
+
+The report is the supported input.  Feed it to resolve_gaia_dr3_map.py,
+which adds the true DR2 identifier and the DR3 parallax, and then to
+build_target_table.py, which writes Gaia_DR2_ID and Gaia_DR3_ID as
+separate columns of a generated table.
 
 Usage
 -----
     python3 resolve_master_list_gaia_ids.py /path/to/ml_40pc.txt --report resolved.csv
-    python3 resolve_master_list_gaia_ids.py /path/to/ml_40pc.txt --report resolved.csv --write
 """
 
 import argparse
 import csv
-import datetime as dt
 import io
 import math
 import re
-import shutil
 import sys
 import time
 import urllib.parse
@@ -139,12 +143,14 @@ def is_zero_id(value):
     return v in ("", "nan", "--", "none") or set(v) <= set("0")
 
 
-def main():
+def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("master_list")
     p.add_argument("--report", required=True, help="CSV report of every zero-ID row")
-    p.add_argument("--write", action="store_true", help="write resolved IDs back to the file")
+    p.add_argument("--write", action="store_true",
+                   help="refused: the master list has no DR3 column — "
+                        "see the module docstring")
     p.add_argument("--radius", type=float, default=3.0, help="search radius, arcmin")
     p.add_argument("--match", type=float, default=3.0, help="acceptance radius, arcsec")
     p.add_argument("--jtol", type=float, default=0.5, help="allowed |J_list - J_2MASS|, mag")
@@ -154,7 +160,7 @@ def main():
                    help="also write matches with neither a proper motion nor a 2MASS J")
     p.add_argument("--from-report", default=None,
                    help="skip the archive queries and apply RESOLVED rows from this report")
-    a = p.parse_args()
+    a = p.parse_args(argv)
 
     header_line, header, rows, lines = read_master_list(a.master_list)
     gi, ri, di, ji = (header.index(k) for k in ("Gaia_ID", "RA", "DEC", "J"))
@@ -271,20 +277,24 @@ def main():
     resolved = {k: v[0] for k, v in resolved.items()}
 
     if a.write and resolved:
-        backup = "%s.bak-%s" % (a.master_list, dt.date.today().isoformat())
-        shutil.copyfile(a.master_list, backup)
-        # Rewrite only the affected lines, preserving everything else byte for byte.
-        data_start = lines.index(header_line) + 1
-        row_line_numbers = [i for i in range(data_start, len(lines)) if lines[i].strip()]
-        out = list(lines)
-        for k, sid in resolved.items():
-            ln = row_line_numbers[k]
-            old = rows[k][gi]
-            # Replace the first whitespace-delimited occurrence of the old ID token.
-            out[ln] = re.sub(r"(?<=[\s,])%s(?=[\s,])" % re.escape(old), sid, out[ln], count=1)
-        with open(a.master_list, "w") as f:
-            f.write("\n".join(out))
-        print("wrote %d IDs into %s (backup: %s)" % (len(resolved), a.master_list, backup))
+        sys.stderr.write(
+            "refusing to write %d ID(s) back into %s.\n\n"
+            "This tool finds Gaia DR3 identifiers, and the only identifier\n"
+            "column in the master list, Gaia_ID, holds a DR2 source_id.  The\n"
+            "two releases number sources differently: of the 31 stars\n"
+            "identified here, 9 have a DR3 identifier that is not their DR2\n"
+            "one and 4 have no DR2 entry at all.  Writing DR3 values into\n"
+            "that column produced a list whose identifier meant DR2 on some\n"
+            "rows and DR3 on others, which is how this went wrong before.\n\n"
+            "Use the report instead — it is the supported input:\n"
+            "    python3 -m utils.resolve_gaia_dr3_map <master_list> \\\n"
+            "        --outdir calibration --report %s\n"
+            "    python3 -m utils.build_target_table <master_list> \\\n"
+            "        -o ml_40pc_v2.csv\n"
+            "which writes Gaia_DR2_ID and Gaia_DR3_ID as separate columns\n"
+            "and leaves the master list untouched.\n"
+            % (len(resolved), a.master_list, a.report))
+        return 2
 
 
 if __name__ == "__main__":
