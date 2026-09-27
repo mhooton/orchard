@@ -398,7 +398,8 @@ class LightCurve:
         targetlist_teffs = dir + "/tests/targetListTeffEsts.csv"
         print("Extract Teffs from targetlist: ", targetlist_teffs)
         # read in Peter's target list with updated Teffs
-        gaia, teffs, teffs_ppp = [], [], []
+        # column 2 is the Gaia DR2 source_id (the list predates EDR3), column 56 is TeffEstPPP
+        gaia, teffs = [], []
         with open(targetlist_teffs, 'r') as tfile:
             reader = csv.reader(tfile)
             for row in reader:
@@ -406,37 +407,19 @@ class LightCurve:
                     if row[2] != "gaia":
                         gaia.append(row[2].upper())
                         teffs.append(float(row[56]))
-                        teffs_ppp.append(float(row[55]))
                 except Exception as e:
                     print(e)
         tfile.close()
 
-        ind = np.where(np.array(gaia) == self.gaia_id)[0][0]
-        self.teff = teffs[ind]
+        # match on gaia_dr2_id: the list is keyed on DR2 source_ids, and DR2 is the ID
+        # every other target-matching path in the pipeline uses
+        ind = np.where(np.array(gaia) == self.gaia_dr2_id)[0]
+        if len(ind) == 0:
+            raise LookupError(
+                "Gaia DR2 ID " + str(self.gaia_dr2_id) + " is not in " + targetlist_teffs)
+        self.teff = teffs[ind[0]]
         print("Target's T_eff from Filippazzo: " + str(self.teff))
 
-
-    def targetlist_teff(self,fname_ids):
-        print("Extract Teffs from targetlist: ", fname_ids)
-        # find the id of the target in the field
-        # basedir = os.path.dirname(os.path.dirname(os.path.dirname(dir)))
-        # print(basedir)
-        # fname_ids = basedir + "/SSO_targetlist_20191104.txt"
-        data = ascii.read(fname_ids, delimiter=" ")
-        # sp_name = [d.upper() for d in data['Sp_ID']]
-        gaia_ids = [str(x) for x in data['Gaia_ID']]
-        # print(data)
-        teff = data['T_eff']
-        # print(teff)
-
-        try:
-            # print(self.gaia_id,type(self.gaia_id))
-            i = np.where(np.array(gaia_ids)==self.gaia_id)[0][0]
-            self.teff = teff[i]
-            print("Target Teff = " + str(self.teff))
-
-        except:
-            print("Target not in targetlist, therefore no T_eff")
 
     def save_mcmc_txt(self, tel, outname):
         jd = self.jd - 2450000
@@ -2976,16 +2959,14 @@ def main(date, targ_gaia, ap, filt, outfits, goutfits, globallc, binning, versio
             # comp_lcurves[c].nlc_bw_mask = normalise(np.ma.masked_where(mask, comp_lcurves[c].nlc))
 
         # PWV CORRECTION
-        # target_lcurve.targetlist_teff(tlist)
-
         pwv = True
 
         if targ_teff is None:
             if no_teff:
                 try:
                     target_lcurve.filippazzo_teff(basedir)
-                except:
-                    print("Target is not in the Filippazzo list from Peter")
+                except Exception as e:
+                    print("Could not get a T_eff from the Filippazzo list from Peter:", e)
                     print("WARNING: NO TEFF")
                     pwv = False
             else:
