@@ -1,0 +1,27 @@
+# Hand-curated sources for objects that are in neither Gaia DR2 nor DR3.
+#
+# Loaded into the `custom_sources` table of the local Gaia database by
+# utils/supplementary_sources.py, after which the crossmatch, target
+# identification and light-curve stages treat them exactly like Gaia rows.
+#
+# Columns mirror the band tables of the database:
+#   name          SPECULOOS / common name (informational)
+#   source_id     synthetic numeric ID.  Must be >= 9000000000000000000 so it
+#                 can never collide with a real Gaia source_id (max ~6.9e18)
+#                 and still fits in int64.  Allocate sequentially.
+#   ra, dec       degrees, ICRS, at epoch J2016.0 (propagate before entering)
+#   pmra, pmdec   mas/yr; pmra includes the cos(dec) factor, as in Gaia
+#   parallax      mas
+#   phot_g_mean_mag, g_rp, bp_rp   estimated Gaia G and colours.  These feed
+#                 the zero-point fit and comparison-star selection, so give
+#                 a sensible estimate from the spectral type rather than
+#                 leaving them blank.
+#   teff_gspphot  K; used by the PWV correction.  Take it from ml_40pc.
+#   j_m           2MASS J
+#   provenance    where the numbers came from
+#
+# Do NOT add stars that exist in Gaia DR3.  If a DR3 star is missing from
+# the database, fix the database build (gaia-tmass-sqlite/augment_dr3_only.py)
+# rather than duplicating it here.
+#
+name,source_id,ra,dec,pmra,pmdec,parallax,phot_g_mean_mag,g_rp,bp_rp,teff_gspphot,j_m,provenance

@@ -29,6 +29,39 @@ def read_file(fname, silent=False):
     return None
 
 
+def read_coords(fname):
+    """
+    Return (ra_deg, dec_deg) from the target line of a plan file, or None.
+
+    The target line is the one that is neither a comment (';') nor a
+    directive ('#'), e.g.  "Sp1056+0700\t10 56 28.99\t+07 00 52.00".
+    Coordinates in plan files are J2000 (ICRS, epoch 2000.0).
+    """
+    try:
+        with open(fname, "r") as f:
+            lines = f.read().split("\n")
+    except OSError:
+        return None
+    for line in lines:
+        s = line.strip()
+        if not s or s[0] in ";#":
+            continue
+        parts = s.replace("\t", " ").split()
+        if len(parts) < 7:
+            continue
+        try:
+            h, m, sec = float(parts[-6]), float(parts[-5]), float(parts[-4])
+            dtxt = parts[-3]
+            sign = -1.0 if dtxt.startswith("-") else 1.0
+            d, dm, ds = abs(float(dtxt)), float(parts[-2]), float(parts[-1])
+        except ValueError:
+            continue
+        ra = 15.0 * (h + m / 60.0 + sec / 3600.0)
+        dec = sign * (d + dm / 60.0 + ds / 3600.0)
+        return ra, dec
+    return None
+
+
 def find_plan(dir, date, targname):
     date_dt = dt.datetime.strptime(date, "%Y%m%d")
     date_formatted = date_dt.strftime("%Y-%m-%d")

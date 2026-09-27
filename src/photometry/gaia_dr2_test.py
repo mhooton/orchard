@@ -73,6 +73,23 @@ def _db_query(min_dec, max_dec, min_ra, max_ra):
         except Exception as e:
             print(f"DB query error for shard {shard}: {e}")
 
+    # Hand-added sources (objects in neither Gaia release, see
+    # utils.supplementary_sources). Same columns as the band tables, so
+    # callers cannot tell them apart — which is the point.
+    try:
+        cursor = conn.execute(
+            "SELECT ra, dec, pmra, pmdec, phot_g_mean_mag, g_rp, bp_rp, "
+            "parallax, teff_gspphot, source_id, dr2_source_id "
+            "FROM custom_sources "
+            f"WHERE dec BETWEEN {min_dec} AND {max_dec} "
+            f"AND ra BETWEEN {min_ra} AND {max_ra}"
+        )
+        cols = [d[0] for d in cursor.description]
+        for row in cursor.fetchall():
+            rows.append(dict(zip(cols, row)))
+    except sqlite3.OperationalError:
+        pass  # database predates the custom_sources table
+
     conn.close()
     return rows
 
@@ -118,7 +135,7 @@ def crossmatch(fitsfile,
     print("ext: " + ext)
     # choose a cone radius of approx. 5 arcseconds = 0.0014 degrees
     # rad_deg = 0.0028
-    rad_deg = 0.0084
+    rad_deg = 0.0084   # 30" box; widened below once delta_t is known
     outfits = False
 
     try:
@@ -142,16 +159,23 @@ def crossmatch(fitsfile,
 
         # Set Gaia epoch based on catalog version
         if catsrc == 'vizgaia3':
-            gaia_epoch = 2457754.5  # J2016.0 for Gaia DR3
+            gaia_epoch = 2457389.0  # J2016.0 for Gaia DR3 (was 2457754.5 = 2017-01-01, a year late)
         elif catsrc == 'vizgaia2' or catsrc == 'vizgaia':
-            gaia_epoch = 2457174.5  # J2015.5 for Gaia DR2
+            gaia_epoch = 2457206.375  # J2015.5 for Gaia DR2 (was 2457174.5 = 2015-06-01)
         else:
             # Default to DR3
-            gaia_epoch = 2457754.5
+            gaia_epoch = 2457389.0  # J2016.0 for Gaia DR3 (was 2457754.5 = 2017-01-01, a year late)
 
         obs_epoch = Time(dt.datetime.strptime(date, "%Y%m%d")).jd
         # convert delta_t into years
         delta_t = (obs_epoch - gaia_epoch) / 365.
+        # A star moving 10"/yr covers the fixed 30" box in three years, so
+        # widen the candidate box with the time baseline (0.003 deg/yr =
+        # 10.8"/yr). Candidates are still selected by proper-motion-
+        # propagated separation, so the wider box only costs a few more
+        # rows per source.
+        rad_deg = rad_deg + 0.003 * abs(delta_t)
+        print("candidate box half-width: %.1f arcsec for delta_t = %.2f yr" % (rad_deg * 3600, delta_t))
 
         pool = ThreadPool(int(n))
 
@@ -305,7 +329,7 @@ def conesearch_local(id, ra, dec, rad_deg, delta_t):
             pmra = row['pmra']
             pmdec = row['pmdec']
             if pmra is not None and pmdec is not None:
-                new_ra = row['ra'] + (delta_t * (pmra / 1000.) / 3600.)
+                new_ra = row['ra'] + (delta_t * (pmra / 1000.) / 3600.) / np.cos(np.radians(row['dec']))  # pmra is mu_alpha*
                 new_dec = row['dec'] + (delta_t * (pmdec / 1000.) / 3600.)
             else:
                 new_ra = row['ra']

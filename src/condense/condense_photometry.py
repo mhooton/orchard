@@ -458,12 +458,20 @@ def main(args):
         with fitsio.FITS(args.cat, 'rw') as catfile:
             gaia_ext = catfile['Gaia_Crossmatch']
             cat_dr2_ids = gaia_ext['gaia_dr2_id'].read()
+            try:
+                cat_dr3_ids = gaia_ext['gaia_dr3_id'].read()
+            except Exception:
+                cat_dr3_ids = [''] * len(cat_dr2_ids)
             cat_roles = gaia_ext['target_role'].read()
             cat_teffs = gaia_ext['teff'].read()
-
         seen = set()
-        for dr2_id, role, teff_val in zip(cat_dr2_ids, cat_roles, cat_teffs):
-            dr2_id_clean = dr2_id.strip()
+        for dr2_id, dr3_id, role, teff_val in zip(cat_dr2_ids, cat_dr3_ids, cat_roles, cat_teffs):
+            # A target may only have a DR3 ID (stars absent from DR2, or an
+            # ID injected by the coordinate fallback). Use DR2 when present
+            # for backward-compatible file names, else DR3.
+            dr2_id_clean = str(dr2_id).strip()
+            if dr2_id_clean.lower() in ('', 'nan', 'none'):
+                dr2_id_clean = str(dr3_id).strip()
             role_clean = role.strip()
             if role_clean in ('primary', 'secondary') and dr2_id_clean not in seen:
                 seen.add(dr2_id_clean)
@@ -506,10 +514,11 @@ def main(args):
     # gaia_dr2_id and obj_ids are parallel arrays of the same length
     # (napertures), so we can map directly.
     dr2_to_obj_id = {}
-    for idx, gid in enumerate(gaia_dr2_id):
-        gid_clean = str(gid).strip()
-        if gid_clean not in ('', 'nan'):
-            dr2_to_obj_id[gid_clean] = obj_ids[idx]
+    for idx, (gid2, gid3) in enumerate(zip(gaia_dr2_id, gaia_dr3_id)):
+        for gid in (gid2, gid3):
+            gid_clean = str(gid).strip()
+            if gid_clean.lower() not in ('', 'nan', 'none'):
+                dr2_to_obj_id.setdefault(gid_clean, obj_ids[idx])
 
     # Load target list for Teff fallback — only done once, not per target.
     _tlist_data = None

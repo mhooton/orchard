@@ -341,7 +341,10 @@ def gaia_db_query(
             # calculate fractional year
             dateobs = dateobs.year + (dateobs.timetuple().tm_yday - 1) / 365.25  # type: ignore
 
-            years = dateobs - 2015.5  # type: ignore
+            # Reference epoch of the local database is Gaia DR3 (J2016.0).
+            # This used to say 2015.5 (the DR2 epoch), a 0.5 yr error that
+            # moves a 4"/yr star by 2" — enough to fail a 2" crossmatch.
+            years = dateobs - 2016.0  # type: ignore
             table["ra"] += years * table["pmra"] / 1000 / 3600
             table["dec"] += years * table["pmdec"] / 1000 / 3600
 
