@@ -86,43 +86,77 @@ def add_astrometry_with_timeout(infile, timeout, ext, db_path, raw_images, trim_
     def timeout_handler(signum, frame):
         raise TimeoutException(f"Plate solving timed out after {timeout}s")
 
+    # `progress` is filled in place by pointer_wcs as it works, so when the
+    # alarm fires we can say how far the solve got and which stage was
+    # running. Reporting bare zeros instead used to read as "the Gaia query
+    # returned nothing", which is a different fault entirely.
+    progress = {}
+
     # Set up the timeout
     signal.signal(signal.SIGALRM, timeout_handler)
     signal.alarm(timeout)
 
     try:
         result = add_astrometry(infile, ext, db_path, raw_images, trim_offsets,
-                                file_num=file_num, total_files=total_files)
+                                file_num=file_num, total_files=total_files,
+                                progress=progress)
         signal.alarm(0)  # Cancel the alarm
         return result
     except TimeoutException as e:
         signal.alarm(0)  # Cancel the alarm
         print(f"[TIMEOUT] {infile}: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e),
-            'crpix': None,
-            'crval': None,
-            'sources_detected': 0,
-            'sources_used': 0,
-            'gaia_queried': 0,
-            'gaia_used': 0,
-            'matches': 0
-        }
+        return _partial_result(progress, str(e))
     except Exception as e:
         signal.alarm(0)  # Cancel the alarm
         print(f"[ERROR] {infile}: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e),
-            'crpix': None,
-            'crval': None,
-            'sources_detected': 0,
-            'sources_used': 0,
-            'gaia_queried': 0,
-            'gaia_used': 0,
-            'matches': 0
-        }
+        return _partial_result(progress, str(e))
+
+# The stages pointer_wcs moves through, in order. Used to work out which
+# counters a killed solve had actually established.
+_STAGE_ORDER = ['starting', 'opening_file', 'clean_image', 'plate_scale',
+                'star_detection', 'gaia_query', 'star_matching', 'complete']
+
+# A counter is only meaningful once the stage that fills it has finished, so
+# it is trustworthy only if the solve died in a *later* stage than this.
+_COUNTER_FILLED_IN = {
+    'sources_detected': 'star_detection',
+    'sources_used': 'star_detection',
+    'gaia_queried': 'gaia_query',
+    'gaia_used': 'gaia_query',
+    'matches': 'star_matching',
+}
+
+
+def _partial_result(progress, error):
+    """
+    Build a failure result from however far pointer_wcs got.
+
+    pointer_wcs seeds every counter at zero, so a counter's value alone
+    cannot tell us whether its stage ran. We therefore keep only the counters
+    whose stage completed before the one we died in, and report the rest as
+    None so the log prints '?'. Reporting them all as 0 is what made a solve
+    killed during the Gaia query look like a Gaia query that found nothing.
+    """
+    stage = progress.get('stage', 'unknown')
+    try:
+        reached = _STAGE_ORDER.index(stage)
+    except ValueError:
+        reached = -1
+
+    result = {
+        'success': False,
+        'error': f"{error} during {stage}",
+        'crpix': None,
+        'crval': None,
+        'stage': stage,
+    }
+    for counter, filled_in in _COUNTER_FILLED_IN.items():
+        if reached > _STAGE_ORDER.index(filled_in):
+            result[counter] = progress.get(counter)
+        else:
+            result[counter] = None
+    return result
+
 
 def main(args):
     import sys
@@ -428,14 +462,16 @@ def copy_wcs_to_raw(processed_path, raw_path, trim_offsets):
         # if x_offset != 0 or y_offset != 0:
         #     print(f"Debug: Adjusted CRPIX by ({x_offset}, {y_offset}) using config-based trim offsets")
 
-def add_astrometry(f, ext, db_path, raw_images, trim_offsets, file_num=None, total_files=None):
+def add_astrometry(f, ext, db_path, raw_images, trim_offsets, file_num=None, total_files=None,
+                   progress=None):
     if fnmatch.fnmatch(f, '*.' + ext):
         file = f
         # print("Add astrometry.net data to header of file: " + file)
 
         # Attempt WCS solving
         # result = twirl_wcs(str(file), verbose=False)
-        result = pointer_wcs(str(file), db_path, wcs_keywords=WCS_KEYWORDS, clear_existing_wcs=True, verbose=False)
+        result = pointer_wcs(str(file), db_path, wcs_keywords=WCS_KEYWORDS, clear_existing_wcs=True,
+                             verbose=False, progress=progress)
 
         # If successful and raw images provided, update raw image with WCS
         if result['success'] and raw_images:
@@ -453,20 +489,26 @@ def add_astrometry(f, ext, db_path, raw_images, trim_offsets, file_num=None, tot
         else:
             prefix = ""
 
+        # A counter of None means that stage never ran; print '?' so it is not
+        # mistaken for a stage that ran and came back empty.
+        def _n(key):
+            value = result.get(key)
+            return '?' if value is None else value
+
         if result['success']:
             crpix1, crpix2 = result['crpix']
             crval1, crval2 = result['crval']
             summary = (f"{prefix} {filename} SUCCESS - "
-                       f"Sources: {result['sources_detected']}→{result['sources_used']} "
-                       f"Gaia: {result['gaia_queried']}→{result['gaia_used']} "
-                       f"Matches: {result['matches']} "
+                       f"Sources: {_n('sources_detected')}→{_n('sources_used')} "
+                       f"Gaia: {_n('gaia_queried')}→{_n('gaia_used')} "
+                       f"Matches: {_n('matches')} "
                        f"CRPIX=({crpix1:.2f},{crpix2:.2f}) "
                        f"CRVAL=({crval1:.6f},{crval2:.6f})")
         else:
             summary = (f"{prefix} {filename} FAILED - "
-                       f"Sources: {result['sources_detected']}→{result['sources_used']} "
-                       f"Gaia: {result['gaia_queried']}→{result['gaia_used']} "
-                       f"Matches: {result['matches']} "
+                       f"Sources: {_n('sources_detected')}→{_n('sources_used')} "
+                       f"Gaia: {_n('gaia_queried')}→{_n('gaia_used')} "
+                       f"Matches: {_n('matches')} "
                        f"Error: {result['error']}")
 
         print(summary)

@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple, Union
+import math
 import os
 import time
 import astropy.units as u
@@ -15,7 +16,7 @@ from astropy.io import fits
 from astropy.stats import SigmaClip, sigma_clipped_stats
 from astropy.units import Quantity
 from astropy.wcs.utils import WCS, pixel_to_skycoord
-from calibration.pipeutils import get_instrument_parameters
+from calibration.pipeutils import get_instrument_parameters, resolve_plate_scale
 from photutils.background import Background2D, MedianBackground
 from photutils.detection import DAOStarFinder
 from scipy import ndimage
@@ -69,6 +70,10 @@ def find_stars_dao(
     return coordinates[np.argsort(fluxes)[::-1]]
 
 
+# Two detections closer than this (pixels) are treated as the same star.
+DUPLICATE_RADIUS = 10.0
+
+
 def remove_duplicates(detections: np.ndarray, width: int, height: int) -> np.ndarray:
     """
     Remove duplicate detections using priority-based selection.
@@ -103,19 +108,39 @@ def remove_duplicates(detections: np.ndarray, width: int, height: int) -> np.nda
     sorted_indices = np.argsort(priority_scores)[::-1]
     sorted_detections = detections[sorted_indices]
 
-    # Remove duplicates (within 10 pixels)
+    # Remove duplicates (within 10 pixels).
+    #
+    # Same greedy rule as before - walk the detections in priority order and
+    # drop any that falls within DUPLICATE_RADIUS of one already accepted -
+    # but the accepted points are indexed in a grid of DUPLICATE_RADIUS-sized
+    # cells instead of being rescanned in full. A point within the radius
+    # cannot be more than one cell away on either axis, so only the 3x3
+    # neighbourhood is searched and the cost is linear rather than quadratic.
+    #
+    # The old loop was the dominant cost of a plate solve on a star-rich
+    # ANDOR field: 44 s of the 60 s per-frame budget for 3,921 detections,
+    # which is what pushed whole Artemis nights into the timeout.
     unique_detections = []
+    grid = {}
     for detection in sorted_detections:
-        is_duplicate = False
-        pos = detection[:2]
+        x, y = float(detection[0]), float(detection[1])
+        cell_x, cell_y = int(x // DUPLICATE_RADIUS), int(y // DUPLICATE_RADIUS)
 
-        for existing in unique_detections:
-            if np.linalg.norm(pos - existing[:2]) < 10.0:
-                is_duplicate = True
+        is_duplicate = False
+        for gx in (cell_x - 1, cell_x, cell_x + 1):
+            for gy in (cell_y - 1, cell_y, cell_y + 1):
+                for ex, ey in grid.get((gx, gy), ()):
+                    if math.hypot(x - ex, y - ey) < DUPLICATE_RADIUS:
+                        is_duplicate = True
+                        break
+                if is_duplicate:
+                    break
+            if is_duplicate:
                 break
 
         if not is_duplicate:
             unique_detections.append(detection)
+            grid.setdefault((cell_x, cell_y), []).append((x, y))
 
     return np.array(unique_detections)
 
@@ -569,7 +594,7 @@ def clear_wcs_headers(header, wcs_keywords, verbose=False):
 
 
 def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, verbose=False,
-                max_stars=16, plate_scale_tolerance=0.1, min_matches=4):
+                max_stars=16, plate_scale_tolerance=0.1, min_matches=4, progress=None):
     """
     Perform WCS solving on a FITS file using local Gaia database and multiscale star detection.
 
@@ -605,6 +630,12 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
         frames accepted on exactly 4 matches sit 183 arcsec from the field centre
         in the median (28 of 29 beyond 10 arcsec), against 0.36 arcsec for frames
         with >=12. 6.7% of v3's "successfully solved" frames pass on exactly 4.
+    progress : dict, optional
+        If given, this dict is used as the result dict, so a caller that abandons
+        the solve part-way (the SIGALRM timeout in astrometry.py) can still see
+        how far it got and which stage was running. Without it a killed frame
+        reports zeros for stages that never ran, which reads as a stage that ran
+        and found nothing.
 
     Returns
     -------
@@ -620,8 +651,12 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
         - gaia_used: int, number of Gaia sources used for WCS (after limiting)
         - matches: int, number of successful star matches
     """
-    # Initialize return dictionary
-    result = {
+    # Initialize return dictionary. When the caller supplies `progress` we
+    # populate that dict in place, so a solve killed part-way through (the
+    # SIGALRM timeout in astrometry.py) still reports the counters it reached
+    # and the stage it was in rather than a misleading row of zeros.
+    result = progress if progress is not None else {}
+    result.update({
         'success': False,
         'error': None,
         'crpix': None,
@@ -630,8 +665,9 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
         'sources_used': 0,
         'gaia_queried': 0,
         'gaia_used': 0,
-        'matches': 0
-    }
+        'matches': 0,
+        'stage': 'starting',
+    })
 
     # Initialize timing for verbose mode
     if verbose:
@@ -645,6 +681,7 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
         print(f"Starting pointer_wcs for file: {filepath}")
 
     try:
+        result['stage'] = 'opening_file'
         with fits.open(filepath, mode='update') as hdu:
             header = hdu[0].header
             data = hdu[0].data.astype(float)
@@ -674,6 +711,7 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                     print(f"Confirmed Light Frame, starting image cleaning...")
 
                 # Clean image (no dark frame subtraction - images are pre-reduced)
+                result['stage'] = 'clean_image'
                 image_clean = clean_image(data)
 
                 if verbose:
@@ -726,12 +764,16 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 # Calculate field of view
                 shape = image_clean.shape
 
-                if "mm" in header.comments['FOCALLEN']:
-                    focallen_multiplier = 1e-3
-                else:
-                    focallen_multiplier = 1
+                result['stage'] = 'plate_scale'
+                plate_scale_arcsec = resolve_plate_scale(header, params, verbose=verbose)
+                if plate_scale_arcsec is None:
+                    result['error'] = (
+                        "Cannot establish plate scale: instrument config has no "
+                        "usable arcsec_per_pixel and XPIXSZ/FOCALLEN are missing "
+                        "or implausible")
+                    return result
 
-                plate_scale = np.arctan((header['XPIXSZ'] * 1e-6) / (header['FOCALLEN'] * focallen_multiplier)) * (180 / np.pi)
+                plate_scale = plate_scale_arcsec / 3600.0
                 fovx = (1 / np.abs(np.cos(center.dec.rad))) * shape[0] * plate_scale
                 fovy = shape[1] * plate_scale
                 fov = np.array([fovx, fovy])
@@ -751,6 +793,7 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 if verbose:
                     print(f"Starting multiscale star detection...")
 
+                result['stage'] = 'star_detection'
                 stars_in_image = find_stars_multiscale(
                     image_clean, scales=[1, 2, 3], threshold=7, edge_buffer=10
                 )
@@ -781,6 +824,7 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 if verbose:
                     print(f"Querying local Gaia database...")
 
+                result['stage'] = 'gaia_query'
                 gaia_stars = gaia_db_query(
                     center=(center.ra.deg, center.dec.deg),
                     fov=1.2 * fov,  # 20% margin
@@ -817,6 +861,7 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 if verbose:
                     print(f"Starting WCS computation...")
 
+                result['stage'] = 'star_matching'
                 image_star_mapping = ImageStarMapping.from_gaia_coordinates(
                     stars_in_image, gaia_stars,
                     expected_plate_scale=plate_scale,
@@ -863,6 +908,7 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 result['crpix'] = (header['CRPIX1'], header['CRPIX2'])
                 result['crval'] = (header['CRVAL1'], header['CRVAL2'])
                 result['success'] = True
+                result['stage'] = 'complete'
 
                 if verbose:
                     current_time = time.time()

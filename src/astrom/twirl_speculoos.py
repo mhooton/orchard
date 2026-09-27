@@ -3,6 +3,7 @@ from astropy.wcs import utils
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 import numpy as np
+from calibration.pipeutils import resolve_plate_scale
 from astropy.stats import SigmaClip
 from photutils.background import Background2D, MedianBackground
 from scipy import ndimage
@@ -281,7 +282,11 @@ def twirl_wcs(filepath, verbose=False):
 
                 # image fov
                 shape = image_clean.shape
-                plate_scale = np.arctan((header['XPIXSZ'] * 1e-6) / (header['FOCALLEN'] * 1e-3)) * (180 / np.pi)
+                # Unconditionally treating FOCALLEN as millimetres is wrong for
+                # SPIRIT, whose FOCALLEN is in metres; resolve_plate_scale infers
+                # the unit from the value. This solver is currently unused (see
+                # add_astrometry) but shares the fault, so it shares the fix.
+                plate_scale = resolve_plate_scale(header, None) / 3600.0
                 fovx = (1 / np.abs(np.cos(center.dec.rad))) * shape[0] * plate_scale
                 fovy = shape[1] * plate_scale
                 if verbose:

@@ -6,6 +6,7 @@ from photometry.catmatch import shift_wcs_axis, apply_correct, apply_correct_old
 import photometry.casutools as casutools
 from photometry.vector_plot import wcsf_QCheck
 from photometry.wcs_status import set_wcs_status
+from calibration.pipeutils import get_instrument_parameters, resolve_plate_scale
 from multiprocessing import Pool
 from functools import partial
 from astropy.io import fits
@@ -54,22 +55,22 @@ def make_localfits_table(image_path, output_path, fov_padding=LOCAL_DB_FOV_PADDI
         dec_centre = header['CRVAL2']
         dateobs = header.get('DATE-OBS', None)
 
-        # Derive FOV from focal length and pixel scale
         naxis1 = header['NAXIS1']
         naxis2 = header['NAXIS2']
-        focallen = header.get('FOCALLEN', None)
+
+        # Derive the FOV from the plate scale. resolve_plate_scale infers the
+        # FOCALLEN unit from its magnitude and cross-checks against the
+        # instrument config; the old code read the unit off the FOCALLEN
+        # comment, which SPIRIT states as '[mm]' for a value that is actually
+        # in metres, inflating the FOV by a factor of 1000.
         try:
-            focallen_comment = header.comments['FOCALLEN']
-        except KeyError:
-            focallen_comment = ''
-        if focallen is not None:
-            if '[mm]' in focallen_comment or 'in mm' in focallen_comment.lower():
-                focallen_m = focallen * 1e-3
-            else:
-                focallen_m = focallen
-            xpixsz = header.get('XPIXSZ', 13.5)  # microns
-            plate_scale = (xpixsz * 1e-6) / focallen_m  # rad/pixel
-            fov_deg = max(naxis1, naxis2) * np.degrees(plate_scale)
+            params = get_instrument_parameters(hdul, trimmed=True)
+        except Exception:
+            params = None
+        plate_scale_arcsec = resolve_plate_scale(header, params)
+
+        if plate_scale_arcsec is not None:
+            fov_deg = max(naxis1, naxis2) * (plate_scale_arcsec / 3600.0)
         else:
             # Fallback: derive from CD matrix if available
             cd1_1 = header.get('CD1_1', header.get('CDELT1', 0.001))
@@ -312,9 +313,90 @@ def casu_solve_old(casuin,
     return 'ok'
 
 
-def casu_solve(casuin, thresh=2, verbose=False, catsrc='vizgaia3', rcore=4, ipix=6, ext='fits'):
-    # ADD debug output at the start
+def reference_from_localfits(localfits_path):
+    """
+    Reference catalogue for the WCS QC check, taken from the localfits table
+    that was just used to fit the WCS.
 
+    Returns (cat, ra_lims, dec_lims), or (None, None, None) if the table is
+    unusable.
+
+    Preferred over reading `catcache/index`, which wcsfit writes but which
+    other pipeline stages delete (ZLP_pipeline.sh removes the whole catcache
+    at the start of T8 and again per filter during photometry) while up to
+    nproc casu_solve workers are still running against it. The index in
+    localfits mode points straight back at this same localfits table, so
+    reading the table directly is both equivalent and not dependent on a
+    shared directory outside this function's control.
+    """
+    if not localfits_path or not os.path.exists(localfits_path):
+        return None, None, None
+
+    with fits.open(localfits_path) as hdul:
+        if len(hdul) < 2 or hdul[1].data is None:
+            return None, None, None
+        data = hdul[1].data
+        ra = np.asarray(data['ra'], dtype=float)
+        dec = np.asarray(data['dec'], dtype=float)
+
+    if len(ra) == 0:
+        return None, None, None
+
+    cat = {'ra': ra, 'dec': dec}
+    return cat, [float(ra.min()), float(ra.max())], [float(dec.min()), float(dec.max())]
+
+
+def wcsfit_qc(casuin, catfile_name, catsrc, ext, catpath, localfits_path, verbose=False):
+    """
+    Quality check on a fitted WCS: plot how far each source sits from its
+    reference-catalogue counterpart.
+
+    Purely diagnostic. The caller treats any failure here as non-fatal,
+    because the WCS fit has already succeeded by this point.
+    """
+    cat, ra_lims, dec_lims = reference_from_localfits(localfits_path)
+
+    if cat is None:
+        # Legacy path: a catcache built by wcsfit against a remote catalogue.
+        catalogue = compute_frame_limits(catpath)
+        if catalogue is None:
+            raise ValueError(f"compute_frame_limits returned None for catpath: {catpath}")
+        cat = reference_catalogue_objects(catalogue, catpath, catsrc)
+        if cat is None:
+            raise ValueError("reference_catalogue_objects returned None")
+        ra_lims = catalogue.ra_lims[0]
+        dec_lims = catalogue.dec_lims[0]
+
+    if not os.path.exists(catfile_name):
+        raise FileNotFoundError(f"Catalog file not found: {catfile_name}")
+
+    with fits.open(catfile_name) as mycatt:
+        if len(mycatt) < 2:
+            raise ValueError(f"Catalog file {catfile_name} has no data extension")
+
+        # extract stacked image catalogue and extra X, Y coordinates and flux of each source
+        mycatt_data = mycatt[1].data
+        if mycatt_data is None:
+            raise ValueError(f"No data in catalog file {catfile_name}")
+
+        required_columns = ['Aper_flux_3', 'X_coordinate', 'Y_coordinate', 'Sequence_number']
+        missing_columns = [col for col in required_columns if col not in mycatt_data.columns.names]
+        if missing_columns:
+            raise ValueError(f"Missing columns in catalog: {missing_columns}")
+
+        mycat = {'Aper_flux_3': mycatt_data['Aper_flux_3']}
+        my_X = mycatt_data['X_coordinate']
+        my_Y = mycatt_data['Y_coordinate']
+        my_ID = mycatt_data['Sequence_number']
+
+    # plot separation of each source from the ref catalogue as a quality check
+    wcsf_QCheck(mycat, catfile_name, catsrc, casuin,
+                os.path.basename(casuin).replace('.' + ext, '') + '.png',
+                cat, ra_lims, dec_lims,
+                my_X, my_Y, my_ID, plot=True)
+
+
+def casu_solve(casuin, thresh=2, verbose=False, catsrc='vizgaia3', rcore=4, ipix=6, ext='fits'):
     catpath = os.path.join(os.getcwd(), 'catcache')
 
     # give the catalogue the same name as the image file it's been run on
@@ -333,60 +415,21 @@ def casu_solve(casuin, thresh=2, verbose=False, catsrc='vizgaia3', rcore=4, ipix
         casutools.wcsfit(casuin, catfile_name, catsrc=catsrc, verbose=verbose,
                          wcsref=localfits_path)
 
+        # The WCS fit has succeeded. Everything below is a diagnostic, so a
+        # failure in it must not mark the frame as unsolved. It used to:
+        # handle_errors_in_casu_solve turns any exception from here into
+        # wcscompl=False, so on Callisto 2025-11-21..25 - where plate solving
+        # had failed for every frame, leaving wcsfit unable to determine the
+        # field and so unable to populate catcache - every frame in T8 was
+        # discarded by a FileNotFoundError raised after its own fit.
+        try:
+            wcsfit_qc(casuin, catfile_name, catsrc, ext, catpath,
+                      localfits_path, verbose=verbose)
+        except Exception as err:
+            print("WCS QC check skipped for {}: {}".format(casuin, err))
     finally:
         if os.path.exists(localfits_path):
             os.remove(localfits_path)
-
-    # Come back to this testing section later - perhaps break out into separate script?
-    # find frame limits from index file in catcache directory
-
-    catalogue = compute_frame_limits(catpath)
-
-    if catalogue is None:
-        raise ValueError(f"compute_frame_limits returned None for catpath: {catpath}")
-
-    cat = reference_catalogue_objects(catalogue, catpath, catsrc)
-
-    if cat is None:
-        raise ValueError(f"reference_catalogue_objects returned None")
-
-    # ADD error checking for catalog file
-    if not os.path.exists(catfile_name):
-        raise FileNotFoundError(f"Catalog file not found: {catfile_name}")
-
-    with fits.open(catfile_name) as mycatt:
-        # ADD error checking for data extension
-        if len(mycatt) < 2:
-            raise ValueError(f"Catalog file {catfile_name} has no data extension")
-
-        # extract stacked image catalogue and extra X, Y coordinates and flux of each source
-        mycatt_data = mycatt[1].data
-
-        # ADD null data check
-        if mycatt_data is None:
-            raise ValueError(f"No data in catalog file {catfile_name}")
-
-        # ADD column existence checks
-        required_columns = ['Aper_flux_3', 'X_coordinate', 'Y_coordinate', 'Sequence_number']
-        missing_columns = [col for col in required_columns if col not in mycatt_data.columns.names]
-        if missing_columns:
-            raise ValueError(f"Missing columns in catalog: {missing_columns}")
-
-        # print mycatt[1].header
-        mycat = {'Aper_flux_3': mycatt_data['Aper_flux_3']}
-
-        my_X = mycatt_data['X_coordinate']
-        my_Y = mycatt_data['Y_coordinate']
-        my_ID = mycatt_data['Sequence_number']
-
-    # Do QC checks. should really break this out.
-    # plot separation of each source from the ref catalogue as a quality check
-    # FIXED: removed catsrc parameter and fixed filename extension
-    # Remove the duplicate try/except block and fix this call:
-    wcsf_QCheck(mycat, catfile_name, catsrc, casuin,
-                os.path.basename(casuin).replace('.' + ext, '') + '.png',
-                cat, catalogue.ra_lims[0], catalogue.dec_lims[0],
-                my_X, my_Y, my_ID, plot=True)
 
     return 'ok'
 
