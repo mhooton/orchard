@@ -140,6 +140,15 @@ def calc_seps(mycat, catsrc, cat, RA_lims, DEC_lims, world, my_X, my_Y, my_ID, d
         cat_mag = cat['Jmag']
         cat_Kmag = cat['Kmag']
         cat_Hmag = cat['Hmag']
+    else:
+        # Any other reference catalogue, including the local-database
+        # 'localfits' reference, which carries only ra/dec. cat_mag is used
+        # below solely to order the reference list and to annotate the plot;
+        # the nearest-neighbour match is order-independent, so a magnitude-free
+        # reference still yields correct separations.
+        cat_mag = cat.get('Gmag', cat.get('Jmag'))
+        if cat_mag is None:
+            cat_mag = np.full(len(cat_RA_raw), np.nan)
 
     my_mag = zero - 2.512 * np.log10(mycat['Aper_flux_3'])
 

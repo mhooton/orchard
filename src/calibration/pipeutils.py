@@ -1,5 +1,7 @@
 from contextlib import contextmanager
 import bz2
+import math
+from typing import Optional
 from astropy.io import fits
 import numpy as np
 from astropy.convolution import interpolate_replace_nans
@@ -339,3 +341,99 @@ def open_fits_file(filename):
 #
 #     def join(self):
 #         pass
+
+
+# A plate scale outside this range (arcsec/pixel) cannot belong to any
+# telescope this pipeline serves, so it indicates a header unit blunder
+# rather than a real optical configuration.
+PLATE_SCALE_SANE_RANGE = (0.05, 5.0)
+
+# How far the header-derived plate scale may differ from the instrument
+# config before the header is treated as untrustworthy. Generous enough to
+# admit 2x2 or 3x3 binning, tight enough to catch a factor-1000 unit error.
+PLATE_SCALE_AGREEMENT_FACTOR = 4.0
+
+
+def plate_scale_from_config(params: Optional[dict]) -> Optional[float]:
+    """
+    Plate scale in arcsec/pixel from the instrument configuration.
+
+    Returns None when the config cannot supply a usable number - some
+    instruments carry a placeholder (MOANA-ES has ``"FILL"``) rather than a
+    measured value.
+    """
+    if not params:
+        return None
+    try:
+        value = float(params.get('arcsec_per_pixel'))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def plate_scale_from_header(header) -> Optional[float]:
+    """
+    Plate scale in arcsec/pixel from XPIXSZ and FOCALLEN.
+
+    The unit of FOCALLEN is inferred from its *magnitude*, never from its
+    comment. SPIRIT writes
+
+        FOCALLEN = 8.0 / [mm] Focal length of telescope
+
+    where the value is in metres and the comment is simply wrong. Trusting
+    the comment put the plate scale out by a factor of 1000, which inflated
+    the Gaia query box from 6 arcmin to 110 degrees and made every frame
+    time out. No telescope this pipeline serves has a focal length outside
+    0.1-100 m, so a value above 100 can only be millimetres.
+    """
+    xpixsz = header.get('XPIXSZ')
+    focallen = header.get('FOCALLEN')
+    if not xpixsz or not focallen:
+        return None
+    try:
+        xpixsz = float(xpixsz)
+        focallen = float(focallen)
+    except (TypeError, ValueError):
+        return None
+    if xpixsz <= 0 or focallen == 0:
+        return None
+
+    focallen_m = focallen * 1e-3 if abs(focallen) > 100.0 else focallen
+    return math.degrees(math.atan((xpixsz * 1e-6) / abs(focallen_m))) * 3600.0
+
+
+def resolve_plate_scale(header, params: Optional[dict],
+                        verbose: bool = False) -> Optional[float]:
+    """
+    Plate scale in arcsec/pixel for this frame, or None if it cannot be
+    established.
+
+    The header is preferred because it is per-frame and so follows binning,
+    but it is only trusted when it agrees with the instrument config to
+    within PLATE_SCALE_AGREEMENT_FACTOR. That cross-check is what catches a
+    mis-stated FOCALLEN unit; the config value is the same one
+    ``wcs_succeeded`` later validates the fitted solution against.
+    """
+    from_config = plate_scale_from_config(params)
+    from_header = plate_scale_from_header(header)
+
+    lo, hi = PLATE_SCALE_SANE_RANGE
+    if from_header is not None and lo <= from_header <= hi:
+        if from_config is None:
+            return from_header
+        ratio = max(from_header / from_config, from_config / from_header)
+        if ratio <= PLATE_SCALE_AGREEMENT_FACTOR:
+            return from_header
+        if verbose:
+            print(f"Header plate scale {from_header:.4f} arcsec/px disagrees "
+                  f"with instrument config {from_config:.4f} arcsec/px by a "
+                  f"factor of {ratio:.1f}; using the config value")
+        return from_config
+
+    if from_config is not None:
+        if verbose:
+            print(f"Header plate scale unusable ({from_header}); using "
+                  f"instrument config {from_config:.4f} arcsec/px")
+        return from_config
+
+    return None
