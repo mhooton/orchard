@@ -345,3 +345,19 @@ def test_resolver_refuses_to_write_dr3_into_a_dr2_column(tmp_path, capsys):
     assert "refusing to write" in capsys.readouterr().err
     # and the list really is untouched
     assert "0000000000000000000" in src.read_text() or " 0 " in src.read_text()
+
+
+# --------------------------------------------------------------------------
+# format is detected from content, not from the file name
+
+def test_format_detected_from_content_not_extension(tmp_path):
+    """TARGET_LIST may point at either format under any name."""
+    csv_named_txt = tmp_path / "list.txt"
+    write_v2(str(csv_named_txt), [("SpA", DUAL2, DUAL3, 1.0, 2.0, "2500.")])
+    t = tl.read_target_list(str(csv_named_txt))
+    assert t.ids(0) == [DUAL2, DUAL3] and t.teff(0) == 2500
+
+    legacy_named_csv = tmp_path / "list.csv"
+    write_legacy(str(legacy_named_csv), [("SpB", WOLF3, 3.0, 4.0, "2831.")])
+    t2 = tl.read_target_list(str(legacy_named_csv))
+    assert t2.ids(0) == [WOLF3] and t2.teff(0) == 2831

@@ -167,16 +167,35 @@ class TargetList(object):
         return None if row is None else self.teff(row)
 
 
+def _looks_like_csv(path):
+    """
+    Decide the format from the content rather than the file name, since
+    TARGET_LIST may point at either under any name.
+
+    The legacy list is the awkward case precisely because its *header* is
+    comma-separated while its data rows are not, so the first data line is
+    what separates the two formats.
+    """
+    lines = []
+    with open(path) as f:
+        for line in f:
+            if line.strip():
+                lines.append(line)
+                if len(lines) == 2:
+                    break
+    if len(lines) < 2:                     # header only; fall back to the name
+        return str(path).lower().endswith('.csv')
+    return ',' in lines[1]
+
+
 def read_target_list(path):
     """
     Read a 40 pc target table in either format.
 
-    The extension decides how it is parsed: a comma-separated ``.csv``,
-    anything else as the legacy comma-header/whitespace-data hybrid.
     Raises whatever astropy raises; callers that must not fail should use
     `load_target_list`.
     """
-    if str(path).lower().endswith('.csv'):
+    if _looks_like_csv(path):
         table = ascii.read(path, format='csv')
     else:
         table = ascii.read(path, delimiter=' ', header_start=0, data_start=1)
