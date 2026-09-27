@@ -41,6 +41,7 @@ from astropy.io import fits, ascii
 from astropy.table import Table
 
 from utils import gaia_id_from_schedule
+from utils.target_list import clean_id as _clean_target_id, load_target_list
 
 logger = logging.getLogger(__name__)
 
@@ -168,8 +169,34 @@ def lookup_gaia_id_in_db(gaia_id, dec_hint=None, db_path=None):
 
 
 def _clean_id(value):
-    v = str(value).strip() if value is not None else ''
-    return '' if v.lower() in ('', 'nan', 'none') else v
+    """
+    Normalise a Gaia ID, or '' when it is absent.
+
+    Delegates to utils.target_list so that every absent spelling is handled
+    in one place — including '--', which is what astropy prints for a
+    masked cell and therefore what an empty field in a CSV integer column
+    becomes.
+    """
+    return _clean_target_id(value)
+
+
+def _preferred_id(gaia_ids, catalogue_ids=None):
+    """
+    Which of a target-list row's identifiers to carry forward.
+
+    A row may hold both a DR2 and a DR3 identifier.  Prefer one the field
+    catalogue actually contains, so that the later crossmatch succeeds;
+    failing that take the first, which is DR2 before DR3 and so keeps
+    output filenames what they have always been for a star whose DR2
+    identifier still exists.
+    """
+    if not gaia_ids:
+        return ''
+    if catalogue_ids:
+        for gid in gaia_ids:
+            if gid in catalogue_ids:
+                return gid
+    return gaia_ids[0]
 
 
 def _propagate(ra, dec, pmra, pmdec, from_epoch, to_epoch):
@@ -289,43 +316,29 @@ def get_target_from_target_list_by_name(targname, target_list_path,
     Output: (gaia_id: str, ra_deg, dec_deg, teff) with None for unknown
             values, or None if the name is absent or has no usable ID.
     """
-    try:
-        data = ascii.read(target_list_path, delimiter=' ',
-                          header_start=0, data_start=1)
-    except Exception as e:
-        logger.warning("Could not read target list '%s': %s", target_list_path, e)
-        return None
-    cols = {c.strip(',').strip().upper(): c for c in data.colnames}
-    if 'SP_ID' not in cols or 'GAIA_ID' not in cols:
+    tlist = load_target_list(target_list_path, logger)
+    if tlist is None or not tlist.has('Sp_ID'):
         return None
     want = _norm_name(targname)
-    rows = [i for i, n in enumerate(data[cols['SP_ID']]) if _norm_name(str(n)) == want]
-    rows = [i for i in rows if _clean_id(data[cols['GAIA_ID']][i]) and
-            set(_clean_id(data[cols['GAIA_ID']][i])) != {'0'}]
+    rows = [i for i in range(len(tlist)) if _norm_name(tlist.sp_id(i)) == want]
+    # A row with no usable ID cannot become a target, whatever its name.
+    rows = [i for i in rows if tlist.ids(i)]
     if not rows:
         return None
     if len(rows) > 1:
         in_fov = [i for i in rows if catalogue_ids and
-                  _clean_id(data[cols['GAIA_ID']][i]) in catalogue_ids]
+                  any(g in catalogue_ids for g in tlist.ids(i))]
         if len(in_fov) == 1:
             rows = in_fov
         else:
             logger.warning(
                 "Target name '%s' matches %d target-list rows with different "
                 "IDs; using the first (%s)", targname, len(rows),
-                _clean_id(data[cols['GAIA_ID']][rows[0]]))
+                tlist.ids(rows[0])[0])
     i = rows[0]
-    gaia_id = _clean_id(data[cols['GAIA_ID']][i])
-    ra = dec = teff = None
-    try:
-        ra = float(data[cols['RA']][i])
-        dec = float(data[cols['DEC']][i])
-    except (KeyError, ValueError, TypeError):
-        pass
-    try:
-        teff = int(float(data[cols['T_EFF']][i]))
-    except (KeyError, ValueError, TypeError):
-        pass
+    gaia_id = _preferred_id(tlist.ids(i), catalogue_ids)
+    ra, dec = tlist.coords(i)
+    teff = tlist.teff(i)
     logger.info("Target '%s' resolved via target list to Gaia ID %s", targname, gaia_id)
     return gaia_id, ra, dec, teff
 
@@ -343,36 +356,23 @@ def get_targets_from_target_list(catalogue_dr2_ids, target_list_path):
         list of (DR2_ID: str, Teff: int or None) tuples
         Empty list if no matches or on read failure.
     """
-    try:
-        data = ascii.read(target_list_path, delimiter=' ',
-                          header_start=0, data_start=1)
-    except Exception as e:
-        logger.error(
-            "Failed to read target list at '%s': %s", target_list_path, e
-        )
+    tlist = load_target_list(target_list_path, logger)
+    if tlist is None:
         return []
 
-    try:
-        target_list_ids = [str(x).strip() for x in data['Gaia_ID,']]
-    except KeyError:
-        logger.error(
-            "Column 'Gaia_ID,' not found in target list '%s'", target_list_path
-        )
-        return []
+    catalogue = set(_clean_id(x) for x in catalogue_dr2_ids)
+    catalogue.discard('')
 
-    catalogue_id_set = set(catalogue_dr2_ids)
-    target_list_id_set = set(target_list_ids)
-    intersection = catalogue_id_set & target_list_id_set
-
+    # One result per target-list *row*, not per matching ID: a row carrying
+    # both a DR2 and a DR3 identifier would otherwise match twice through
+    # the two catalogue ID columns and be observed as two separate targets.
     results = []
-    for dr2_id in intersection:
-        row_idx = target_list_ids.index(dr2_id)
-        try:
-            teff_val = data['T_eff,'][row_idx]
-            teff = int(teff_val) if not np.ma.is_masked(teff_val) else None
-        except (KeyError, ValueError):
-            teff = None
-        results.append((dr2_id, teff))
+    for row in range(len(tlist)):
+        hits = [g for g in tlist.ids(row) if g in catalogue]
+        if hits:
+            # Report the ID the catalogue matched on, preferring DR2 so
+            # that output filenames stay what they have always been.
+            results.append((hits[0], tlist.teff(row)))
 
     logger.info(
         "Target list crossmatch found %d target(s) in FOV", len(results)
