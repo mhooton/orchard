@@ -879,6 +879,21 @@ Generates comprehensive PDF reports summarising nightly processing results, data
 **Output:**
 - `{TELESCOPE}_{DATE}_pipeline_report.pdf`
 
+A night with no reduced targets - no science images at all, or every scheduled
+target failing before T10 - still produces a report; the target overview page
+carries a note in place of the per-target columns.
+
+**Resource use:**
+- `--nproc` sets the worker count for the image alignment behind the stack image.
+  `ZLP_pipeline.sh` passes the pipeline's `CORES` budget; the default is 1.
+- `--align-timeout` bounds one target's alignment (default 1800 s). On expiry the
+  stack panel is dropped and the rest of the report is still produced.
+- The module pins `OMP_NUM_THREADS` and friends to 1 unless the caller sets them,
+  so the alignment workers do not each spawn a thread per host core.
+- `ZLP_pipeline.sh` runs the whole stage under `timeout ${PDF_REPORT_TIMEOUT}`
+  (default 3600 s) and treats a failure as a warning, so the report can never
+  hold up T12.
+
 ---
 
 ### Stage T12: Version Migration

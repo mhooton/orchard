@@ -1,3 +1,15 @@
+import os
+
+# Cap the BLAS/OpenMP thread pools *before* numpy - and therefore OpenBLAS - is
+# imported.  align() fans the image registration out over a multiprocessing
+# pool, and every worker inherits these settings.  Without them each worker
+# sizes its own thread pool from the host core count, so on a many-core machine
+# a handful of concurrent reports exhausts RLIMIT_NPROC and OpenBLAS wedges on
+# "pthread_create failed".  An explicit setting from the caller still wins.
+for _thread_var in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
+                    'NUMEXPR_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS'):
+    os.environ.setdefault(_thread_var, '1')
+
 import argparse
 import glob
 import matplotlib
@@ -7,7 +19,6 @@ import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 from PIL import Image
 import matplotlib.gridspec as gridspec
-import os
 import csv
 from functools import partial
 from scipy.ndimage import shift
@@ -24,6 +35,12 @@ matplotlib.use('pdf')
 import warnings
 from astropy.io.fits.verify import VerifyWarning
 warnings.filterwarnings('ignore', category=VerifyWarning)
+
+
+# Defaults for the image-alignment pool.  One worker unless the pipeline says
+# otherwise, so that several nights running at once cannot oversubscribe the host.
+DEFAULT_NPROC = int(os.environ.get('PDF_REPORT_NPROC', '1'))
+DEFAULT_ALIGN_TIMEOUT = float(os.environ.get('PDF_REPORT_ALIGN_TIMEOUT', '1800'))
 
 
 def get_chronological_order(jdstart):
@@ -285,14 +302,11 @@ def import_night_img(args):
                 nimages.append(len(jd[0]))
                 filt.append(filt_read[0])
 
-        else:
-            jdstart.append(0)
-            jdend.append(0)
-            nimages.append(0)
-            filt.append('unknown')
-            # targ_count += 1
-            target_x_pos.append('unknown')
-            target_y_pos.append('unknown')
+        # A scheduled target with no *_output.fits (no data, or T8/T9/T10 failed)
+        # contributes nothing to targs/gaia, so it must not contribute to any of
+        # the parallel per-target lists either.  Appending placeholders here used
+        # to push jdstart out of step with gaia, and the argsort of jdstart then
+        # indexed past the end of gaia on page 3 of the report.
 
     return ramove, decmove, airmass, fwhm, skybkg, altitude, jdstart, jdend, nimages, filt, ellip, target_x_pos, target_y_pos, targs, gaia
 
@@ -538,7 +552,9 @@ def import_water_vapor(args, jdstart, jdend, gaia):
     jd = []
     wv = []
 
-    if os.path.exists(lhatpro) and jdstart[0] >= 2458550.0:  # LHATPRO files don't have right format before 07.03.2019
+    # no reduced target means no jdstart to compare against
+    if len(jdstart) != 0 and os.path.exists(lhatpro) and jdstart[
+        0] >= 2458550.0:  # LHATPRO files don't have right format before 07.03.2019
         with open(lhatpro, 'r') as f:
             next(f)
             for line in f:
@@ -734,23 +750,38 @@ def align_image(image_args):
     fits.writeto(outname, shifted_im2, im2head)
 
 
-def align(liste, datdir):
+def align(liste, datdir, nproc=DEFAULT_NPROC, timeout=DEFAULT_ALIGN_TIMEOUT):
     """
     Updated align function to pass datdir to align_image
+
+    nproc is the pool size, and should follow the core budget the pipeline was
+    given rather than the size of the host: several nights reprocessed at once
+    each used to claim 20 workers regardless.  timeout bounds the whole pool so
+    a wedged worker cannot stall the night indefinitely.
     """
     print('Aligning images')
     # parallelization for the alignment
     import multiprocessing as mp
 
-    print("Number of processors: ", mp.cpu_count(), ". Using ", str(min(20, mp.cpu_count())), " cores")
-    pool = mp.Pool(min(20, mp.cpu_count()))  # Don't use more cores than available
+    nproc = max(1, min(int(nproc), mp.cpu_count(), len(liste)))
+    print("Number of processors: ", mp.cpu_count(), ". Using ", str(nproc), " cores")
 
     # Create argument tuples for each image (image2, image1, datdir)
     image_args = [(img, liste[-1], datdir) for img in liste]
 
-    pool.map(align_image, image_args)
-    pool.close()
-    pool.join()  # Wait for all processes to complete
+    pool = mp.Pool(nproc)
+    try:
+        pool.map_async(align_image, image_args).get(timeout=timeout)
+        pool.close()
+        pool.join()  # Wait for all processes to complete
+    except mp.TimeoutError:
+        pool.terminate()
+        pool.join()
+        raise RuntimeError('image alignment timed out after %s s' % timeout)
+    except BaseException:
+        pool.terminate()
+        pool.join()
+        raise
 
     liste2 = []
     for i in liste:
@@ -784,10 +815,18 @@ def import_stack_and_vals(args, target_x_pos, target_y_pos, gaia, targs):
         liste = glob.glob(procdir + 'proc*fits')
         if (len(liste) != 0):
             liste.sort()
-            # Pass args.datdir to align function
-            liste2 = align(liste, args.datdir)
-            stackim, values = stack_and_vals(args, liste2, outstack, outstack_save, outstack_save_dir, outfig_dx,
-                                             outfig_dy, target_x_pos, target_y_pos, target_count)
+            try:
+                # Pass args.datdir to align function
+                liste2 = align(liste, args.datdir, nproc=getattr(args, 'nproc', DEFAULT_NPROC),
+                               timeout=getattr(args, 'align_timeout', DEFAULT_ALIGN_TIMEOUT))
+                stackim, values = stack_and_vals(args, liste2, outstack, outstack_save, outstack_save_dir, outfig_dx,
+                                                 outfig_dy, target_x_pos, target_y_pos, target_count)
+            except Exception as e:
+                # The stack is one panel of the report; losing it must not cost
+                # us the whole PDF.
+                print('Could not stack images for %s: %s' % (i, e))
+                stackim = 'fake_path'
+                values = ['unknown', 'unknown', 'unknown', 'unknown', 'unknown']
         else:
             stackim = 'fake_path'
             values = ['unknown', 'unknown', 'unknown', 'unknown', 'unknown']
@@ -1231,10 +1270,16 @@ def make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap
     plt.close()
 
     # Page 3 - Summary target observations : stacked images + differential lightcurves best aperture
+    # One column per target, plus a narrow separator column between neighbours.
+    # A night can legitimately have no reduced targets - no science images at all,
+    # or every scheduled target failing before T10 - and then there is a single
+    # column holding an explanatory note.  Without the floor, ncols came out as
+    # -1 and GridSpec rejected it, taking the whole report with it.
+    ntargs = len(targs)
     page = plt.figure(dpi=300, figsize=(11.69, 8.27))
-    ncols = len(targs) + (len(targs) - 1)
+    ncols = max(1, ntargs + (ntargs - 1))
     width_ratios = [1]
-    for i in range(len(targs)):
+    for i in range(ntargs - 1):
         width_ratios.append(0.1)
         width_ratios.append(1)
     height_ratios = [0.1, 0.1, 0.1, 1, 1]
@@ -1247,6 +1292,11 @@ def make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap
         txt = 'Target(s) overview\n'
         ax.text(0.5, 0.8, txt, size=16, fontweight='bold', ha="center")
         ax.axis('off')
+
+        if ntargs == 0:
+            ax = page.add_subplot(gs[1:, :])
+            ax.text(0.5, 0.5, 'No reduced target observations for this night', size=12, ha="center")
+            ax.axis('off')
 
         targ_count = 0
         for i in order:
@@ -1555,6 +1605,10 @@ if __name__ == '__main__':
     parser.add_argument('-a', '--ap', required=True)
     parser.add_argument('-tel', '--telescope', required=True)
     parser.add_argument('-v', '--version', required=True)
+    parser.add_argument('-n', '--nproc', type=int, default=DEFAULT_NPROC,
+                        help='workers used to align images for the stack (default: %(default)s)')
+    parser.add_argument('--align-timeout', type=float, default=DEFAULT_ALIGN_TIMEOUT,
+                        help='seconds to allow for aligning one target (default: %(default)s)')
     args = parser.parse_args()
 
     create_pdf(args)
