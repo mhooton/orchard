@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import water_vapour.water_vapour as wv
 from water_vapour.pwvGrid import getLHATPROdata
 import datetime
+import traceback
 import csv
 import os
 import glob
@@ -693,8 +694,13 @@ def findtarg_gaia(gaia_ids_cat, fluxes_cat, sp_ids, gaia_ids_tlist):
 def normalise(a):
     # mask_zeros = np.ma.masked_where(a==0.0,a)
     # mask_zeros = np.ma.masked_less_equal(a, 0.001)
-    mask_zeros = a.copy()
-    mask_zeros[(a<=0.001)]=np.nan
+    # Take the median over the plain data buffer, never over a masked array.
+    # np.nanmedian ignores a MaskedArray's mask anyway (it warns as much), but
+    # on a masked array whose data also carry NaNs it can end up writing into
+    # np.ma.masked, which is read-only, and raises "assignment destination is
+    # read-only" -- that killed apertures 4-8 on Callisto 20240403.
+    mask_zeros = np.array(np.ma.getdata(a), dtype=float, copy=True)
+    mask_zeros[mask_zeros<=0.001]=np.nan
     return a / np.nanmedian(mask_zeros)
 
 def find_nearest(array, value):
@@ -3159,3 +3165,6 @@ if __name__ == "__main__":
 
     except Exception as e:
         print(e)
+        # Without the traceback the night's log only ever shows the message, so
+        # a crash in here is untraceable after the fact.
+        traceback.print_exc()
