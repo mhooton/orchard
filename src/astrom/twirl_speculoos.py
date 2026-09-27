@@ -344,6 +344,17 @@ def twirl_wcs(filepath, verbose=False):
                     print(f"[VERBOSE] Starting WCS computation...")
 
                 wcs = twirl.compute_wcs(stars, gaias)
+                if wcs is None:
+                    # Same fault as in pointer_wcs: compute_wcs returns None when no
+                    # asterism matched, and handing that None to skycoord_to_pixel
+                    # below reports the first attribute astropy looks for on a WCS
+                    # ("'NoneType' object has no attribute 'cpdis1'") rather than the
+                    # fit having failed. 297 of the 944 frames that failed this way in
+                    # the v3 logs came through here, identifiable by this function's
+                    # own min(20, ...) catalogue cap.
+                    result['error'] = (f"Plate solve failed, twirl found no asterism shared by "
+                                       f"{len(stars)} image sources and {len(gaias)} catalogue stars")
+                    return result
                 if verbose:
                     print(f"[VERBOSE] WCS computation complete")
                     print(f"[VERBOSE] WCS object: {wcs}")
