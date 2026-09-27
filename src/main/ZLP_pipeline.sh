@@ -168,7 +168,18 @@ readonly VERSION='v3'
 # 40 pc target list. TARGET_LIST in the environment overrides the default
 # copy in the data root (e.g. to run with a corrected list before it is
 # adopted in production).
-readonly TLIST=${TARGET_LIST:-$(abspath ${2})/ml_40pc.txt}
+#
+# Prefer the regenerated table, which carries Gaia DR2 *and* DR3 identifiers
+# and one consistent delimiter, and fall back to the legacy ml_40pc.txt
+# while that is being rolled out.  The legacy file is left in place
+# untouched: nine analysis scripts outside this pipeline still read it.
+if [ -n "${TARGET_LIST:-}" ]; then
+    readonly TLIST=${TARGET_LIST}
+elif [ -f "$(abspath ${2})/ml_40pc_v2.csv" ]; then
+    readonly TLIST=$(abspath ${2})/ml_40pc_v2.csv
+else
+    readonly TLIST=$(abspath ${2})/ml_40pc.txt
+fi
 readonly TOI_TABLE=${SCRIPTDIR}/condense/toi_gaia_ids.csv
 #readonly EXT='fts'
 

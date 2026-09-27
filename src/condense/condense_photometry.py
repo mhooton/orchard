@@ -32,7 +32,11 @@ from astropy.table import Table
 from shutil import copyfile
 import fitsio
 import os
-from astropy.io import ascii as astropy_ascii
+try:                        # imported as part of the package
+    from utils import target_list
+except ImportError:         # run as a bare script: put the source root on the path
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from utils import target_list
 
 logging.basicConfig(level='INFO', format='%(levelname)7s %(message)s')
 logger = logging.getLogger(__name__)
@@ -521,14 +525,9 @@ def main(args):
                 dr2_to_obj_id.setdefault(gid_clean, obj_ids[idx])
 
     # Load target list for Teff fallback — only done once, not per target.
-    _tlist_data = None
+    _tlist = None
     if hasattr(args, 'tlist') and args.tlist and os.path.isfile(args.tlist):
-        try:
-            _tlist_data = astropy_ascii.read(
-                args.tlist, delimiter=' ', header_start=0, data_start=1
-            )
-        except Exception as _e:
-            logger.warning("Could not read target list for Teff fallback: %s", _e)
+        _tlist = target_list.load_target_list(args.tlist, logger)
 
     def _get_teff(dr2_id, gaia_teff_val):
         """
@@ -543,14 +542,13 @@ def main(args):
         except (TypeError, ValueError):
             pass
 
-        # Fallback: target list
-        if _tlist_data is not None:
+        # Fallback: target list, matched on either the DR2 or the DR3
+        # identifier, since the caller may hold whichever the catalogue had.
+        if _tlist is not None:
             try:
-                ids = [str(x).strip() for x in _tlist_data['Gaia_ID,']]
-                if dr2_id.strip() in ids:
-                    idx = ids.index(dr2_id.strip())
-                    teff_tl = _tlist_data['T_eff,'][idx]
-                    return int(teff_tl)
+                teff_tl = _tlist.teff_for_id(dr2_id)
+                if teff_tl is not None:
+                    return teff_tl
             except Exception:
                 pass
 
