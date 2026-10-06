@@ -1230,11 +1230,18 @@ main() {
             echo "There are no science images for ${DATE}!"
             TARGET="N/A"
             echo $TARGET
-            [ "$T2" = "1" ] && create_master_bias
-            [ "$T3" = "1" ] && create_master_dark
-            [ "$T4" = "1" ] && create_master_flat
-            [ "$T5" = "1" ] && create_bad_pixel_map
-            [ "$T12" = "1" ] && pdf_report
+            # The calibration stages take the target from ${i}, normally the loop
+            # variable below; it is unset here and nounset kills the run.  It ends
+            # up in the QC and report rows, so the placeholder has no slash.
+            i="none"
+            # Only build the masters this night has frames for: pipebias.py and
+            # pipedark.py read the first line of their list, pipedark.py needs the
+            # MasterBias, and pipeflat.py opens each flat list.  T5 is skipped -
+            # the bad pixel map is built from the target's science image list.
+            [ "$T2" = "1" ] && [ -s "${BIASLIST}" ] && create_master_bias
+            [ "$T3" = "1" ] && [ -s "${DARKLIST}" ] && [ -f "${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_MasterBias.fits" ] && create_master_dark
+            [ "$T4" = "1" ] && compgen -G "${FLATLIST}" > /dev/null && create_master_flat
+            [ "$T11" = "1" ] && pdf_report
         else
             echo $TARGET
             for i in ${TARGET[*]}
@@ -1295,7 +1302,7 @@ main() {
         if [[ "${EXT}" == *"output"* ]]; then
           echo "There are no images for ${DATE}!"
           TARGET="N/A"
-          [ "$T12" = "1" ] && pdf_report
+          [ "$T11" = "1" ] && pdf_report
         else
             echo "Extension was found to be ${EXT}. Please remove the corrupted file from ${IMGDIRS}"
         fi
