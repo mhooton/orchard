@@ -459,7 +459,10 @@ reduce_images() {
     ensure_directory "${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}" #${IMAGELIST%.*}
     CMD="python ${SCRIPTDIR}/calibration/pipered.py ${IMAGELIST} --biasname ${RUNNAME}_MasterBias.fits --darkname $MASTERDARK --flatnames $MASTERFLAT --bpmname ${RUNNAME}_BadPixelMap.fits --caldir ${OUTPUTDIR}/${DATE}/reduction --outdir ${OUTPUTDIR}/${DATE}/${i}/${RUNNAME} --version ${VERSION} --usebias 1 --usedark 1"
     echo ${CMD}
+    set +e
     ${CMD}
+    T6_EXIT=$?
+    set -e
 }
 
 
@@ -468,20 +471,46 @@ any_filelists() {
     ls ${IMAGELISTS} 2>/dev/null >/dev/null
 }
 
-# calibrate the science images using master bias/dark/flat images
+# true if target $1 has at least one non-empty *_processed.dat
+has_processed_images() {
+    local f
+    for f in ${OUTPUTDIR}/${DATE}/${1}/${RUNNAME}/*_processed.dat; do
+        [ -s "${f}" ] && return 0
+    done
+    return 1
+}
+
+# calibrate the science images using master bias/dark/flat images.
+# Sets T6_FAILED=1 when the target is left with nothing for T7-T10 to work on.
 reduce_science_images() {
     echo "START T6"
     echo "Reduce Science Images"
-    IMAGELISTS=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_image_*.list
-    if $(any_filelists ${IMAGELISTS}); then
-        reduce_images "${IMAGELISTS}" #"${1}"
-        CMD="python ${SCRIPTDIR}/reporting/report.py ${report} ${DATE} ${i} ${TEL} ${RUNNAME} 6"
-        ${CMD}
-        echo "END T6"
-    else
-        echo "Reduction failed for ${i}"
-        continue
+    IMAGELIST=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_image_${i}.list
+    if [ ! -f "${IMAGELIST}" ]; then
+        echo "Reduction failed for ${i}: no image list ${IMAGELIST}"
+        T6_FAILED=1
+        return
     fi
+    reduce_images
+    # pipered.py aborts on the first frame it cannot calibrate (e.g. binned
+    # frames against unbinned masters).
+    if [ ${T6_EXIT} -ne 0 ]; then
+        echo "WARNING: pipered.py exited with code ${T6_EXIT} for target ${i}"
+        echo "Reduction failed for ${i}"
+        T6_FAILED=1
+        return
+    fi
+    # It also exits 0 having written nothing usable: a *_processed.dat exists
+    # only for filters with a master flat, and is empty if only one frame
+    # survived (the first frame is dropped).
+    if ! has_processed_images "${i}"; then
+        echo "Reduction failed for ${i}: no reduced images in ${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}"
+        T6_FAILED=1
+        return
+    fi
+    CMD="python ${SCRIPTDIR}/reporting/report.py ${report} ${DATE} ${i} ${TEL} ${RUNNAME} 6"
+    ${CMD}
+    echo "END T6"
 #    if ~ls ${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}/*_processed.dat &>/dev/null; then
 #        echo "Reduction failed for ${i}"
 #        continue
@@ -530,7 +559,7 @@ check_astrometry(){
 
     else
         echo "${IMAGELISTS} does not exist for ${i}"
-        continue
+        return
     fi
 }
 
@@ -589,7 +618,9 @@ create_stack_image() {
         done
 
     else
-        continue
+        echo "${IMAGELISTS} does not exist for ${i} — nothing to stack"
+        T8_FAILED=1
+        return
     fi
 
     CMD="python ${SCRIPTDIR}/reporting/report.py ${report} ${DATE} ${i} ${TEL} ${RUNNAME} 8"
@@ -752,7 +783,7 @@ perform_aperture_photometry() {
     printf "\n**Running aperture photometry**\n"
 
     printf "For Target = ${i}\n"
-    single_perform_aperture_photometry ${i} ${correct_i}
+    single_perform_aperture_photometry ${i} "${correct_i}"
 
     CMD="python ${SCRIPTDIR}/reporting/report.py ${report} ${DATE} ${i} ${TEL} ${RUNNAME} 9"
     ${CMD}
@@ -1260,8 +1291,16 @@ main() {
 #                if [[ ! -z "${MASTER_FLAT}" ]]; then
 #                    copy_custom_master_flat
 #                fi
+                T6_FAILED=0
                 [ "$T6" = "1" ] && reduce_science_images
+                if [ ${T6_FAILED} -ne 0 ]; then
+                    echo "T6 failed for target ${i} — skipping T7, T8, T9, T10"
+                    continue
+                fi
 
+                # Only set below if the target has reduced images; never let T9
+                # see it unset or left over from the previous target.
+                correct_i=""
                 IMAGELISTS=${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}/*_processed.dat
                 if $(any_filelists ${IMAGELISTS}); then
                     for IMAGELIST in ${IMAGELISTS}
