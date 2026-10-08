@@ -30,6 +30,7 @@ filtered_args=()
 only_task=""
 FORCE_PLATESOLVE="0"
 USE_EXISTING_CALIBRATIONS="0"
+SAVE_FLAT_PRODUCTS="0" # T4: also write flats/proc*, std.fts and variance.fts (never read)
 CORES_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
@@ -60,6 +61,7 @@ while [[ $# -gt 0 ]]; do
         --only_T12) only_task="12"; shift ;;
         --force-platesolve) FORCE_PLATESOLVE="1"; shift ;;
         --use-existing-calibrations) USE_EXISTING_CALIBRATIONS="1"; shift ;;
+        --save-flat-products) SAVE_FLAT_PRODUCTS="1"; shift ;;
         --cores) CORES_OVERRIDE="$2"; shift 2 ;;
         *) filtered_args+=("$1"); shift ;; # Keep non-task arguments
     esac
@@ -88,7 +90,7 @@ fi
 set -- "${filtered_args[@]}"
 
 # Make variables readonly after parsing
-readonly T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12 FORCE_PLATESOLVE USE_EXISTING_CALIBRATIONS CORES_OVERRIDE
+readonly T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12 FORCE_PLATESOLVE USE_EXISTING_CALIBRATIONS SAVE_FLAT_PRODUCTS CORES_OVERRIDE
 
 #if [[ $# -ne 8 ]] && [[ $# -ne 8 ]]; then
 #    cat >&2 <<-EOF
@@ -357,6 +359,7 @@ create_master_flat() {
 #    CMD="python ${SCRIPTDIR}/calibration/pipeflat.py $FLATLIST ${T2} ${T3} ${RUNNAME}_MasterBias.fits ${RUNNAME}_MasterDark.fits ${RUNNAME}_MasterFlat.fits ${OUTPUTDIR}/${DATE}/reduction ${REPORTDIR}"
     #SET USEBIAS AND USEDARK TO 1, TO DECOUPLE FROM STAGES
     CMD="python ${SCRIPTDIR}/calibration/pipeflat.py $FLATLIST 1 1 ${RUNNAME}_MasterBias.fits ${RUNNAME}_MasterDark.fits ${RUNNAME}_MasterFlat.fits ${OUTPUTDIR}/${DATE}/reduction ${REPORTDIR}"
+    [ "${SAVE_FLAT_PRODUCTS}" = "1" ] && CMD="${CMD} --save-flat-products"
     echo ${CMD}
     ${CMD}
 
