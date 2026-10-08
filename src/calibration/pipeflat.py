@@ -13,8 +13,10 @@ Processing steps:
 - Per-filter output organization (e.g., MasterFlat_I+z.fits, MasterFlat_zYJ.fits)
 
 The master flats are normalized to unity mean, allowing direct division into
-science frames during reduction. Variance and standard deviation maps are also
-generated for quality assessment.
+science frames during reduction. With --save-flat-products, each calibrated flat
+(flats/proc*) and the per-pixel standard deviation and variance across the flats
+(std.fts, variance.fts) are also written. Nothing in the pipeline reads them, so
+they are off by default.
 
 This is Stage T4 of the pipeline and produces the flat fields required for
 science image reduction (Stage T6).
@@ -41,11 +43,12 @@ def render_total_file(data, fname, nfiles):
     hdu.writeto(fname, overwrite=True)
 
 
-def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, reportdir):
+def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, reportdir, save_flat_products=False):
     biasname = outdir + biasname
     darkname = outdir + darkname
 
-    os.system('mkdir ' + outdir + 'flats')
+    if save_flat_products:
+        os.system('mkdir ' + outdir + 'flats')
 
     # import master bias
     if usebias == "1":
@@ -159,19 +162,20 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
 
             datamatrix.append(normalised)
 
-            # create new fits image phdu using the normalised corrected data
-            phdu = pyfits.PrimaryHDU(normalised)
-            phdu.header['exposure'] = exposure
-            phdu.header['jd'] = jd
-            if os.path.exists(outname):
-                os.remove(outname)
+            if save_flat_products:
+                # create new fits image phdu using the normalised corrected data
+                phdu = pyfits.PrimaryHDU(normalised)
+                phdu.header['exposure'] = exposure
+                phdu.header['jd'] = jd
+                if os.path.exists(outname):
+                    os.remove(outname)
 
-            # write filename of this hdulist to another file 'processed.dat'
-            phdu.writeto(outname, overwrite=True)
-            tfile = outdir + 'processed.dat'
-            f = open(tfile, 'a')
-            f.write(outname)
-            f.close()
+                # write filename of this hdulist to another file 'processed.dat'
+                phdu.writeto(outname, overwrite=True)
+                tfile = outdir + 'processed.dat'
+                f = open(tfile, 'a')
+                f.write(outname)
+                f.close()
 
             frameno += 1
 
@@ -185,15 +189,16 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
                                    ", original error: {}".format(str(err)))
 
         # for filt,datamatrix in datamatrix_dict.iteritems():
-        wholestd = np.std(datamatrix, axis=0)
-        outname = outdir + 'std.fts'
-        pyfits.PrimaryHDU(wholestd).writeto(outname, overwrite=True)
-        print('std done')
+        if save_flat_products:
+            wholestd = np.std(datamatrix, axis=0)
+            outname = outdir + 'std.fts'
+            pyfits.PrimaryHDU(wholestd).writeto(outname, overwrite=True)
+            print('std done')
 
-        variance = wholestd ** 2  # 1/(wholestd*wholestd)
-        outname = outdir + 'variance.fts'
-        pyfits.PrimaryHDU(variance).writeto(outname, overwrite=True)
-        print('var done')
+            variance = wholestd ** 2  # 1/(wholestd*wholestd)
+            outname = outdir + 'variance.fts'
+            pyfits.PrimaryHDU(variance).writeto(outname, overwrite=True)
+            print('var done')
 
         # write normalised, corrected medianed flat frame to master file
         flat = np.median(datamatrix, axis=0)
@@ -209,20 +214,26 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
 
 
 def main():
-    inlist = sys.argv[1:-7]
-    biasname = str(sys.argv[-5])
-    darkname = str(sys.argv[-4])
-    flatname = str(sys.argv[-3])
-    usedark = str(sys.argv[-6])
-    usebias = str(sys.argv[-7])
-    outdir = str(sys.argv[-2]) + '/'
-    reportdir = str(sys.argv[-1]) + '/'
+    # the optional flag is removed first, because the positional arguments are counted from the end
+    args = sys.argv[1:]
+    save_flat_products = '--save-flat-products' in args
+    args = [a for a in args if a != '--save-flat-products']
+
+    inlist = args[:-7]
+    biasname = str(args[-5])
+    darkname = str(args[-4])
+    flatname = str(args[-3])
+    usedark = str(args[-6])
+    usebias = str(args[-7])
+    outdir = str(args[-2]) + '/'
+    reportdir = str(args[-1]) + '/'
 
     print(inlist)
     print(len(inlist))
     print(type(inlist))
 
-    reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, reportdir)
+    reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, reportdir,
+            save_flat_products=save_flat_products)
 
 
 if __name__ == '__main__':

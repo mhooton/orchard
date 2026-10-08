@@ -225,6 +225,7 @@ The main pipeline script is `ZLP_pipeline.sh` located in `src/main/`.
 |------|-------------|---------|
 | `--cores N` | Number of parallel processes | `N_CORES` env var (20), or 1 |
 | `--force-platesolve` | Re-solve images that already have WCS | Disabled |
+| `--save-flat-products` | T4: also write each calibrated flat (`reduction/flats/proc*`), `std.fts` and `variance.fts`. Nothing in the pipeline reads them | Disabled |
 | `--no_T1` through `--no_T12` | Skip specific pipeline stage | All enabled |
 | `--only_T1` through `--only_T12` | Run only specific stage | All enabled |
 
@@ -535,12 +536,11 @@ Creates normalised master flat fields from dome or twilight flats. Processes fla
 2. Normalise each flat by its median flux
 3. Sigma-clipped median combination (rejects cosmic rays)
 4. Normalise master to unity mean
-5. Generate variance and standard deviation maps
+5. With `--save-flat-products` only: write each calibrated flat and the per-pixel standard deviation and variance across the flats
 
 **Output:**
 - `{run}_MasterFlat_{filter}.fits` (one per filter)
-- `variance.fts` (quality assessment)
-- `std.fts` (pixel-to-pixel variation)
+- With `--save-flat-products`: `flats/proc*` (each calibrated flat), `std.fts` and `variance.fts`. They are off by default because nothing reads them; together they took 3.8 TB of PipelineOutput by October 2026
 
 **Purpose:** Corrects for pixel sensitivity variations, vignetting, and dust shadows.
 
