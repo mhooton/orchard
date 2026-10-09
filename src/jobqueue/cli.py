@@ -2,6 +2,8 @@
 
     docker exec orchard-server python -m jobqueue status
     docker exec orchard-server python -m jobqueue add --class P2 --telescope Europa --night 20250101
+    docker exec orchard-server python -m jobqueue add --class P2 --telescope Europa --night 20250101 --download
+    docker exec orchard-server python -m jobqueue add --class P2 --from-file backlog.csv --dry-run
     docker exec orchard-server python -m jobqueue pause P2        # resume P2 | resume all
     docker exec orchard-server python -m jobqueue drain           # start nothing new; undrain to undo
     docker exec orchard-server python -m jobqueue cancel 42 [--kill]
@@ -17,7 +19,7 @@ import sys
 
 from . import CLASSES, jobspec
 from .config import ensure_dirs, load_config, queue_paths
-from .util import iso, parse_iso, utcnow
+from .util import iso, parse_iso, parse_night, utcnow
 
 
 def _store(cfg):
@@ -118,7 +120,159 @@ def cmd_show(cfg, store, a):
     return 0
 
 
+# --------------------------------------------------------------------------- nights: download and/or process
+
+BACKLOG_FORMAT = 'TEL,DATE,DOWNLOAD,DELETE,PROCESS[,TARGETS]'
+
+
+class EsoNights:
+    """ESO rows of a night, fetched one telescope-month at a time (a backlog file lists many nights)."""
+
+    def __init__(self, cfg, eso):
+        self.cfg = cfg
+        self.eso = eso
+        self.cache = {}
+
+    def rows(self, telescope, night):
+        from .eso import group_by_night
+        prog = self.cfg['telescopes'][telescope]['prog_id']
+        month = night[:6]
+        if (prog, month) not in self.cache:
+            y, m = int(month[:4]), int(month[4:])
+            last = dt.date(y + (m == 12), m % 12 + 1, 1) - dt.timedelta(days=1)
+            self.cache[(prog, month)] = group_by_night(self.eso.frames(prog, month + '01', last.strftime('%Y%m%d')))
+        return self.cache[(prog, month)].get(night, [])
+
+
+def parse_backlog(path, cfg):
+    """Requests from a file of TEL,DATE,DOWNLOAD,DELETE,PROCESS[,TARGETS] lines (manual_runs/backlog/v3_backlog.txt).
+    DELETE=1 is taken as a refetch: the old files are kept in quarantine, never deleted. Returns (requests, errors)."""
+    tels = {t.lower(): t for t in cfg['telescopes']}
+    reqs, errors = [], []
+    with open(path) as f:
+        lines = f.read().splitlines()
+    for no, line in enumerate(lines, 1):
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        fields = [x.strip() for x in line.split(',')]
+        if len(fields) < 5:
+            errors.append('line {}: {!r}: expected {}'.format(no, line, BACKLOG_FORMAT))
+            continue
+        tel = tels.get(fields[0].lower())
+        night = fields[1]
+        flags = fields[2:5]
+        bad = []
+        if tel is None:
+            bad.append('unknown telescope {!r}'.format(fields[0]))
+        try:
+            parse_night(night)
+        except ValueError:
+            bad.append('DATE {!r} is not YYYYMMDD'.format(night))
+        if any(x not in ('0', '1') for x in flags):
+            bad.append('DOWNLOAD, DELETE and PROCESS must be 0 or 1')
+        if bad:
+            errors.append('line {}: {!r}: {}'.format(no, line, '; '.join(bad)))
+            continue
+        download, delete, process = (x == '1' for x in flags)
+        if delete and not download:
+            errors.append('line {}: {!r}: DELETE needs DOWNLOAD'.format(no, line))
+        elif download and cfg['telescopes'][tel].get('source') != 'eso':
+            errors.append('line {}: {!r}: {} frames do not come from ESO'.format(no, line, tel))
+        elif not (download or process):
+            errors.append('line {}: {!r}: nothing to do'.format(no, line))
+        else:
+            targets = ' '.join(fields[5:]).replace('"', ' ').replace("'", ' ').split()
+            reqs.append({'telescope': tel, 'night': night, 'download': download, 'process': process,
+                         'replace': 'all' if delete else 'never', 'run_targets': targets, 'line': no})
+    return reqs, errors
+
+
+def queue_night(cfg, store, eso_nights, req, cls, priority=0.0, note=None, no_t12=False, extra_flags=(), cores=None,
+                dry_run=False, log=print):
+    """Queue one night: an add-only fetch (if req['download']) and the pipeline run after it (if req['process']).
+    The pipeline job waits for the fetch and is cancelled if the fetch fails."""
+    from .dispatcher import count_frames
+    from .jobs import plan_fetch
+    from .nights import night_dir, night_targets, normalise_target
+    tel, night = req['telescope'], req['night']
+    path = night_dir(cfg['basedir'], tel, night)
+    fetch_id, lock_targets, what = None, [], []
+    if req['download']:
+        rows = eso_nights.rows(tel, night)
+        todo, summary, _ = plan_fetch(rows, path, req['replace'])
+        lock_targets = sorted({normalise_target(r['object']) for r in rows
+                               if (r.get('dp_type') or '').upper() == 'OBJECT' and (r.get('object') or '').strip()})
+        desc = 'ESO {} rows, on disk {} frames (+{} under other names), {} to fetch ({} science, {:.1f} GB{})'.format(
+            summary['eso_rows'], summary['disk_files'], summary['foreign_files'], summary['todo'],
+            summary['todo_science'], summary['todo_bytes'] / 1e9,
+            '' if req['replace'] == 'never' else ', replace {}'.format(req['replace']))
+        if not todo:
+            what.append('nothing to fetch ({})'.format(desc))
+        elif dry_run:
+            what.append('would fetch: {}'.format(desc))
+        else:
+            fetch_id, created = jobspec.add(store, jobspec.fetch_job(
+                cfg, cls, tel, night, n_rows=summary['todo'], n_science=summary['todo_science'], source='cli',
+                rerun=False, replace=req['replace'], nbytes=summary['todo_bytes'], priority=priority,
+                note=note or desc))
+            what.append('{} fetch job {}: {}'.format('queued' if created else 'already queued as', fetch_id, desc))
+    if req['process']:
+        run_targets = list(req.get('run_targets') or [])
+        if not lock_targets and not run_targets:
+            lock_targets = night_targets(cfg['basedir'], tel, night)
+        if dry_run:
+            what.append('would run the pipeline{}{}'.format(
+                ' after the fetch' if req['download'] else '',
+                ' for ' + ' '.join(run_targets) if run_targets else ''))
+        else:
+            jid, created = jobspec.add(store, jobspec.pipeline_job(
+                cfg, cls, tel, night, lock_targets=lock_targets, run_targets=run_targets, frames=count_frames(path),
+                source='cli', depends_on=fetch_id, dep_requires_success=fetch_id is not None, priority=priority,
+                no_t12=no_t12, extra_flags=extra_flags, note=note, cores=cores))
+            what.append('{} pipeline job {}{}'.format('queued' if created else 'already queued as', jid,
+                                                       ' after job {}'.format(fetch_id) if fetch_id else ''))
+    log('{} {} {}: {}'.format(cls, tel, night, '; '.join(what)))
+    return fetch_id
+
+
+def cmd_add_nights(cfg, store, a):
+    if a.from_file:
+        reqs, errors = parse_backlog(a.from_file, cfg)
+        if errors:
+            print('\n'.join(errors))
+            print('{} bad line(s): nothing queued'.format(len(errors)))
+            return 2
+    else:
+        if not (a.telescope and a.night):
+            print('--download needs --telescope and --night')
+            return 2
+        if cfg['telescopes'].get(a.telescope, {}).get('source') != 'eso':
+            print('{} frames do not come from ESO'.format(a.telescope))
+            return 2
+        reqs = [{'telescope': a.telescope, 'night': a.night, 'download': True, 'process': not a.download_only,
+                 'replace': 'all' if a.refetch else 'invalid' if a.repair else 'never',
+                 'run_targets': a.targets.split() if a.targets else []}]
+    if a.repair or a.refetch:
+        for r in reqs:
+            if r['download'] and r['replace'] == 'never':
+                r['replace'] = 'all' if a.refetch else 'invalid'
+    eso_nights = EsoNights(cfg, _eso(cfg)) if any(r['download'] for r in reqs) else None
+    for r in reqs:
+        try:
+            queue_night(cfg, store, eso_nights, r, a.cls, priority=a.priority, note=a.note, no_t12=a.no_T12,
+                        extra_flags=a.flag or (), cores=a.cores, dry_run=a.dry_run)
+        except Exception as e:  # one bad night (ESO unreachable, say) must not stop the rest
+            print('{} {} {}: not queued: {}: {}'.format(a.cls, r['telescope'], r['night'], type(e).__name__, e))
+    return 0
+
+
 def cmd_add(cfg, store, a):
+    if a.from_file or a.download or a.download_only:
+        return cmd_add_nights(cfg, store, a)
+    if a.repair or a.refetch or a.dry_run:
+        print('--repair, --refetch and --dry-run go with --download, --download-only or --from-file')
+        return 2
     if a.kind == 'pipeline':
         if not (a.telescope and a.night):
             print('a pipeline job needs --telescope and --night')
@@ -331,6 +485,16 @@ def build_parser():
     s.add_argument('--lock', action='append', help='extra lock for a command job')
     s.add_argument('--cwd')
     s.add_argument('--note')
+    s.add_argument('--download', action='store_true',
+                   help='fetch what ESO holds for the night and the disk lacks (add-only), then run the pipeline')
+    s.add_argument('--download-only', action='store_true', help='as --download, without the pipeline run')
+    s.add_argument('--repair', action='store_true',
+                   help='also re-fetch frames on disk that fail verification (truncated); old files go to quarantine')
+    s.add_argument('--refetch', action='store_true',
+                   help='fetch the whole night again and swap in every frame that differs; old files go to quarantine')
+    s.add_argument('--from-file', help='queue each line of a {} file (the v3_backlog.txt format); DELETE=1 means '
+                                       '--refetch'.format(BACKLOG_FORMAT))
+    s.add_argument('--dry-run', action='store_true', help='with --download or --from-file: only say what would be queued')
     s.add_argument('cmd', nargs=argparse.REMAINDER, help='-- command for a non-pipeline job')
     s.set_defaults(fn=cmd_add)
 

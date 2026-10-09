@@ -6,6 +6,8 @@ Locks:
                         directory per telescope (config telescope_lock; off once a per-run catcache lands)
   target:<NAME>         pipeline jobs, one per target: v2/StackImages is shared across telescopes and nights
   sem:eso               download and fetch jobs, counted against semaphores.eso
+  sem:eso_bulk          P2/P3 fetch jobs as well, counted against semaphores.eso_bulk (1), so bulk downloads
+                        never take both ESO slots from the nightly ones
 """
 import os
 
@@ -45,7 +47,7 @@ def pipeline_argv(cfg, telescope, night, run_targets=(), no_t12=False, extra_fla
 
 def pipeline_job(cfg, cls, telescope, night, lock_targets=(), run_targets=(), frames=None, est_minutes=None,
                  source='manual', depends_on=None, priority=0.0, no_t12=False, extra_flags=(), note=None, meta=None,
-                 cores=None, max_retries=None):
+                 cores=None, max_retries=None, dep_requires_success=False):
     if est_minutes is None:
         est_minutes = pipeline_estimate(cfg, telescope, night, frames or 0)
     lock_targets = sorted(set(lock_targets) | set(run_targets))
@@ -55,7 +57,8 @@ def pipeline_job(cfg, cls, telescope, night, lock_targets=(), run_targets=(), fr
         cls=cls, kind='pipeline', telescope=telescope, night=night, targets=' '.join(run_targets),
         argv=pipeline_argv(cfg, telescope, night, run_targets, no_t12, extra_flags), cwd=cfg['src_dir'],
         env=job_env(cfg), cores=cores or cfg['pipeline_cores'], disk_heavy=True, est_minutes=est_minutes,
-        locks=pipeline_locks(cfg, telescope, night, lock_targets), depends_on=depends_on, priority=priority,
+        locks=pipeline_locks(cfg, telescope, night, lock_targets), depends_on=depends_on,
+        dep_requires_success=dep_requires_success, priority=priority,
         dedupe_key='pipeline:{}:{}:{}'.format(telescope, night, ' '.join(run_targets) or '*'),
         max_retries=cfg['max_retries'] if max_retries is None else max_retries, source=source, meta=meta, note=note)
 
@@ -71,16 +74,34 @@ def download_job(cfg, telescope, night, eso_rows, source='watcher', note=None):
         meta={'eso_rows': eso_rows}, note=note)
 
 
-def fetch_job(cfg, cls, telescope, night, rows_file, n_rows, n_science, source='lookback'):
-    """Add-only fetch of listed ESO rows (see jobs.fetch and fetch.py)."""
-    argv = [cfg['python'], '-m', 'jobqueue', 'jobs', 'fetch', '--telescope', telescope, '--night', night,
-            '--rows', rows_file, '--rerun-class', cls]
+def fetch_estimate(cfg, n_rows, nbytes=None):
+    """Minutes for a fetch: ESO's compressed size at fetch.mb_per_s, plus unpacking and placing."""
+    if nbytes:
+        return max(10.0, nbytes / (float(cfg['fetch']['mb_per_s']) * 1e6) / 60.0 + n_rows * 0.02)
+    return max(10.0, n_rows / 60.0)
+
+
+def fetch_job(cfg, cls, telescope, night, rows_file=None, n_rows=0, n_science=0, source='lookback', rerun=True,
+              replace='never', nbytes=None, est_minutes=None, priority=0.0, note=None):
+    """Add-only fetch of one night (see jobs.fetch and fetch.py): the listed rows, or, without rows_file, whatever
+    ESO holds that is not on disk. rerun=False: download only, never queue a pipeline run."""
+    argv = [cfg['python'], '-m', 'jobqueue', 'jobs', 'fetch', '--telescope', telescope, '--night', night]
+    if rows_file:
+        argv += ['--rows', rows_file]
+    argv += ['--rerun-class', cls if rerun else 'none']
+    if replace != 'never':
+        argv += ['--replace', replace]
+    locks = ['night:{}:{}'.format(telescope, night), 'sem:eso']
+    if cls in ('P2', 'P3'):
+        locks.append('sem:eso_bulk')
     return dict(
         cls=cls, kind='fetch', telescope=telescope, night=night, argv=argv, cwd=cfg['src_dir'], env=job_env(cfg),
-        cores=cfg['download_cores'], disk_heavy=True, est_minutes=max(10.0, n_rows / 60.0),
-        locks=['night:{}:{}'.format(telescope, night), 'sem:eso'],
+        cores=cfg['download_cores'], disk_heavy=True,
+        est_minutes=est_minutes or fetch_estimate(cfg, n_rows, nbytes), locks=locks,
         dedupe_key='fetch:{}:{}'.format(telescope, night), max_retries=cfg['max_retries'], source=source,
-        meta={'rows': n_rows, 'science': n_science, 'rows_file': os.path.basename(rows_file)})
+        priority=priority, note=note,
+        meta={'rows': n_rows, 'science': n_science, 'rows_file': os.path.basename(rows_file) if rows_file else None,
+              'bytes': nbytes, 'replace': replace, 'rerun': rerun})
 
 
 def add(store, spec):

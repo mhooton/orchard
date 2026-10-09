@@ -1,4 +1,4 @@
-"""Job bodies that are not the pipeline itself: the nightly download and the look-back's add-only fetch.
+"""Job bodies that are not the pipeline itself: the nightly download and the add-only fetch.
 
 download  SSO_download.py for one recent night, exactly as the nightly cron runs it (log to
           ESO_logs/<NIGHT><TEL>.log, its usual summary email), with --max-retries 1 because the watcher
@@ -6,20 +6,26 @@ download  SSO_download.py for one recent night, exactly as the nightly cron runs
           (falling back to the add-only fetch) if transformation_check() would delete frames already on
           disk. Exits 0 whenever frames are on disk, so the pipeline job behind it runs even if a few are
           missing (the look-back fetches those); exits 75 (retry later) if nothing landed.
-fetch     add-only fetch of the rows listed by the look-back; queues a rerun if science frames were added.
+fetch     add-only fetch (fetch.py) of any night: the rows the look-back listed (--rows), or, without a list,
+          whatever ESO holds for the night that is not on disk. With --rerun-class P1 (the look-back) it queues
+          a rerun if science frames were added; with --rerun-class none it only downloads (`q add --download`
+          queues the pipeline run itself, as a job that waits for this one). --replace invalid also swaps
+          frames on disk that fail verification (truncated); --replace all fetches the whole night again and
+          swaps every frame that differs. Swapped files are kept in <queue_root>/quarantine/<TEL>/<NIGHT>.
+          Every file added or swapped goes into <queue_root>/fetch/manifest.csv.
 """
 import argparse
 import datetime as dt
-import io
 import os
 import subprocess
 import sys
-import contextlib
+import threading
 
 from . import jobspec
 from .config import ensure_dirs, load_config, queue_paths
-from .nights import (diff_eso_disk, list_frames, night_dir, read_header, science_count,
-                     transformation_check_kind, transformation_check_would_delete)
+from .nights import (FitsError, diff_eso_disk, foreign_times, is_cube_layout, list_frames, night_dir, read_header,
+                     row_files, science_count, transformation_check_kind, transformation_check_would_delete,
+                     verify_frame)
 from .util import parse_night, read_json, utcnow, write_json_atomic
 
 EX_TEMPFAIL = 75
@@ -30,32 +36,96 @@ def _archive(cfg):
     return EsoArchive(cfg['eso_env_file'])
 
 
-def eso_download_fn(archive):
-    """download(dp_ids, dest) through ESODownloader.download_files, its output scrubbed of credentials."""
-    from .eso import scrub
+def eso_token_fn(archive):
+    """token(force=False) for EsoFileFetcher: the archive's bearer token, renewed when due or when forced."""
+    lock = threading.Lock()
 
-    def download(dp_ids, dest):
-        archive._ensure_token()
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            got = archive._d.download_files([[d] for d in dp_ids], dest)
-        print(scrub(buf.getvalue(), archive._secrets), end='', flush=True)
-        return got
-    return download
+    def token(force=False):
+        with lock:
+            if force:
+                archive._d.token = None
+            archive._ensure_token()
+            return archive._d.token
+    return token
 
 
-def fetch_rows(cfg, archive, telescope, night, rows, job_id=None, dest=None):
-    from download.unpack_datacubes import is_datacube, unpack_datacube
+def _verify_placed(path):
+    """What a frame must pass before it goes into a night directory: complete FITS, and transformed if Astra."""
+    from .fetch import _needs_astra
+    verify_frame(path)
+    if _needs_astra(path):
+        raise FitsError('an Astra frame without ASTRAROT/ASTRAMIR: the transform did not run')
+
+
+def _is_cube(path):
+    try:
+        return is_cube_layout(verify_frame(path))
+    except (OSError, FitsError):
+        return False
+
+
+def fetch_rows(cfg, archive, telescope, night, rows, job_id=None, dest=None, replace='never', foreign=None,
+               record=None, log=print):
+    """Fetch ESO rows add-only into the night directory (or dest, for a trial). Records every file placed in
+    the manifest unless dest is given."""
+    from download.unpack_datacubes import unpack_datacube
     from download.astra_transform import astra_transform
-    from .fetch import add_only_fetch
+    from .fetch import EsoFileFetcher, Manifest, add_only_fetch
 
     def unpack(path, dest):
         ids, _ = unpack_datacube(path, dest)
         return [os.path.join(dest, i + '.fits') for i in ids]
 
-    staging = os.path.join(queue_paths(cfg)['staging'], 'job-{}-{}'.format(job_id or os.getpid(), night))
-    return add_only_fetch(rows, dest or night_dir(cfg['basedir'], telescope, night), staging, eso_download_fn(archive),
-                          unpack=unpack, is_cube=is_datacube, transform=lambda ids, d: astra_transform(ids, d, 1))
+    fcfg = cfg['fetch']
+    paths = queue_paths(cfg)
+    job_id = job_id or os.getenv('JOBQUEUE_JOB_ID')
+    if record is None and not dest:
+        record = Manifest(paths['manifest'], telescope=telescope, night=night, job=job_id or '')
+    fetcher = EsoFileFetcher(eso_token_fn(archive), workers=fcfg['workers'], attempts=fcfg['attempts'],
+                             backoff=fcfg['backoff_seconds'], breaker=fcfg['breaker'], log=log)
+    staging = os.path.join(paths['staging'], 'job-{}-{}-{}'.format(job_id or os.getpid(), telescope, night))
+    res = add_only_fetch(rows, dest or night_dir(cfg['basedir'], telescope, night), staging, fetcher,
+                         unpack=unpack, is_cube=_is_cube, transform=lambda ids, d: astra_transform(ids, d, 1),
+                         verify=_verify_placed, replace=replace, foreign=foreign, record=record, log=log,
+                         quarantine=os.path.join(paths['quarantine'], telescope, night), batch=int(fcfg['batch']))
+    res['failed'] = dict(fetcher.failed)
+    res['retry_later'] = sorted(fetcher.retry_later)
+    res['bytes_downloaded'] = fetcher.bytes
+    return res
+
+
+def invalid_rows(path, rows, names):
+    """Rows whose frames on disk fail verification (truncated or corrupt): what --replace invalid re-fetches."""
+    files = row_files(rows, names)
+    out = []
+    for r in rows:
+        for name in files.get(r['dp_id'], []):
+            if not name.endswith('.fits'):
+                continue  # .fits.fz and others are not swapped
+            try:
+                verify_frame(os.path.join(path, name))
+            except (OSError, FitsError):
+                out.append(r)
+                break
+    return out
+
+
+def plan_fetch(rows, path, replace='never'):
+    """(todo, summary) for a night: the rows to fetch given what is on disk (cube- and ACP-name-aware)."""
+    names = list_frames(path)
+    foreign = foreign_times(path)
+    present, missing, _ = diff_eso_disk(rows, names, foreign)
+    if replace == 'all':
+        todo = list(rows)
+    elif replace == 'invalid':
+        todo = missing + invalid_rows(path, present, names)
+    else:
+        todo = missing
+    summary = {'eso_rows': len(rows), 'eso_science': science_count(rows), 'disk_files': len(names),
+               'foreign_files': len(foreign), 'missing': len(missing), 'missing_science': science_count(missing),
+               'todo': len(todo), 'todo_science': science_count(todo),
+               'todo_bytes': sum(int(float(r.get('access_estsize') or 0)) for r in todo) * 1024}
+    return todo, summary, foreign
 
 
 def download(cfg, telescope, night):
@@ -114,17 +184,43 @@ def download(cfg, telescope, night):
     return 0
 
 
-def fetch(cfg, store, telescope, night, rows_file, rerun_class='P1', dest=None):
-    rows = read_json(rows_file)
-    if rows is None:
-        print('cannot read {}'.format(rows_file))
-        return 2
+def fetch(cfg, store, telescope, night, rows_file=None, rerun_class='P1', dest=None, replace='never'):
     archive = _archive(cfg)
-    res = fetch_rows(cfg, archive, telescope, night, rows, os.getenv('JOBQUEUE_JOB_ID'), dest=dest)
+    if rows_file:
+        rows = read_json(rows_file)
+        if rows is None:
+            print('cannot read {}'.format(rows_file))
+            return 2
+    else:
+        rows = archive.frames(cfg['telescopes'][telescope]['prog_id'], night, night)
+    path = dest or night_dir(cfg['basedir'], telescope, night)
+    todo, summary, foreign = plan_fetch(rows, path, replace)
+    print('{} {}: ESO {eso_rows} rows ({eso_science} science); on disk {disk_files} frames (+{foreign_files} under '
+          'other names); missing {missing} rows ({missing_science} science); fetching {todo} rows, about '
+          '{gb:.1f} GB{r}'.format(telescope, night, gb=summary['todo_bytes'] / 1e9,
+                                  r='' if replace == 'never' else ' (replace: {})'.format(replace), **summary),
+          flush=True)
+    res = fetch_rows(cfg, archive, telescope, night, todo, dest=dest, replace=replace, foreign=foreign)
+    res['plan'] = summary
     if dest:  # a trial into a scratch directory: record nothing, queue nothing
         print(res)
         return 0
-    write_json_atomic(rows_file + '.result.json', res)
+    result_path = rows_file + '.result.json' if rows_file else os.path.join(
+        queue_paths(cfg)['fetch'], '{}_{}_job{}.result.json'.format(telescope, night, os.getenv('JOBQUEUE_JOB_ID', 'x')))
+    os.makedirs(os.path.dirname(result_path), exist_ok=True)
+    write_json_atomic(result_path, res)
+    if res.get('failed'):
+        reasons = {}
+        for why in res['failed'].values():
+            reasons[why] = reasons.get(why, 0) + 1
+        for why, n in sorted(reasons.items(), key=lambda x: -x[1])[:5]:
+            print('{} rows not downloaded: {}'.format(n, why))
+    if rerun_class == 'none':
+        if res.get('retry_later'):
+            print('{} rows may download later; exit {} so the queue retries'.format(len(res['retry_later']),
+                                                                                   EX_TEMPFAIL))
+            return EX_TEMPFAIL
+        return 0
 
     lb = store.lookback_get(telescope, night) or {'telescope': telescope, 'night': night, 'fetches': 0,
                                                    'reruns': 0, 'data': {}}
@@ -146,7 +242,7 @@ def fetch(cfg, store, telescope, night, rows_file, rerun_class='P1', dest=None):
         else:
             print('{} science frames added, but the automatic rerun limit is reached'.format(res['added_science']))
     store.lookback_put(lb)
-    if rows and res['downloaded'] == 0:
+    if todo and res['downloaded'] == 0:
         return EX_TEMPFAIL
     return 0
 
@@ -161,8 +257,11 @@ def main(argv=None):
     f = sub.add_parser('fetch')
     f.add_argument('--telescope', required=True)
     f.add_argument('--night', required=True)
-    f.add_argument('--rows', required=True)
-    f.add_argument('--rerun-class', default='P1')
+    f.add_argument('--rows', help='JSON list of ESO rows to fetch (default: everything ESO holds that is not on disk)')
+    f.add_argument('--rerun-class', default='P1', choices=('P0', 'P1', 'P2', 'P3', 'none'),
+                   help='queue a rerun of this class if science frames were added; none: download only')
+    f.add_argument('--replace', default='never', choices=('never', 'invalid', 'all'),
+                   help='invalid: also swap frames that fail verification; all: swap every frame that differs')
     f.add_argument('--dest', help='trial run: put the frames here instead of the night directory, record nothing')
     a = p.parse_args(argv)
     cfg = load_config(a.config)
@@ -171,7 +270,7 @@ def main(argv=None):
         return download(cfg, a.telescope, a.night)
     from .store import Store
     store = Store(queue_paths(cfg)['db'])
-    return fetch(cfg, store, a.telescope, a.night, a.rows, a.rerun_class, dest=a.dest)
+    return fetch(cfg, store, a.telescope, a.night, a.rows, a.rerun_class, dest=a.dest, replace=a.replace)
 
 
 if __name__ == '__main__':
