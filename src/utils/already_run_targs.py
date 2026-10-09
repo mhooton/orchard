@@ -5,12 +5,32 @@ from astropy.io import fits, ascii
 import numpy as np
 import sys
 
+try:                        # imported as part of the utils package
+    from utils import target_list
+except ImportError:         # run as a bare script, so utils/ is sys.path[0]
+    import target_list
+
 
 def import_gaia_ids_40pc(fname):
-    # 40 PC TARGET LIST
-    data = ascii.read(fname, delimiter=" ", header_start=0, data_start=1)
-    gaia_ids = [str(x) for x in data['Gaia_ID,'][1:]]
-    sp_ids = [str(d).upper() for d in data['Sp_ID,'][1:]]
+    """
+    Gaia IDs and SPECULOOS names from the 40 pc target list, as parallel
+    lists indexed together by the callers below.
+
+    There is one entry per (row, ID), so a row carrying both a DR2 and a
+    DR3 identifier appears twice and is found by either; a row with no
+    identifier keeps its place under the '0' sentinel that the caller
+    already tests for.
+
+    The previous version sliced both lists with [1:], silently dropping the
+    first row.  That went unnoticed because row 0 of ml_40pc.txt carries
+    the zero sentinel and so was never matchable anyway — but it does have
+    a Gaia DR3 identifier in the new table, so the slice is gone.
+    """
+    tlist = target_list.read_target_list(fname)
+    gaia_ids, sp_ids = [], []
+    for gaia_id, row in tlist.id_rows(placeholder='0'):
+        gaia_ids.append(gaia_id)
+        sp_ids.append(tlist.sp_id(row).upper())
     return gaia_ids, sp_ids
 
 

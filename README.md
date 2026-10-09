@@ -735,8 +735,12 @@ either the neighbour's light curve or no photometry at all. Three cases are hand
   built with `gaia-tmass-sqlite/db_maker.py` at or after the `g_cut_dr3_only` change, or run
   `augment_dr3_only.py` on an existing database. Nothing else is needed.
 - *Name resolves to no ID* (missing from schedule, TOI table and target list): the coordinate
-  fallback above finds it; `utils/resolve_master_list_gaia_ids.py` fills zero IDs in
-  `ml_40pc.txt` from DR3.
+  fallback above finds it. 59 rows of `ml_40pc.txt` carry a zero ID;
+  `utils/resolve_master_list_gaia_ids.py` identifies them in DR3 and its report feeds the
+  generated table (see [The 40 pc Target Table](#the-40-pc-target-table)). Its 12 *weak*
+  matches — neither a proper motion nor a 2MASS counterpart, so a neighbour is as likely as
+  the target — are recorded but deliberately left unidentified; `--allow-weak` overrides that
+  once a human has reviewed them.
 - *Not in Gaia at all* (faint T/Y dwarfs): add a row to
   `calibration/supplementary_sources.csv` with a synthetic numeric ID above 9e18 and load it
   with `python -m utils.supplementary_sources load`. Estimate G and colours from the spectral
@@ -1013,6 +1017,76 @@ Stars move across the sky due to transverse velocities. Without correction:
 | 500 | 3 | 4.3 | Star leaves aperture |
 
 The pipeline automatically corrects catalogue positions from Gaia epoch (J2016.0) to observation date using Gaia-measured proper motions.
+
+---
+
+### The 40 pc Target Table
+
+The pipeline identifies a target by Gaia ID and by nothing else, so the target table is
+what decides whether a star can be observed at all.
+
+**Two files, one of them generated**
+
+| File | Role |
+|------|------|
+| `ml_40pc.txt` | The sample as circulated. Source of truth for every astrophysical parameter. Never edited — nine analysis scripts outside this pipeline read it, including the pipeline and flare papers. |
+| `ml_40pc_v2.csv` | What the pipeline reads. A generated artefact, rebuilt by `utils/build_target_table.py`; never hand-edited, so a new 40 pc release is a regeneration rather than a merge. |
+
+`ml_40pc.txt` has a comma-separated header over whitespace-separated data rows. Readers use
+`ascii.read(path, delimiter=' ', header_start=0, data_start=1)`, so the commas end up inside
+the column names — the pipeline used to look up a column literally called `Gaia_ID,`. Only
+`Program` escapes, because nothing follows it. Appending a column to that header silently
+renames `Program` to `Program,`. The generated table simply uses one delimiter throughout.
+
+**Identifiers**
+
+The legacy `Gaia_ID` column holds a Gaia **DR2** source ID under an unqualified name. It
+becomes two explicit columns, and either may be empty:
+
+- `Gaia_DR2_ID` — empty for the four stars with no DR2 entry. Wolf 359 (Sp1056+0700) is the
+  reason this matters: DR2's transit matching could not follow a star moving 4.7"/yr, so it
+  has no DR2 row, and four years of SPECULOOS data were attributed to a G=16 background star.
+- `Gaia_DR3_ID` — empty where DR3 has no counterpart, or where the DR2 source split into
+  several DR3 sources. An identifier that cannot be pinned down is left out on purpose: the
+  pipeline would otherwise adopt it at face value.
+
+A DR2 source ID is **not** a DR3 source ID. Looking one up directly in `gaiadr3.gaia_source`
+fails twice over — it returns nothing for a changed identifier, and where that number was
+reused it returns a different star, silently. `gaiadr3.dr2_neighbourhood` is the table that
+relates the two releases, and is what `utils/resolve_gaia_dr3_map.py` uses.
+
+**Distances**
+
+`parallax`, `DR3_dist_pc` and their errors come from Gaia DR3 via the resolved DR3
+identifier. `Dis`/`e_Dis` are deliberately left alone: `M`, `R` and `T_eff` were derived from
+them and have *not* been recomputed, so overwriting `Dis` would leave each row internally
+inconsistent. Read `Dis` as "the distance the derived parameters assume" and `DR3_dist_pc` as
+"the best distance we have".
+
+**No row is ever dropped.** `low_conf_dist`, `dist_gt_40pc` and `flagged` (the criteria
+Ben Rackham applied to the November 2024 revision, kept so the flags stay comparable) are
+advisory columns, not a filter. The table's purpose is to find as many M and L dwarfs as
+possible, so a star that has drifted beyond the 40 pc selection boundary stays in with the
+flag set.
+
+**Regenerating**
+
+```bash
+# offline and deterministic: a pure function of the three committed inputs
+python3 -m utils.build_target_table /path/to/ml_40pc.txt -o ml_40pc_v2.csv
+
+# only when the Gaia resolution itself needs rebuilding (this is the one
+# part that touches the network)
+python3 -m utils.resolve_gaia_dr3_map /path/to/ml_40pc.txt \
+    --outdir calibration --report resolved.csv
+```
+
+The generator warns if the source row count changes, which is how a new sample release
+announces itself.
+
+**Which file the pipeline reads:** `TARGET_LIST` in the environment wins; otherwise
+`ml_40pc_v2.csv` in the data root if present, falling back to `ml_40pc.txt`. Both formats are
+read through `utils/target_list.py`, so either works.
 
 ---
 

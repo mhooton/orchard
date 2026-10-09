@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 from astropy.io import fits, ascii
 from utils import gaia_id_from_schedule
+from utils import target_list
 
 logging.basicConfig(level='INFO', format='%(levelname)7s %(message)s')
 logger = logging.getLogger(__name__)
@@ -137,10 +138,19 @@ def import_gaia_ids(fname):
     return gaia_ids
 
 def import_gaia_ids_40pc(fname):
-    # 40 PC TARGET LIST
-    data = ascii.read(fname, delimiter=" ", header_start=0, data_start=1)
-    gaia_ids = [str(x) for x in data['Gaia_ID,']]
-    teffs = [int(d) for d in data['T_eff,']]
+    """
+    Gaia IDs and effective temperatures from the 40 pc target list, as
+    parallel lists: one entry per (row, ID), so a row carrying both a DR2
+    and a DR3 identifier is found by either.  Rows with no identifier are
+    omitted — they can never match a field catalogue.
+    """
+    tlist = target_list.read_target_list(fname)
+    gaia_ids, teffs = [], []
+    for gaia_id, row in tlist.id_rows():
+        teff = tlist.teff(row)
+        gaia_ids.append(gaia_id)
+        # 'N' is the sentinel the TEFF header already uses for unknown.
+        teffs.append('N' if teff is None else teff)
     return gaia_ids, teffs
 
 def find_targ_id(gaia_ids,fluxes,sp_ids,fname_ids):
