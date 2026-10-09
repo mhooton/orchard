@@ -1,0 +1,14 @@
+# Lines to ADD to the speculoos crontab on appct for shadow mode. Nothing existing changes: the nightly
+# cron lines keep doing the work, and the queue only records what it would do, in its own database under
+# mh_scratch. Times are appct local time (Europe/London), as for the existing lines.
+#
+#   watchdog  every 5 min    keep one shadow dispatcher running (it never launches anything)
+#   watch     every 30 min   one ESO watcher poll, 11:00-23:30 local (10:00-22:30 UTC in BST)
+#   lookback  21:15 daily    the 30-night look-back, after the nightly window
+#   report    07:30 daily    mh_scratch/appct-job-queue/shadow/reports/shadow_<date>.md
+#
+# --- orchard job queue: SHADOW MODE (records decisions only; the lines above still do the work) ---
+*/5 * * * * /export/data/SPECULOOSPipeline/mh_scratch/appct-job-queue/src/jobqueue/cron/queue-cron.sh --shadow watchdog
+*/30 11-23 * * * /export/data/SPECULOOSPipeline/mh_scratch/appct-job-queue/src/jobqueue/cron/queue-cron.sh --shadow watch
+15 21 * * * /export/data/SPECULOOSPipeline/mh_scratch/appct-job-queue/src/jobqueue/cron/queue-cron.sh --shadow lookback
+30 7 * * * /export/data/SPECULOOSPipeline/mh_scratch/appct-job-queue/src/jobqueue/cron/queue-cron.sh --shadow report
