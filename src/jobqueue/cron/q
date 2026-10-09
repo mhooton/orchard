@@ -1,0 +1,18 @@
+#!/bin/bash
+# q: the orchard job queue's command line, run inside orchard-server. Put it on PATH on appct
+# (for example: ln -s /appct/data/speculoos/orchard/src/jobqueue/cron/q ~/bin/q).
+#
+#   q status                 q add --class P2 --telescope Europa --night 20250101
+#   q pause P2 / q resume P2 q drain / q undrain
+#   q cancel 42 [--kill]     q requeue --signature "KeyError: 'gaia_dr3_id'"
+#   q --shadow status        the shadow database instead of the live one
+#
+# The database is only ever opened inside the container on appct (never from appcs, over NFS).
+
+SHADOW_HOME=/data/SPECULOOSPipeline/mh_scratch/appct-job-queue
+if [ "$1" = "--shadow" ]; then
+    shift
+    exec docker exec -i -e "ORCHARD_QUEUE_CONFIG=$SHADOW_HOME/shadow/config.json" \
+        -e "PYTHONPATH=$SHADOW_HOME/src:/opt/orchard/src" orchard-server python -m jobqueue "$@"
+fi
+exec docker exec -i -e ORCHARD_QUEUE_ROOT=/data/SPECULOOSPipeline/queue orchard-server python -m jobqueue "$@"

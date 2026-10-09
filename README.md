@@ -434,6 +434,19 @@ grep "FAILED" /data/SPECULOOSPipeline/PipelineOutput/v3/Io/logs/20260128_1_v3.lo
 
 ---
 
+#### Job Queue on appct
+
+`src/jobqueue/` is a priority queue for pipeline runs on appct, with an ESO watcher that queues each night as
+soon as its frames are at ESO and a daily 30-night look-back. It runs inside `orchard-server`:
+
+```bash
+docker exec orchard-server python -m jobqueue status
+```
+
+Design, shadow mode, the proposed crontab and the switch-over are in [docs/job-queue.md](docs/job-queue.md).
+
+---
+
 ### Environment Variables
 
 Key variables defined in `docker-compose.server.yml`:
