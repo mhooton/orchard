@@ -102,7 +102,9 @@ sends `SIGTERM` to one that has not polled for 10 minutes.
 Jobs survive a dispatcher restart: the new dispatcher finds them by PID (checked against the process start time,
 so a reused PID is not mistaken for the job) and collects their exit status from the status file. A job whose
 process vanished without a status file (container restart) is requeued once; the second time it fails as
-`vanished`.
+`vanished`. If only the runner dies (the OOM killer, say) while its command carries on, the job stays running
+until the whole process group has gone, so it is never started twice; it is no longer signalled, because its
+group can no longer be verified.
 
 ### The database
 
@@ -184,6 +186,11 @@ frame before re-downloading it, and the downloader creates empty night directori
 - each frame is hard-linked into the night directory only if no file of that name exists, so nothing is
   overwritten; the night directory is created only when there is a frame to put in it;
 - nothing outside staging is deleted, and `download_log.csv` is not touched.
+
+No test has exercised the real ESO download through this path. To try it once without touching the archive, give
+it a scratch destination: `python -m jobqueue jobs fetch --telescope Callisto --night 20260911 --rows <rows.json>
+--dest <scratch dir>` downloads, unpacks and transforms into the scratch directory and records nothing (a rows file
+is a JSON list of ESO rows, as the look-back writes them to `<queue_root>/fetch/`).
 
 ## The command line
 
