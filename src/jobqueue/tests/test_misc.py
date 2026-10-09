@@ -191,10 +191,40 @@ def test_shadow_report_compares_with_the_cron(cfg, store, clock):
                      'eso_rows': 874, 'transfer_count': 874, 'noted': 0, 'polls_unchanged': 0})
     store.watch_put({'telescope': 'Io', 'night': '20261008', 'state': 'no_data', 'noted': 1, 'polls_unchanged': 3,
                      'note': 'Io 20261008: no frames at ESO and no transfer-log entry; nothing to download or process'})
-    text = build_report(cfg, store, days=1, now=dt.datetime(2026, 10, 10, 7, 0))
+    text = build_report(dict(cfg, mode='shadow'), store, days=1, now=dt.datetime(2026, 10, 10, 7, 0))
     assert '| Europa | ready 09 15:00' in text
     assert '+4.0 h' in text                                    # would start 15:10, cron started 19:10
     assert 'cron download made 2 attempts' in text and 'cron counts ESO 874 / transfer 874 / downloaded 874' in text
     assert 'cron pipeline completed (log in v2)' in text
     assert 'Io 20261008: no frames at ESO' in text
     assert 'median +4.0 h earlier' in text
+
+
+def test_live_report_shows_jobs_results_and_delay(cfg, store, clock):
+    base = cfg['basedir']
+    lc = os.path.join(base, 'PipelineOutput', 'v2', 'Ganymede', 'output', '20261008', 'Sp0055-3052')
+    os.makedirs(lc)
+    open(os.path.join(lc, 'Sp0055-3052_I+z_5_diff.fits'), 'w').close()
+    clock.t = dt.datetime(2026, 10, 9, 15, 0)
+    dl, _ = store.add_job('P0', 'download', ['x'], telescope='Ganymede', night='20261008', est_minutes=10)
+    pl, _ = store.add_job('P0', 'pipeline', ['x'], telescope='Ganymede', night='20261008', est_minutes=30,
+                          depends_on=dl)
+    store.mark_running(dl)
+    clock.advance(minutes=8)
+    store.finish(dl, 0)
+    store.mark_running(pl)
+    clock.advance(minutes=22)
+    store.finish(pl, 0)
+    store.watch_put({'telescope': 'Ganymede', 'night': '20261008', 'state': 'enqueued', 'noted': 0,
+                     'polls_unchanged': 1, 'first_seen': '2026-10-09T14:00:00Z', 'ready_at': '2026-10-09T15:00:00Z',
+                     'download_job': dl, 'pipeline_job': pl})
+    rerun, _ = store.add_job('P1', 'pipeline', ['x'], telescope='Callisto', night='20260918', note='no light curves')
+    store.mark_running(rerun)
+    store.finish(rerun, 1, signature="KeyError: 'gaia_dr3_id'")
+    text = build_report(dict(cfg, mode='live'), store, days=1, now=dt.datetime(2026, 10, 10, 6, 30))
+    assert text.startswith('# Job queue daily report')
+    assert '| Ganymede | 09 15:00 | 09 15:00–09 15:08 | 09 15:08–09 15:30 | exit 0 | v2 | 0.5 h |' in text
+    assert 'first seen at ESO 09 14:00' in text and 'jobs 1 + 2' in text
+    assert 'Ready to done: median 0.5 h over 1 telescope-nights' in text and '1 failed job(s)' in text
+    assert "job 3 P1 pipeline Callisto 20260918: [deterministic] KeyError: 'gaia_dr3_id'" in text
+    assert '- job 3 pipeline Callisto 20260918: failed (no light curves)' in text

@@ -1,7 +1,7 @@
 SHELL=/bin/bash
 # Proposed speculoos crontab on appct once nightly processing goes through the queue (decisions Q3, Q4).
 # Times are appct local time (Europe/London). The five nightly lines are kept, commented out, for rollback:
-# to roll back, uncomment them and comment out the three queue lines (or reinstall the saved crontab).
+# to roll back, uncomment them and comment out the four queue lines (or reinstall the saved crontab).
 #
 # --- orchard job queue (live) ---
 # keep one dispatcher running inside orchard-server; starts the container only if it is down
@@ -10,6 +10,8 @@ SHELL=/bin/bash
 */30 11-23 * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh watch
 # 30-night look-back: fetch late frames add-only, rerun nights that gained frames or have no light curves (P1)
 15 21 * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh lookback
+# daily report: /export/data/SPECULOOSPipeline/queue/reports/report_<date>.md
+30 7 * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh report
 #
 # --- replaced by the queue (rollback: uncomment) ---
 #00 19 * * * source /home/speculoos/.bashrc; ulimit -u 2061801; docker-compose -f /appct/data/speculoos/orchard/docker/docker-compose.server.yml up -d; docker exec orchard-server bash -c "python download/SSO_download.py --dir /data/SPECULOOSPipeline --telescope Io --sdate $(date -d '-1 day'  +\%Y\%m\%d) --edate $(date -d 'today'  +\%Y\%m\%d) --max-retries 25" > "/appct/data/SPECULOOSPipeline/ESO_logs/$(date -d '-1 day'  +\%Y\%m\%d)Io.log" 2>&1 && docker exec orchard-server bash -c "./main/ZLP_pipeline.sh --force-platesolve 1 /data/SPECULOOSPipeline $(date -d '-1 day'  +\%Y\%m\%d) 8 2 Io"

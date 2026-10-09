@@ -10,7 +10,7 @@
 #   watchdog  every 5 min: start a dispatcher if none holds the lock; SIGTERM one that stopped polling
 #   watch     every 30 min through the afternoon: one ESO watcher poll
 #   lookback  daily: the 30-night look-back
-#   report    daily (shadow mode): write reports/shadow_<date>.md
+#   report    daily: write reports/report_<date>.md (live) or reports/shadow_<date>.md (shadow)
 
 CONTAINER=orchard-server
 COMPOSE=/appct/data/speculoos/orchard/docker/docker-compose.server.yml
@@ -68,6 +68,8 @@ case "$STEP" in
         q lookback
         ;;
     report)
-        q shadow-report --days 3 --out "$ROOT/reports/shadow_$(date -u +%Y%m%d).md" > /dev/null
+        NAME=report
+        [ "$MODE" = "shadow" ] && NAME=shadow
+        q report --days 3 --out "$ROOT/reports/${NAME}_$(date -u +%Y%m%d).md" > /dev/null
         ;;
 esac

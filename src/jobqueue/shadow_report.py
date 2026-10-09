@@ -1,4 +1,7 @@
-"""Shadow report: what the queue would have done, next to what the cron actually did.
+"""Daily report. Live mode: per telescope-night, when the night was ready at ESO, when its download and
+pipeline jobs ran, how they ended, whether light curves reached v2, and the delay from ready to done; then failed
+jobs, look-back actions and watcher notes. Shadow mode: what the queue would have done, next to what the cron
+actually did.
 
 Shadow side (the shadow database): when the watcher found each night ready, when the shadow dispatcher
 would have started its download and pipeline jobs and when they would have finished (simulated from
@@ -14,6 +17,7 @@ import os
 import re
 import statistics
 
+from .nights import products_state
 from .util import iso, last_night, night_str, parse_iso, utc_from_ts, utcnow
 
 PY_TS = re.compile(r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)')
@@ -82,11 +86,107 @@ def _hours(a, b):
     return (a - b).total_seconds() / 3600.0 if a and b else None
 
 
+def _span(job):
+    if not job:
+        return '-'
+    if job['state'] == 'queued':
+        return 'queued' + (' (retry)' if job['attempts'] else '')
+    start, end = parse_iso(job['started_at']), parse_iso(job['finished_at'])
+    if job['state'] == 'running':
+        return 'running since {}'.format(_hm(start))
+    return '{}–{}{}'.format(_hm(start), _hm(end), '' if job['state'] == 'done' else ' ' + job['state'])
+
+
+def _live_nights(cfg, store, nights, out):
+    basedir = cfg['basedir']
+    delays = []
+    for night in nights:
+        out.append('## Night {}'.format(night))
+        out.append('')
+        out.append('| Telescope | Ready at ESO | Download | Pipeline | Result | Light curves | Ready to done | Notes |')
+        out.append('|---|---|---|---|---|---|---|---|')
+        for tel in cfg['telescopes']:
+            w = store.watch_get(tel, night) or {}
+            pl = store.get_job(w['pipeline_job']) if w.get('pipeline_job') else None
+            dl = store.get_job(w['download_job']) if w.get('download_job') else None
+            ready = parse_iso(w.get('ready_at'))
+            if w.get('state') == 'enqueued':
+                ready_txt = _hm(ready)
+            elif w.get('state') == 'processed':
+                ready_txt = 'run outside the queue'
+            elif w:
+                ready_txt = '{} (ESO {}{})'.format(w['state'], w.get('eso_rows'),
+                                                   ' of {}'.format(w['transfer_count']) if w.get('transfer_count') else '')
+            else:
+                ready_txt = 'not seen'
+            result = '-'
+            if pl and pl['state'] in ('done', 'failed', 'cancelled'):
+                result = 'exit {}'.format(pl['exit_code']) if pl['state'] == 'done' else '{}: {}'.format(
+                    pl['state'], pl['failure_signature'] or '')
+            lcs = '-'
+            if pl and pl['state'] in ('done', 'failed'):
+                lcs = {'v2': 'v2', 'v3_only': 'v3 only', 'none': 'none'}[products_state(basedir, tel, night)]
+            delay = _hours(parse_iso(pl['finished_at']), ready) if pl and pl['state'] == 'done' and ready else None
+            if delay is not None:
+                delays.append(delay)
+            notes = []
+            if w.get('first_seen') and ready:
+                notes.append('first seen at ESO {}'.format(_hm(parse_iso(w['first_seen']))))
+            if w.get('note'):
+                notes.append(w['note'])
+            counts = download_counts(basedir, tel, night)
+            if counts and dl:
+                notes.append('download log: ESO {} / transfer {} / on disk {}'.format(
+                    counts.get('ESO_Archive'), counts.get('Transferred'), counts.get('Downloaded')))
+            if pl:
+                notes.append('jobs {}{}'.format('{} + '.format(dl['id']) if dl else '', pl['id']))
+            out.append('| {} | {} | {} | {} | {} | {} | {} | {} |'.format(
+                tel, ready_txt, _span(dl) if dl else ('-' if not pl else 'none'), _span(pl), result, lcs,
+                '{:.1f} h'.format(delay) if delay is not None else '-', '; '.join(notes)))
+        out.append('')
+    return delays
+
+
 def build_report(cfg, store, days=3, now=None):
     now = now or utcnow()
     basedir = cfg['basedir']
     ln = last_night(now)
     nights = [night_str(ln - dt.timedelta(days=k)) for k in range(days)]
+    since = iso(now - dt.timedelta(days=days))
+    if cfg['mode'] == 'live':
+        out = ['# Job queue daily report, {}'.format(iso(now)), '',
+               'Times are UTC (day hh:mm). "Ready to done" runs from the watcher finding the night complete at '
+               'ESO (or Artemis on disk) to the end of its pipeline job.', '']
+        delays = _live_nights(cfg, store, nights, out)
+        failed = store.conn.execute("SELECT * FROM jobs WHERE state = 'failed' AND finished_at >= ? ORDER BY id",
+                                    (since,)).fetchall()
+        if failed:
+            out.append('## Failed jobs')
+            out.append('')
+            for j in failed:
+                out.append('- job {} {} {} {} {}: [{}] {} (log {})'.format(
+                    j['id'], j['class'], j['kind'], j['telescope'] or '', j['night'] or '', j['failure_kind'],
+                    j['failure_signature'] or '', j['log_path'] or '-'))
+            out.append('')
+        p1 = store.conn.execute("SELECT * FROM jobs WHERE class = 'P1' AND created_at >= ? ORDER BY id",
+                                (since,)).fetchall()
+        if p1:
+            out.append('## P1 jobs (look-back)')
+            out.append('')
+            for j in p1:
+                out.append('- job {} {} {} {}: {}{}'.format(
+                    j['id'], j['kind'], j['telescope'] or '', j['night'] or '', j['state'],
+                    ' ({})'.format(j['note']) if j['note'] else ''))
+            out.append('')
+        _trailer(store, since, out, waits_title='Jobs that had to wait')
+        summary = '{} failed job(s) in the last {} days.'.format(len(failed), days)
+        if delays:
+            summary = ('Ready to done: median {:.1f} h over {} telescope-nights (range {:.1f} to {:.1f} h). '
+                       .format(statistics.median(delays), len(delays), min(delays), max(delays)) + summary)
+        out.insert(4, summary)
+        out.insert(5, '')
+        return '\n'.join(out) + '\n'
+
     out = ['# Job queue shadow report, {}'.format(iso(now)), '',
            'Times are UTC (day hh:mm). "Would" times come from the shadow dispatcher, which starts nothing and '
            'treats a job as finished after its estimate. "Cron" times come from the production logs.', '']
@@ -139,10 +239,19 @@ def build_report(cfg, store, days=3, now=None):
                 '{:+.1f} h'.format(gain) if gain is not None else '-', '; '.join(notes) or ''))
         out.append('')
 
-    since = iso(now - dt.timedelta(days=days))
+    _trailer(store, since, out, waits_title='Shadow jobs that had to wait')
+    if gains:
+        out.insert(4, 'Pipeline start, shadow versus cron: median {:+.1f} h earlier over {} telescope-nights '
+                      '(range {:+.1f} to {:+.1f} h).'.format(statistics.median(gains), len(gains), min(gains),
+                                                             max(gains)))
+        out.insert(5, '')
+    return '\n'.join(out) + '\n'
+
+
+def _trailer(store, since, out, waits_title):
     waits = store.events(since=since, kinds=['waiting'])
     if waits:
-        out.append('## Shadow jobs that had to wait')
+        out.append('## ' + waits_title)
         out.append('')
         for e in waits[-40:]:
             out.append('- {} job {} {} {}: {}'.format(e['ts'], e['job_id'], e['telescope'] or '', e['night'] or '',
@@ -155,7 +264,8 @@ def build_report(cfg, store, days=3, now=None):
         out.append('')
         for r in actions:
             out.append('- {} {}: {} (ESO {} rows, disk {} files, products {})'.format(
-                r['telescope'], r['night'], r['last_action'], r.get('eso_rows'), r.get('disk_files'), r.get('products')))
+                r['telescope'], r['night'], r['last_action'], r.get('eso_rows'), r.get('disk_files'),
+                r.get('products')))
         out.append('')
     notes = store.events(since=since, kinds=['note', 'eso-error'])
     if notes:
@@ -164,9 +274,3 @@ def build_report(cfg, store, days=3, now=None):
         for e in notes:
             out.append('- {} {}'.format(e['ts'], e['message']))
         out.append('')
-    if gains:
-        out.insert(4, 'Pipeline start, shadow versus cron: median {:+.1f} h earlier over {} telescope-nights '
-                      '(range {:+.1f} to {:+.1f} h).'.format(statistics.median(gains), len(gains), min(gains),
-                                                             max(gains)))
-        out.insert(5, '')
-    return '\n'.join(out) + '\n'

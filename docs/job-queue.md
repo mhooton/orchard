@@ -212,7 +212,7 @@ q requeue --signature "gaia_dr3_id" --dry-run                 # then without --d
 q stop                         # stop the dispatcher; jobs carry on, the watchdog restarts it
 q probe                        # read-only: load, memory, disk %util, code version, locks held outside the queue
 q lookback --dry-run           # what the look-back would do today, queueing nothing
-q shadow-report --days 3       # shadow decisions next to what the cron did
+q report --days 3              # the daily report (live: jobs, results, delays; shadow: next to the cron)
 ```
 
 ## Shadow mode
@@ -267,11 +267,16 @@ After a clean week of shadow reports. On appct as `speculoos`, in the daytime:
    directory, so nothing the pipeline runs changes. Check with `docker exec orchard-server python -m jobqueue
    probe`. Writing `src/VERSION` (decision K6) belongs with the next full deploy; until then jobs record a
    `tree-<hash>` fingerprint.
-2. **Crontab**: save it (`crontab -l > ~/crontab.backup.<date>`), add the three queue lines from
-   `src/jobqueue/cron/crontab.live`, and comment out the five nightly lines (19:00 Io … 23:00 Artemis). Leave the
-   05:00 and 06:00 lines. `crontab.live` is the whole proposed crontab, for reference.
+2. **Crontab**: save it (`crontab -l > ~/crontab.backup.<date>`), add the four queue lines from
+   `src/jobqueue/cron/crontab.live` (watchdog, watcher, look-back, daily report), remove any shadow lines, and
+   comment out the five nightly lines (19:00 Io … 23:00 Artemis). Leave the 05:00 and 06:00 lines.
+   `crontab.live` is the whole proposed crontab, for reference.
 3. **Watch the first day**: `q status`, `queue/logs/watcher.log`, the P0 jobs' logs, `ESO_logs/`, and the usual
-   pipeline emails, which now arrive in the afternoon. Io's nightly INCOMPLETE email stops.
+   pipeline emails, which now arrive in the afternoon. Io's nightly INCOMPLETE email stops. Every morning
+   `queue/reports/report_<date>.md` lists, per telescope-night, when it was ready at ESO, when its download and
+   pipeline ran, how they ended, whether light curves reached v2 and the delay from ready to done, then failed
+   jobs, look-back jobs and watcher notes. The queue sends no email of its own, so a broken watcher or dispatcher
+   shows up only there and in `q status`.
 4. The first live look-back may queue a dozen P1 jobs (see the dry run below). Run `q lookback --dry-run` first if
    you want to see them, or `q pause P1` until you have.
 

@@ -384,10 +384,13 @@ def build_parser():
     s.add_argument('--json', help='also write the per-night results here')
     s.set_defaults(fn=cmd_lookback)
 
-    s = sub.add_parser('shadow-report', help='compare shadow decisions with what the cron actually ran')
-    s.add_argument('--days', type=int, default=3)
-    s.add_argument('--out')
-    s.set_defaults(fn=cmd_shadow_report)
+    for name, text in (('report', 'daily report: per night, when it was ready, its jobs and results (live), or '
+                                  'shadow decisions next to what the cron ran (shadow)'),
+                       ('shadow-report', 'same as report')):
+        s = sub.add_parser(name, help=text)
+        s.add_argument('--days', type=int, default=3)
+        s.add_argument('--out')
+        s.set_defaults(fn=cmd_shadow_report)
 
     s = sub.add_parser('probe', help='read-only: load, memory, disk %%util, code version, external locks')
     s.set_defaults(fn=cmd_probe)
