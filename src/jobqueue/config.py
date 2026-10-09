@@ -28,7 +28,9 @@ DEFAULTS = {
     'p0_reserve_cores': 40,
     'p0_reserve_window_utc': ['11:00', '01:00'],
     'telescope_lock': True,                   # until a per-run catcache lands (decision K7)
-    'semaphores': {'eso': 2},                 # concurrent ESO download/fetch jobs
+    # concurrent ESO download/fetch jobs; P2/P3 fetches (backfill, q add --download) also take eso_bulk, so they
+    # never hold both eso slots and the nightly downloads always find one free
+    'semaphores': {'eso': 2, 'eso_bulk': 1},
     'timeout_factor': 3.0,
     'min_timeout_minutes': 120,
     'kill_grace_seconds': 120,
@@ -86,6 +88,11 @@ DEFAULTS = {
         'recent_days': 5,              # SSO_download.py is only ever run on nights this recent
     },
 
+    # the add-only fetch (fetch.py): downloads in flight per job, tries per file, first backoff (doubles each
+    # try), consecutive network failures before a job gives up for now, rows per staging batch, and the
+    # download rate assumed for estimates (MB/s of ESO's compressed size)
+    'fetch': {'workers': 3, 'attempts': 4, 'backoff_seconds': 30, 'breaker': 8, 'batch': 25, 'mb_per_s': 4.0},
+
     'lookback': {
         'nights': 30,
         'max_fetch_rows_per_night': 3000,
@@ -142,6 +149,8 @@ def queue_paths(cfg):
         'job_logs': os.path.join(root, 'logs', 'jobs'),
         'fetch': os.path.join(root, 'fetch'),
         'staging': os.path.join(root, 'staging'),
+        'quarantine': os.path.join(root, 'quarantine'),
+        'manifest': os.path.join(root, 'fetch', 'manifest.csv'),
         'reports': os.path.join(root, 'reports'),
     }
 
