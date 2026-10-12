@@ -401,3 +401,27 @@ def test_splightcurve_keeps_trail_stars_out_of_the_ensemble():
     lcurves[1].w3 = 0                    # and init_weights, as the iteration's reset calls it, keeps it out
     lcurves[1].init_weights()
     assert lcurves[1].weight == 0 and lcurves[1].w1 == 0
+
+
+def test_best_aperture_avoids_smear_trails():
+    pytest.importorskip('fitsio')
+    pytest.importorskip('matplotlib')
+    from diff_photometry import SPlightcurve as spl
+
+    def choose(runs):
+        """The pipeline's j = 3..8 loop: each run compares itself with what the file holds."""
+        stored = None
+        for ap, metric, on_trail in runs:
+            if stored is None or spl.replaces_best_ap(stored, metric, on_trail):
+                stored = '%d %r %d' % (ap, metric, on_trail)
+        return stored.split()
+
+    # TOI-1227 on Ganymede 20250408: apertures 6-8 reach the G 8.8 star's trail
+    assert choose([(3, 5e-6, 0), (4, 4e-6, 0), (5, 6e-6, 0), (6, 1e-6, 1), (7, 9e-7, 1), (8, 8e-7, 1)])[0] == '4'
+    # a clear aperture displaces a better one on a trail
+    assert choose([(3, 1e-6, 1), (4, 9e-6, 0)])[0] == '4'
+    # all on trails: the best metric still wins, and the file says so
+    assert choose([(3, 3e-6, 1), (4, 2e-6, 1), (5, 4e-6, 1)]) == ['4', '2e-06', '1']
+    # files written before the flag have two fields and count as clear
+    assert spl.replaces_best_ap('6 4.2e-06', 1e-6, False)
+    assert not spl.replaces_best_ap('6 4.2e-06', 1e-6, True)
