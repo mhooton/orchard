@@ -632,7 +632,7 @@ Whether a frame was shutterless is decided per frame:
 
 Every T6 product of an instrument with smear parameters records the decision: `SMEARCOR` (T/F), and when corrected `SMEARTRD` (t_read used), `SMEARTAU`, `SMEARSRC` (override/CAMSHUTT) and `SMSATROW` (rows containing a clipped pixel).
 
-**Known limit:** a saturated pixel's lost charge is not recorded, so its trail is under-corrected in every pixel downstream of it in that row. `saturated_trail_mask()` marks those pixels; flagging the stars that sit on them is not yet done.
+**Known limit, flagged rather than corrected:** a saturated pixel's lost charge is not recorded, so its trail is under-corrected in every pixel downstream of it in that row. T6 records those rows in the frame header rather than storing a mask: `SMTRAXIS`/`SMTRDIR` give the geometry and `SMTR0001`, `SMTR0002`, … hold runs of consecutive rows as `'L:P,P,…'` (first row of the run, then the x of the first clipped pixel in each row, 1-based). That is a few cards per saturated star. T9 (`condense_photometry.py`) turns these into `SMEAR_AP` in `output.fits`, one int16 per star and frame: the smallest of the 13 apertures that overlaps a trail pixel. It is 0 if none does and −1 if not assessed, so a star is affected at aperture *j* when `0 < SMEAR_AP <= j`. T10 never uses a star that is affected in any frame as a comparison star (`SMEARED` in the weights table). It marks the target's affected frames in `SMEAR_FLAG` (the `FLAGS` table and the last column of the `_MCMC` file) and keeps them in the light curve. How big the residual is, measured on Ganymede 20250408: behind a G = 8.8 star it is ~300 ADU per pixel across its 12–14 clipped rows, 17× the sky noise. Nothing shows upstream, or in the same rows on the shuttered night before. That puts 2–10% into TOI-1227's apertures 7–8.
 
 **Checking a night:** `src/calibration/smear_check.py` measures the trail behind bright isolated stars (or the ramp across a flat) and says whether frames were shutterless and what `t_read` they imply. Use it before adding an override window — a wrong window de-smears shuttered frames, and on a 7 s flat that puts a ~60% ramp into the master flat:
 
@@ -849,6 +849,7 @@ Performs forced aperture photometry at catalogue positions across all science fr
   - Headers: SEEING, FWHM, CLOUD_S, PSF parameters, frame shifts
 - `{filelist}_phot` - List of successfully processed frames
 - `{GAIA_ID}_stack_catalogue_pm.fits` - PM-corrected reference catalogue
+- `{GAIA_ID}_{filter}_{date}_output.fits` (condensed by `condense_photometry.py`): per-star, per-frame fluxes in 13 apertures, positions, peaks, and `SMEAR_AP` (stars on a saturated smear trail; see [Shutterless frames](#shutterless-frames-readout-smear))
 
 **Parameters:**
 - `--apsize`: Aperture radius in pixels (default: 4, typically matches FWHM)
@@ -881,6 +882,7 @@ Generates final calibrated light curves through differential photometry. Selects
      - Low intrinsic variability (RMS < threshold)
      - Angular separation (avoid close companions)
      - No saturation or flags
+     - No aperture on a saturated star's smear trail in any frame (shutterless frames; see [Shutterless frames](#shutterless-frames-readout-smear))
    - Typical selection: 10-50 comparison stars per field
 
 3. **Iterative Differential Photometry:**
@@ -921,7 +923,7 @@ Generates final calibrated light curves through differential photometry. Selects
   - Individual comparison star light curves
   - Stellar catalogue (Gaia parameters, Teff, colours)
   - Image metadata (airmass, FWHM, seeing, etc.)
-  - Quality flags and weights
+  - Quality flags and weights (`FLAGS`: `BW_FLAG` bad weather, `SMEAR_FLAG` target aperture on a saturated smear trail; `WEIGHTS_{ap}`: `SATURATED`, `LOWFLUX`, `SMEARED`)
 
 **ASCII Files:**
 - `{GAIA_ID}_{filter}_{aperture}_MCMC` - Light curve for transit modelling:
