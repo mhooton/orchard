@@ -1,0 +1,11 @@
+# Shutter state for frames whose CAMSHUTT header is missing (before 2026-07-17)
+# or wrong (Astra writes CAMSHUTT from a static config value that is changed by
+# hand when a camera is switched). A row here beats the header for every frame
+# from that TELESCOP with start_utc <= DATE-OBS < end_utc.
+#
+# camshutt: T = mechanical shutter used, F = shutterless (frame gets de-smeared).
+# Only add a window after confirming it with calibration/smear_check.py, which
+# measures the trail asymmetry behind bright stars: guessing wrong de-smears a
+# shuttered frame, or leaves a shutterless one uncorrected.
+telescope,start_utc,end_utc,camshutt,note
+SPECULOOS-GANYMEDE,2025-04-08T12:00:00,2025-04-10T12:00:00,F,smear_check 2026-10-12: nights 20250408-09 shutterless (TOI-1227 20 s; Sp1429-6240 10 s); last shuttered flat 2025-04-08T10:32; night 20250410 shuttered

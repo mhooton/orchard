@@ -7,6 +7,7 @@ from astropy.io import fits as pyfits
 from calibration.pipeutils import (get_instrument_parameters, apply_image_slice, clean_bad_pixels, open_fits_file,
                                    create_dark_dict, create_flat_dict, frame_telescope)
 from calibration import readout
+from calibration.smear import correct_frame
 from functools import partial
 from multiprocessing.dummy import Pool as ThreadPool
 import timeit
@@ -76,9 +77,14 @@ def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, 
 
             # Apply corrections
             if hasattr(dark, 'shape') and dark.shape == data.shape:
-                corrected = (data - overscan - bias - (dark * exposure)) / flat_dict[filter]
+                signal = data - overscan - bias - (dark * exposure)
             else:
-                corrected = (data - overscan - bias) / flat_dict[filter]
+                signal = data - overscan - bias
+
+            # A shutterless frame is de-smeared before the flat: the trail charge
+            # was collected by the upstream pixels, not the one it lands in.
+            signal = correct_frame(signal, hdulist[0].header, params, raw=data)
+            corrected = signal / flat_dict[filter]
 
             # print("BPM type:", type(bpm))
             # print("BPM dtype:", bpm.dtype)

@@ -29,7 +29,8 @@ import glob
 import numpy as np
 from astropy.io import fits as pyfits
 from astropy.stats import sigma_clip
-from calibration.pipeutils import apply_image_slice, open_fits_file, get_jd_header_name
+from calibration.pipeutils import apply_image_slice, open_fits_file, get_jd_header_name, get_instrument_parameters
+from calibration.smear import correct_frame
 import warnings
 from astropy.io.fits.verify import VerifyWarning
 warnings.filterwarnings('ignore', category=VerifyWarning)
@@ -104,6 +105,7 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
         filt = filt.replace("'", "")
         print("Create Master Flat in " + filt)
         datamatrix = []
+        n_desmeared = 0
         # loop through each flat image
         for line in open(i):  # open(inlist):
             stripped = line.strip()
@@ -117,6 +119,8 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
                 else:
                     overscan = overscan_data  # Will be 0. if no overscan configured
                 exposure = hdulist[0].header['exptime']
+                header = hdulist[0].header.copy()
+                params = get_instrument_parameters(hdulist)
                 # SPECULOOS data doesn't have modified julian date, it uses UTC or julian date
                 jd_header = get_jd_header_name(hdulist)
                 jd = hdulist[0].header[jd_header.lower()]  # or however the header key formatting works
@@ -144,6 +148,14 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
                 print("WARNING: Dark and Flat dimensions do NOT match! Using UNCORRECTED Flat images!")
                 print("Master Dark dimensions: ", np.shape(dark))
                 print("Master Flat dimensions: ", np.shape(data))
+
+            # A flat taken shutterless carries a large readout ramp (43% on a
+            # 7.75 s Ganymede twilight flat); remove it before normalising.
+            corrected1 = correct_frame(corrected1, header, params, raw=data)
+            if header.get('SMEARCOR'):
+                n_desmeared += 1
+                print(f"De-smeared shutterless flat {os.path.basename(stripped)} "
+                      f"(tau {header['SMEARTAU']:.3g}, shutter state from {header['SMEARSRC']})")
 
             nflat_files += 1
 
@@ -206,7 +218,9 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
         ext = os.path.splitext(flatname)[1]
         flname = os.path.splitext(flatname)[0]
         outname = outdir + flname + '_' + filt + ext
-        pyfits.PrimaryHDU(normflat).writeto(outname, overwrite=True)
+        flat_hdu = pyfits.PrimaryHDU(normflat)
+        flat_hdu.header['NSMEARED'] = (n_desmeared, 'Input flats de-smeared (taken shutterless)')
+        flat_hdu.writeto(outname, overwrite=True)
         print('flat done')
 
     # write non-normalised, corrected flat frame to file 'totalname'
