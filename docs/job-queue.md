@@ -30,7 +30,7 @@ The completeness audit of 8–9 October 2026 found three things this addresses:
 |---|---|---|
 | P0 | last night: its download, then its pipeline run | the ESO watcher |
 | P1 | a recent night that gained frames, or has no light curves | the look-back, and fetch jobs |
-| P2 | backlog work packages (later) | `q add` |
+| P2 | backlog work: old nights to download and/or reprocess | `q add` (`--download`, `--from-file`) |
 | P3 | background: 16-bit sweep, PWV-only replays, the nightly ledger (later) | `q add` |
 
 ### Admission
@@ -68,6 +68,7 @@ past three times its estimate (floor 120 min) and an explicit `q cancel --kill`.
 | `night:<TEL>:<NIGHT>` | every job on that night | raw and output directories of one night |
 | `target:<NAME>` | pipeline jobs, per target | `PipelineOutput/v2/StackImages` is shared across telescopes and nights |
 | `sem:eso` | download and fetch jobs | at most `semaphores.eso` (2) at once |
+| `sem:eso_bulk` | P2 and P3 fetch jobs as well | at most `semaphores.eso_bulk` (1), so bulk downloads never hold both ESO slots and the nightly download always finds one free |
 
 Pipeline and download processes the queue did not start (the cron, a person, a replay) hold the same locks: the
 dispatcher reads them from `/proc/*/cmdline` inside the container. Processes in other containers
@@ -177,20 +178,72 @@ Other cases:
 ### The add-only fetch
 
 `SSO_download.py` must never be looped over old nights: `transformation_check()` deletes every pre-Astra Callisto
-frame before re-downloading it, and the downloader creates empty night directories and rewrites
-`download_log.csv`. `jobqueue/fetch.py` only adds:
+frame before re-downloading it; it counts only `.fits`/`.fts` files as present, so it fetches the 691 `.fits.fz`
+nights and every unpacked SPIRIT night all over again (and unpacking with `overwrite=True` wipes the WCS T7
+wrote into those raw frames); it duplicates the 2018 ACP-named frames; and it creates empty night directories,
+rewrites `download_log.csv` and emails every night. `jobqueue/fetch.py` is the one download path for anything
+that is not last night, used by the look-back, by `q add --download` and by the backfill. It only adds:
 
-- frames are downloaded into a private staging directory on the same filesystem;
+- **what is missing** is decided by `nights.diff_eso_disk`: an ESO row is present if a file named after its
+  dp_id exists with any FITS suffix (so `.fits.fz` counts), if it is a SPIRIT datacube and frames unpacked from
+  it are on disk (see the look-back), or if a frame under another name, in the night directory or its
+  `AutoFlat/` and `Calibration/` subdirectories, has the same `DATE-OBS`. ESO's dp_id is `SPECU<n>.<DATE-OBS>`:
+  ACP's `Sp1609-3431-S001-R001-C001-I+z.fts` on Io 2018-09-05 has `DATE-OBS = '2018-09-05T23:11:08.710'` and is
+  `SPECU1.2018-09-05T23:11:08.710` at ESO, with identical pixels (ESO stores the 2018 frames as float32, so
+  their copies take twice the disk);
+- each file is downloaded under a temporary name into `<queue_root>/staging/` (same filesystem as the archive),
+  at most `fetch.workers` (3) at a time, each with `fetch.attempts` (4) tries and exponential backoff from 30 s;
+  after 8 network failures in a row the job stops and exits 75, so the queue retries it an hour later. gzip
+  and compress data are decompressed as `request_eso.py` does;
+- each file is **verified** before anything else happens: `SIMPLE = T`, a size that is a multiple of 2,880,
+  sane `BITPIX` and `NAXISn`, and every HDU's header and data accounted for by the size. A truncated
+  download is fetched again;
 - datacubes are unpacked there (`download.unpack_datacubes`), and the Astra transform is applied there, only to
-  frames whose `OBSERVER` is Astra and that lack `ASTRAROT`/`ASTRAMIR`;
-- each frame is hard-linked into the night directory only if no file of that name exists, so nothing is
-  overwritten; the night directory is created only when there is a frame to put in it;
-- nothing outside staging is deleted, and `download_log.csv` is not touched.
+  frames whose `OBSERVER` is Astra and that lack `ASTRAROT`/`ASTRAMIR` (ANDOR rotated, SPIRIT mirrored, by
+  `download.astra_transform` as in the nightly download); every frame is verified again, and an Astra frame
+  still without the keyword is not placed;
+- each frame is hard-linked into the night directory only if no file with its stem exists there (any FITS
+  suffix) and no differently named frame has its `DATE-OBS`; nothing is overwritten, the night directory is
+  created only when there is a frame to put in it, nothing outside staging is deleted, and `download_log.csv`
+  is not touched;
+- every file added goes into `<queue_root>/fetch/manifest.csv`: time, telescope, night, action, file, ESO dp_id
+  (the cube's, for unpacked frames), dp_type, object, bytes, md5 and job, so the additions can be audited or
+  undone.
 
-No test has exercised the real ESO download through this path. To try it once without touching the archive, give
-it a scratch destination: `python -m jobqueue jobs fetch --telescope Callisto --night 20260911 --rows <rows.json>
---dest <scratch dir>` downloads, unpacks and transforms into the scratch directory and records nothing (a rows file
-is a JSON list of ESO rows, as the look-back writes them to `<queue_root>/fetch/`).
+Two modes swap files instead of only adding, and only when asked: `--replace invalid` (`q add --repair`) also
+re-fetches frames on disk that fail verification, such as the ~300 truncated raw frames (decision G3);
+`--replace all` (`q add --refetch`) fetches the whole night again and swaps every frame that differs from the
+fresh copy. A swap first hard-links the old file into `<queue_root>/quarantine/<TEL>/<NIGHT>/`, then renames
+the verified fresh copy over it, so it is atomic and the old file is kept (the manifest records `replaced`,
+the old size and md5, and where it went). A `.fits.fz` frame is never swapped for a `.fits` one.
+
+A fetch job with `--rerun-class P1` (the look-back) queues a rerun of the night if it added science frames;
+with `--rerun-class none` it only downloads, and whoever asked for it queues the pipeline run (below). Exit
+0 means the pass finished (rows ESO does not have, or keeps serving broken, are listed in the log and the
+result file); 75 means some rows failed for network reasons and may work later.
+
+To try it without touching the archive, point a scratch queue root at a scratch archive: a `config.json` there
+with `{"basedir": "<scratch>/base"}`, then `ORCHARD_QUEUE_ROOT=<scratch>/queue python -m jobqueue jobs fetch
+--telescope Callisto --night 20261005 --rows <rows.json> --rerun-class none`, run from a directory holding the
+code to test (`python -m` finds `jobqueue` in the working directory before `PYTHONPATH`). `--dest <dir>`
+instead downloads into a plain directory and records nothing.
+
+## Downloading and processing old nights
+
+`q add --download` asks for both at once: an add-only fetch of whatever ESO holds for the night that the disk
+lacks, then the pipeline run, as a job that waits for the fetch and is cancelled if the fetch fails. The ESO
+query and the comparison run when the request is made, so `q add` says how many frames, and roughly how many
+GB, the fetch will bring, and queues no fetch if nothing is missing. `--download-only` queues just the fetch.
+
+A file of requests in the format of `manual_runs/backlog/v3_backlog.txt` (`TEL,DATE,DOWNLOAD,DELETE,PROCESS[,TARGETS]`)
+queues them all: `q add --class P2 --from-file backlog.csv`. Every line is checked first, and nothing is queued
+if any line is bad (an unknown telescope, a date that is not `YYYYMMDD`, flags other than 0/1, DELETE without
+DOWNLOAD, DOWNLOAD for Artemis). `DELETE=1` is taken as `--refetch`: nothing is deleted. Compared with
+`v3_manual_process.sh`, the same lines get the queue's priorities, locks, disk throttling, retries, per-job
+logs and exit codes, and a failed download no longer leads to a pipeline run on a half-empty night.
+
+The ESO backfill (decision D3) is the same thing with `--download-only` lines: what it adds is in the
+manifest, and the nights it fills can then be queued for processing with `PROCESS=1` lines.
 
 ## The command line
 
@@ -203,6 +256,9 @@ q status --resources           # also load, memory and disk %util (samples for 3
 q show 42                      # one job and all its events
 q add --class P2 --telescope Europa --night 20250101          # a pipeline night (targets read from the frames)
 q add --class P2 --telescope Europa --night 20250101 --no-T12 --targets "Sp0246+1625"
+q add --class P2 --telescope Europa --night 20250412 --download         # fetch what is missing, then run it
+q add --class P2 --telescope Europa --night 20251126 --download-only --repair   # also re-fetch truncated frames
+q add --class P2 --from-file backlog.csv --dry-run                         # TEL,DATE,DOWNLOAD,DELETE,PROCESS[,TARGETS]
 q add --class P3 --kind sweep --cores 2 --no-disk-heavy --estimate 30 -- python tools/x.py
 q pause P2                     # resume P2 | pause all | resume all
 q drain                        # start nothing new, let running jobs finish (q undrain)
@@ -297,7 +353,9 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `max_cores`, `load_max`, `mem_min_gb`, `disk_util_max` | 112, 100, 64, 70 | admission |
 | `p0_reserve_cores`, `p0_reserve_window_utc` | 40, 11:00–01:00 | |
 | `telescope_lock` | true | false once the per-run catcache lands |
-| `semaphores.eso` | 2 | concurrent download/fetch jobs |
+| `semaphores.eso`, `semaphores.eso_bulk` | 2, 1 | concurrent download/fetch jobs; P2/P3 fetches at once |
+| `fetch.workers`, `fetch.attempts`, `fetch.backoff_seconds`, `fetch.breaker` | 3, 4, 30, 8 | downloads in flight per job, tries per file, first backoff, network failures before a job gives up for now |
+| `fetch.batch`, `fetch.mb_per_s` | 25, 4 | rows per staging batch; download rate assumed for estimates |
 | `timeout_factor`, `min_timeout_minutes` | 3, 120 | |
 | `retry_delay_minutes`, `max_retries` | 60, 2 | transient failures |
 | `pipeline_cores` | 20 | sets `N_CORES` for the job |
@@ -318,7 +376,8 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `src/jobqueue/signatures.py` | failure signatures, transient or deterministic |
 | `src/jobqueue/eso.py` | authenticated read-only TAP |
 | `src/jobqueue/nights.py` | disk side: cube-aware diff, FITS headers, products, transfer log |
-| `src/jobqueue/watcher.py`, `lookback.py`, `fetch.py`, `jobs.py`, `jobspec.py` | nightly, look-back, add-only fetch |
+| `src/jobqueue/watcher.py`, `lookback.py`, `jobs.py`, `jobspec.py` | nightly, look-back, job bodies and descriptions |
+| `src/jobqueue/fetch.py` | the add-only fetch: verified, paced downloads, placing, swaps, manifest |
 | `src/jobqueue/shadow_report.py` | the shadow report |
 | `src/jobqueue/cli.py` | `q` |
 | `src/jobqueue/cron/` | `queue-cron.sh`, `q`, `crontab.shadow`, `crontab.live` |
