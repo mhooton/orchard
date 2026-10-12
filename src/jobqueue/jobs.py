@@ -24,8 +24,8 @@ import threading
 from . import jobspec
 from .config import ensure_dirs, load_config, queue_paths
 from .nights import (FitsError, diff_eso_disk, foreign_times, is_cube_layout, list_frames, night_dir, read_header,
-                     row_files, science_count, transformation_check_kind, transformation_check_would_delete,
-                     verify_frame)
+                     row_files, science_count, strip_suffix, transformation_check_kind,
+                     transformation_check_would_delete, verify_frame)
 from .util import parse_night, read_json, utcnow, write_json_atomic
 
 EX_TEMPFAIL = 75
@@ -110,11 +110,33 @@ def invalid_rows(path, rows, names):
     return out
 
 
+def neighbour_stems(path):
+    """Frame stems in the night directories either side of path. Some frames sit in the next night's directory
+    (161 rows at ESO, almost all morning darks); they must not be fetched again into their own night."""
+    parent, night = os.path.split(os.path.normpath(path))
+    try:
+        d = parse_night(night)
+    except ValueError:
+        return set()
+    out = set()
+    for k in (-1, 1):
+        out.update(strip_suffix(n) for n in list_frames(os.path.join(parent, (d + dt.timedelta(days=k)).strftime(
+            '%Y%m%d'))))
+    return out
+
+
 def plan_fetch(rows, path, replace='never'):
-    """(todo, summary) for a night: the rows to fetch given what is on disk (cube- and ACP-name-aware)."""
+    """(todo, summary, foreign) for a night: the rows to fetch given what is on disk (cube- and ACP-name-aware,
+    and not rows filed in the next or previous night's directory)."""
     names = list_frames(path)
     foreign = foreign_times(path)
     present, missing, _ = diff_eso_disk(rows, names, foreign)
+    if missing:
+        beside = neighbour_stems(path)
+        elsewhere = [r for r in missing if r['dp_id'] in beside]
+        if elsewhere:
+            missing = [r for r in missing if r['dp_id'] not in beside]
+            present += elsewhere
     if replace == 'all':
         todo = list(rows)
     elif replace == 'invalid':

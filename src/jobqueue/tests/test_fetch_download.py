@@ -290,6 +290,15 @@ def test_download_only_fetch_lists_the_night_itself_and_queues_no_rerun(cfg, sto
     assert store.jobs() == []                                         # download only: nothing queued
 
 
+def test_a_frame_filed_under_the_next_night_is_not_fetched_again(tmp_path):
+    images = tmp_path / 'images'
+    put(images / '20250608' / 'SPECU4.2025-06-08T14:58:00.000.fits', image_bytes())     # a morning dark, next dir
+    rows = [{'dp_id': 'SPECU4.2025-06-08T14:58:00.000', 'dp_type': 'DARK'},
+            {'dp_id': 'SPECU4.2025-06-08T14:59:00.000', 'dp_type': 'DARK'}]
+    todo, summary, _ = jobs.plan_fetch(rows, str(images / '20250607'))
+    assert [r['dp_id'] for r in todo] == ['SPECU4.2025-06-08T14:59:00.000'] and summary['missing'] == 1
+
+
 def test_download_only_fetch_asks_to_be_retried_after_network_trouble(cfg, store, monkeypatch):
     monkeypatch.setattr(jobs, '_archive', lambda cfg: Archive([{'dp_id': 'SPECU2.A', 'dp_type': 'OBJECT'}]))
     monkeypatch.setattr(jobs, 'fetch_rows', lambda *a, **kw: {
