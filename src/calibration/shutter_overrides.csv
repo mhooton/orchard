@@ -1,0 +1,23 @@
+# Shutter state for frames whose CAMSHUTT header is missing (before 2026-07-17)
+# or wrong (Astra writes CAMSHUTT from a static config value that is changed by
+# hand when a camera is switched). A row here beats the header for every frame
+# from that TELESCOP with start_utc <= DATE-OBS < end_utc.
+#
+# camshutt: T = mechanical shutter used, F = shutterless (frame gets de-smeared).
+# readout_time: seconds, only when the camera was read out at a rate other than
+# the one in instrument_config.json; blank means the configured value.
+# Only add a window after confirming it with calibration/smear_check.py (star
+# trails on science frames, the readout ramp on flats). Guessing wrong
+# de-smears a shuttered frame, or leaves a shutterless one uncorrected, and on a
+# 6-8 s flat a wrong window puts a ramp of tens of percent into the master flat.
+# Window edges sit in daytime between the last frame of one state and the first
+# of the other; every flat near an edge was checked individually.
+#
+# Verified 2026-10-12. The last flat of every SSO ANDOR flat list in
+# PipelineOutput/v2 for 2025-2026 (1,653 flats) was checked: these are the only
+# shutterless periods found. Ten long-exposure flats were inconclusive, and
+# nothing before 2025 has been checked.
+telescope,start_utc,end_utc,camshutt,readout_time,note
+SPECULOOS-GANYMEDE,2025-04-08T12:00:00,2025-04-10T12:00:00,F,,nights 20250408-09: TOI-1227 20 s and Sp1429-6240 10 s trails give t_read 4.2-4.9 s; flats to 2025-04-08T10:32 and night 20250410 shuttered
+SPECULOOS-GANYMEDE,2026-02-15T12:00:00,2026-02-27T16:00:00,F,,nights 20260216-26: flats give 4.27-4.31 s (evening) and 4.57 s (morning); last shuttered flat 2026-02-15T10:04; last 1 MHz flat 2026-02-27T10:13
+SPECULOOS-GANYMEDE,2026-02-27T16:00:00,2026-03-02T16:00:00,F,1.5,nights 20260227-0301: flats from 2026-02-27T23:36 to 2026-03-02T10:14 give 1.50 s (consistent with 3 MHz readout); flats from 2026-03-02T23:29 shuttered
