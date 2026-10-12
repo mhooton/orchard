@@ -11,6 +11,9 @@ Covers in particular:
     with CAMSHUTT accepted as a bool, 0/1 or a string because it is set by hand
   - correct_frame leaving shuttered frames and non-ANDOR instruments alone
   - smear_check recovering an injected t_read, and ~100% removal afterwards
+  - the header record of clipped rows reproducing saturated_trail_mask exactly,
+    and apertures_on_trail agreeing with a brute-force overlap test
+  - SPlightcurve keeping stars on a smear trail out of the comparison ensemble
 
 Run:  pytest src/tests/test_smear.py -q
 """
@@ -239,3 +242,162 @@ def test_flat_verdict_on_real_values():
     assert smear_check.flat_verdict(4.30, 6.0) == 'SHUTTERLESS'
     assert smear_check.flat_verdict(1.50, 6.0) == 'SHUTTERLESS'
     assert smear_check.flat_verdict(2.43, 120.0) == 'inconclusive'
+
+
+def clipped_frame(shape=(60, 80), n=12, seed=5):
+    """Sky with a few clipped pixels, some sharing a row, one in the last column."""
+    rng = np.random.default_rng(seed)
+    raw = np.full(shape, 1000.0)
+    raw[rng.integers(0, shape[0], n), rng.integers(0, shape[1], n)] = 65535
+    raw[7, 20:24] = 65535                      # a saturated core spanning a row
+    raw[8, shape[1] - 1] = 65535               # nothing downstream of this one
+    raw[9, 0] = 65535                          # nor, for direction -1, of this one
+    return raw
+
+
+def mask_from_lines(shape, lines, first, axis, direction):
+    mask = np.zeros(shape, dtype=bool)
+    for line, pos in zip(lines, first):
+        idx = np.arange(shape[axis])
+        trail = idx > pos if direction > 0 else idx < pos
+        if axis == 1:
+            mask[line, trail] = True
+        else:
+            mask[trail, line] = True
+    return mask
+
+
+@pytest.mark.parametrize('axis', [0, 1])
+@pytest.mark.parametrize('direction', [1, -1])
+def test_clipped_lines_reproduce_trail_mask(axis, direction):
+    raw = clipped_frame()
+    lines, first = smear.clipped_lines(raw, 62000, axis=axis, direction=direction)
+    expected = smear.saturated_trail_mask(raw, 62000, axis=axis, direction=direction)
+    assert expected.any()
+    np.testing.assert_array_equal(mask_from_lines(raw.shape, lines, first, axis, direction), expected)
+
+
+def test_trail_header_round_trip():
+    lines = np.concatenate([[3, 4, 5], [9], np.arange(100, 400)])             # a 300-row run spans cards
+    first = np.concatenate([[812, 810, 811], [0], np.arange(1700, 2000)])
+    h = fits.Header()
+    h['SMEARCOR'] = True
+    smear.write_trail_header(h, lines, first, axis=1, direction=1)
+    assert h['SMSATROW'] == len(lines)
+    cards = [k for k in h if k.startswith('SMTR') and k[4:].isdigit()]
+    assert 10 < len(cards) < 40 and all(len(str(h[k])) <= 68 for k in cards)
+    assert h['SMTR0001'] == '4:813,811,812' and h['SMTR0002'] == '10:1'     # stored 1-based
+    got_lines, got_first, axis, direction = smear.read_trail_header(h)
+    np.testing.assert_array_equal(got_lines, lines)
+    np.testing.assert_array_equal(got_first, first)
+    assert (axis, direction) == (1, 1)
+
+    # rewriting replaces every earlier card; the header survives a FITS round trip
+    smear.write_trail_header(h, np.array([50]), np.array([60]), axis=1, direction=1)
+    h2 = fits.Header.fromstring(h.tostring())
+    got_lines, got_first, _, _ = smear.read_trail_header(h2)
+    assert list(got_lines) == [50] and list(got_first) == [60]
+    assert [k for k in h2 if k.startswith('SMTR') and k[4:].isdigit()] == ['SMTR0001']
+
+
+def test_read_trail_header_states():
+    shuttered = header(True)
+    shuttered['SMEARCOR'] = False
+    lines, first, _, _ = smear.read_trail_header(shuttered)
+    assert len(lines) == 0 and len(first) == 0
+    assert len(smear.read_trail_header(header())[0]) == 0           # no correction recorded at all
+    corrected_blind = header(False)
+    corrected_blind['SMEARCOR'] = True                              # de-smeared, rows not recorded
+    assert smear.read_trail_header(corrected_blind) is None
+    radii = [2.0, 4.0]
+    assert list(smear.apertures_on_trail(corrected_blind, [10.0, 20.0], [5.0, 5.0], radii)) == [-1, -1]
+    assert list(smear.apertures_on_trail(shuttered, [10.0, 20.0], [5.0, 5.0], radii)) == [0, 0]
+
+
+def test_trail_distance_geometry():
+    lines, first = np.array([10]), np.array([50])                   # trail is row 10, x >= 51
+    d = smear.trail_distance([40.0, 60.0, 40.0, 60.0, 50.0], [10.0, 10.0, 13.0, 13.0, 10.0], lines, first)
+    np.testing.assert_allclose(d, [10.5, 0.0, np.hypot(10.5, 2.5), 2.5, 0.5])
+    # direction -1: the trail is x <= 49
+    d = smear.trail_distance([60.0, 40.0], [10.0, 10.0], lines, first, direction=-1)
+    np.testing.assert_allclose(d, [10.5, 0.0])
+    # axis 0: lines are columns, the trail runs down column 10 from y = 51
+    d = smear.trail_distance([10.0, 13.0], [40.0, 60.0], lines, first, axis=0)
+    np.testing.assert_allclose(d, [10.5, 2.5])
+    assert np.isinf(smear.trail_distance([5.0], [5.0], np.zeros(0, int), np.zeros(0, int))).all()
+
+
+@pytest.mark.parametrize('axis', [0, 1])
+@pytest.mark.parametrize('direction', [1, -1])
+def test_apertures_on_trail_match_brute_force(axis, direction):
+    raw = clipped_frame()
+    mask = smear.saturated_trail_mask(raw, 62000, axis=axis, direction=direction)
+    h = fits.Header()
+    h['SMEARCOR'] = True
+    smear.write_trail_header(h, *smear.clipped_lines(raw, 62000, axis=axis, direction=direction), axis, direction)
+
+    rng = np.random.default_rng(11)
+    x = rng.uniform(0, raw.shape[1] - 1, 400)
+    y = rng.uniform(0, raw.shape[0] - 1, 400)
+    radii = 2.0 * np.array([0.5, 1 / np.sqrt(2), 1, np.sqrt(2), 2, 2 * np.sqrt(2), 4, 5, 6, 7, 8, 10, 12])
+    got = smear.apertures_on_trail(h, x, y, radii)
+
+    # an aperture reaches a pixel when the pixel's square comes closer to the centre than r
+    ty, tx = np.nonzero(mask)
+    for k in range(len(x)):
+        dx = np.maximum(np.abs(tx - x[k]) - 0.5, 0)
+        dy = np.maximum(np.abs(ty - y[k]) - 0.5, 0)
+        nearest = np.min(np.hypot(dx, dy))
+        reaching = np.flatnonzero(radii > nearest)
+        assert got[k] == (reaching[0] + 1 if len(reaching) else 0), (k, x[k], y[k], nearest)
+    assert len(np.unique(got)) >= 5                                  # many apertures exercised
+
+
+def test_correct_frame_records_trails_for_the_photometry():
+    true = star_field(n=0)
+    yy, xx = np.mgrid[:true.shape[0], :true.shape[1]]
+    true += 4e5 * np.exp(-((yy - 200) ** 2 + (xx - 150) ** 2) / (2 * 2.4 ** 2))   # saturates
+    raw = np.minimum(smear.add_smear(true, TAU_20S), 65535)
+    h = header(False)
+    smear.correct_frame(raw, h, ANDOR, raw=raw, overrides=[])
+    assert h['SMSATROW'] > 0 and 'SMTR0001' in h
+    radii = [2.0, 4.0, 8.0]
+    # downstream in the same rows, upstream in the same rows, downstream but well clear of the rows
+    flags = smear.apertures_on_trail(fits.Header.fromstring(h.tostring()),
+                                     [400.0, 60.0, 400.0], [200.0, 200.0, 230.0], radii)
+    assert list(flags) == [1, 0, 0]
+
+
+def test_splightcurve_keeps_trail_stars_out_of_the_ensemble():
+    pytest.importorskip('fitsio')
+    pytest.importorskip('matplotlib')
+    from diff_photometry import SPlightcurve as spl
+
+    smear_ap = np.zeros((4, 6), dtype=np.int16)
+    smear_ap[1, 2] = 4          # star 1 reaches a trail at aperture 4 and above, in one frame
+    smear_ap[2, :] = 7          # star 2 only from aperture 7
+    smear_ap[3, :] = -1         # star 3 not assessed
+    on = spl.smear_trail_frames(smear_ap, 5, 4, 6)
+    assert on[1].tolist() == [False, False, True, False, False, False]
+    assert not on[[0, 2, 3]].any()
+    assert not spl.smear_trail_frames(None, 5, 4, 6).any()
+
+    class Tel:
+        rcore = np.full(6, 4.0)
+        exposure = np.full(6, 20.0)
+        gain = np.full(6, 1.0)
+
+    jd = 2460774.5 + np.arange(6) / 1440
+    flux = [np.full(6, 5e4) for _ in range(4)]
+    nflux = [np.ones(6) for _ in range(4)]
+    peak = [np.full(6, 1e4) for _ in range(4)]
+    nan4 = [np.nan] * 4
+    lcurves = spl.init_all_lcurves(Tel(), ['SP0', 'SP1', 'SP2', 'SP3'], nan4, nan4, nflux, flux, peak, jd, jd, jd,
+                                   nan4, nan4, nan4, nan4, nan4, [np.zeros(6)] * 4, [np.zeros(6)] * 4, nan4, nan4,
+                                   nan4, nan4, 5, 'I+z', '20250408', np.full(6, 20.0), 62000, smear_ap)
+    assert [lc.smeared for lc in lcurves] == [False, True, False, False]
+    assert [lc.weight for lc in lcurves] == [1, 0, 1, 1]
+    assert lcurves[1].smear.tolist() == on[1].tolist()
+    lcurves[1].w3 = 0                    # and init_weights, as the iteration's reset calls it, keeps it out
+    lcurves[1].init_weights()
+    assert lcurves[1].weight == 0 and lcurves[1].w1 == 0

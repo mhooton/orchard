@@ -21,6 +21,12 @@ has lost the charge that predicts its trail, so every pixel downstream of it in
 the same row is under-corrected. saturated_trail_mask() marks those pixels so
 that stars sitting on them can be flagged rather than trusted.
 
+The mask itself is never stored. correct_frame() writes its compact form into
+the frame header instead: each row holding a clipped pixel, with the position
+of the first clip in readout order (SMTR0001, SMTR0002, ...; see
+write_trail_header). The photometry reads it back with apertures_on_trail(),
+which gives, for each star, the smallest aperture that reaches a trail pixel.
+
 On SPECULOOS ANDOR frames as stored, the parallel axis is NAXIS1 (numpy axis 1)
 and trails run toward +x. The parameters live under "smear" in
 instrument_config.json. t_read = 4.33 s was measured on sky in August 2026 by
@@ -140,11 +146,169 @@ def saturated_trail_mask(raw, saturation_threshold, axis=1, direction=1):
     Returns:
         boolean array, True where the smear correction is unreliable
     """
-    clipped = _along_axis(np.ma.filled(np.asarray(raw), 0) >= saturation_threshold, axis, direction)
+    clipped = _clipped(raw, saturation_threshold, axis, direction)
     downstream = np.logical_or.accumulate(clipped, axis=-1)
     downstream[..., 1:] = downstream[..., :-1].copy()
     downstream[..., 0] = False
     return _from_axis(downstream, axis, direction)
+
+
+def _clipped(raw, saturation_threshold, axis, direction):
+    return _along_axis(np.ma.filled(np.asarray(raw), 0) >= saturation_threshold, axis, direction)
+
+
+def clipped_lines(raw, saturation_threshold, axis=1, direction=1):
+    """
+    The compact form of saturated_trail_mask() for a 2-D frame.
+
+    A line is a row of pixels along the readout axis (an image row on the
+    ANDORs). In line lines[k], every pixel beyond position first[k] in the
+    direction the trails run is under-corrected, and nothing else is. A line
+    whose only clip is its last pixel has no trail and is left out.
+
+    Returns:
+        (lines, first): int arrays of 0-based indices, lines across the
+        readout axis and first along it
+    """
+    clipped = _clipped(raw, saturation_threshold, axis, direction)[..., :-1]
+    lines = np.flatnonzero(clipped.any(axis=-1))
+    first = np.argmax(clipped[lines], axis=-1)
+    if direction < 0:
+        first = clipped.shape[-1] - first
+    return lines, first
+
+
+# Header cards holding clipped_lines(). Each SMTRnnnn value is one run of
+# consecutive lines, 'L:P,P,...': L is the first line of the run and each P the
+# first clipped position in the next line, all 1-based FITS pixel numbers. A
+# long run carries on in the next card. A card value holds at most 68 characters.
+TRAIL_CARD = 'SMTR'
+_CARD_VALUE_LEN = 68
+
+
+def _trail_card_keys(header):
+    return [k for k in header if k.startswith(TRAIL_CARD) and k[len(TRAIL_CARD):].isdigit()]
+
+
+def _encode_runs(lines, first):
+    """'L:P,P,...' strings for 1-based lines and positions, each fitting one card."""
+    values = []
+    value, last = None, None
+    for line, pos in zip(lines, first):
+        piece = str(int(pos))
+        if value is not None and line == last + 1 and len(value) + 1 + len(piece) <= _CARD_VALUE_LEN:
+            value += ',' + piece
+        else:
+            if value is not None:
+                values.append(value)
+            value = f'{int(line)}:{piece}'
+        last = line
+    if value is not None:
+        values.append(value)
+    return values
+
+
+def write_trail_header(header, lines, first, axis, direction):
+    """
+    Record clipped_lines() in a frame header, replacing any earlier record.
+
+    SMSATROW holds the number of lines, SMTRAXIS and SMTRDIR the geometry, and
+    SMTR0001, SMTR0002, ... the lines themselves. A frame with a few saturated
+    stars needs a handful of cards; even a clip in every row of an ANDOR frame
+    needs only ~150 (12 kB against 16.7 MB of pixels).
+    """
+    for key in _trail_card_keys(header):
+        del header[key]
+    header['SMSATROW'] = (int(len(lines)), 'Rows with a clipped pixel: under-corrected')
+    header['SMTRAXIS'] = (int(axis), 'numpy axis the smear trails run along')
+    header['SMTRDIR'] = (int(direction), 'Trails run to higher (1) or lower (-1) index')
+    for n, value in enumerate(_encode_runs(np.asarray(lines) + 1, np.asarray(first) + 1), start=1):
+        header[f'{TRAIL_CARD}{n:04d}'] = value
+
+
+def read_trail_header(header):
+    """
+    The clipped lines a de-smeared frame's header records.
+
+    Returns:
+        (lines, first, axis, direction), with 0-based lines and first as from
+        clipped_lines(); empty arrays for a frame that was not de-smeared, which
+        has no under-corrected pixels; None for a de-smeared frame whose
+        header does not say (a frame corrected without the raw data at hand)
+    """
+    if not header.get('SMEARCOR', False):
+        return np.zeros(0, int), np.zeros(0, int), 1, 1
+    if 'SMTRAXIS' not in header:
+        return None
+    lines, first = [], []
+    for key in sorted(_trail_card_keys(header)):
+        start, positions = str(header[key]).split(':')
+        positions = [int(p) for p in positions.split(',')]
+        lines.extend(range(int(start), int(start) + len(positions)))
+        first.extend(positions)
+    return (np.array(lines, dtype=int) - 1, np.array(first, dtype=int) - 1,
+            int(header['SMTRAXIS']), int(header['SMTRDIR']))
+
+
+def trail_distance(x, y, lines, first, axis=1, direction=1):
+    """
+    For each star, how large an aperture can be before it reaches a trail pixel.
+
+    An aperture of radius r centred on (x, y) overlaps an under-corrected pixel
+    exactly when r exceeds the returned distance. Pixel k covers k - 0.5 to
+    k + 0.5, and the aperture is taken to reach a pixel it overlaps at all, as
+    the photometry weights partial pixels.
+
+    Args:
+        x, y: star positions in 0-based numpy pixel coordinates (x along axis
+            1, y along axis 0), i.e. imcore's 1-based X_coordinate minus one
+        lines, first, axis, direction: as from clipped_lines()
+
+    Returns:
+        float array, inf for a star with no trail pixel anywhere near
+    """
+    x = np.atleast_1d(np.asarray(x, dtype=float))
+    y = np.atleast_1d(np.asarray(y, dtype=float))
+    if len(lines) == 0:
+        return np.full(x.shape, np.inf)
+    along, across = (x, y) if axis == 1 else (y, x)
+    lines = np.asarray(lines, dtype=float)[None, :]
+    first = np.asarray(first, dtype=float)[None, :]
+    # gap across the lines between the aperture centre and the nearest edge of each line
+    gap = np.maximum(np.abs(lines - across[:, None]) - 0.5, 0.0)
+    # gap along the line between the centre and the edge of the first trail pixel
+    if direction > 0:
+        ahead = (first + 0.5) - along[:, None]
+    else:
+        ahead = along[:, None] - (first - 0.5)
+    return np.min(np.hypot(np.maximum(ahead, 0.0), gap), axis=1)
+
+
+SMEAR_NOT_ASSESSED = -1
+
+
+def apertures_on_trail(header, x, y, radii):
+    """
+    Per star, the smallest aperture that reaches an under-corrected trail pixel.
+
+    Args:
+        header: header of the calibrated frame (written by correct_frame)
+        x, y: star positions in 0-based numpy pixel coordinates
+        radii: aperture radii in pixels, in increasing order
+
+    Returns:
+        int16 array: the 1-based index into radii of the smallest aperture on a
+        trail, 0 if none is, or SMEAR_NOT_ASSESSED for every star when the
+        header cannot say. A star is flagged at aperture j when 0 < value <= j.
+    """
+    x = np.atleast_1d(x)
+    trail = read_trail_header(header)
+    if trail is None:
+        return np.full(x.shape, SMEAR_NOT_ASSESSED, dtype=np.int16)
+    distance = trail_distance(x, y, *trail)
+    smallest = np.searchsorted(np.asarray(radii, dtype=float), distance, side='right') + 1
+    smallest[smallest > len(radii)] = 0
+    return smallest.astype(np.int16)
 
 
 def _parse_camshutt(value):
@@ -226,7 +390,8 @@ def correct_frame(signal, header, params, raw=None, overrides=None):
         signal: bias/dark-subtracted, trimmed frame, not yet flat-fielded
         header: the frame's FITS header, updated in place
         params: instrument parameters from get_instrument_parameters()
-        raw: trimmed raw frame, used only to count rows with clipped pixels
+        raw: trimmed raw frame, used only to record the rows with clipped
+            pixels (write_trail_header) so the photometry can flag stars on them
         overrides: shutter override rows (loaded from disk if None)
 
     Returns:
@@ -254,9 +419,8 @@ def correct_frame(signal, header, params, raw=None, overrides=None):
     header['SMEARTAU'] = (float(tau), 'Smear per pixel crossed, t_read/(N t_exp)')
     header['SMEARSRC'] = (source, 'Where the shutter state came from')
     if raw is not None and 'saturation_threshold' in params:
-        trail = saturated_trail_mask(raw, params['saturation_threshold'], axis=axis, direction=direction)
-        rows = int(np.any(trail, axis=axis).sum())
-        header['SMSATROW'] = (rows, 'Rows with a clipped pixel: smear under-corrected')
+        lines, first = clipped_lines(raw, params['saturation_threshold'], axis=axis, direction=direction)
+        write_trail_header(header, lines, first, axis, direction)
     header.add_history(f'Readout smear removed: t_read {readout_time} s, '
                        f'tau {tau:.4g}, shutter state from {source}')
     return corrected
