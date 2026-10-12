@@ -156,6 +156,7 @@ Telescope and instrument parameters are defined in `src/calibration/instrument_c
 - Overscan correction with sigma clipping
 - 2044×2048 pixel trimmed output
 - No bad pixel correction
+- Readout-smear removal for shutterless frames (SSO ANDORs, `"smear"` block: readout `axis`, trail `direction`, `readout_time` in s, `n_shifts`)
 
 **SPIRIT (NIR):**
 - Exposure-matched dark frames
@@ -546,10 +547,11 @@ Creates normalised master flat fields from dome or twilight flats. Processes fla
 
 **Process:**
 1. Apply overscan, bias, and dark corrections to each flat
-2. Normalise each flat by its median flux
-3. Sigma-clipped median combination (rejects cosmic rays)
-4. Normalise master to unity mean
-5. With `--save-flat-products` only: write each calibrated flat and the per-pixel standard deviation and variance across the flats
+2. De-smear flats taken without the shutter (see [Shutterless frames](#shutterless-frames-readout-smear)); the master records how many in `NSMEARED`
+3. Normalise each flat by its median flux
+4. Sigma-clipped median combination (rejects cosmic rays)
+5. Normalise master to unity mean
+6. With `--save-flat-products` only: write each calibrated flat and the per-pixel standard deviation and variance across the flats
 
 **Output:**
 - `{run}_MasterFlat_{filter}.fits` (one per filter)
@@ -597,13 +599,16 @@ Applies all calibration corrections to science frames, producing reduced images 
 1. Overscan subtraction (sigma-clipped median)
 2. Bias subtraction
 3. Dark subtraction (exposure-time scaled or matched)
-4. Flat field division (filter-specific)
-5. Bad pixel interpolation (SPIRIT only)
-6. CRPIX adjustment for trimming
+4. Readout-smear removal for frames taken without the shutter (SSO ANDORs only)
+5. Flat field division (filter-specific)
+6. Bad pixel interpolation (SPIRIT only)
+7. CRPIX adjustment for trimming
 
 **Process:**
 ```python
-reduced = (raw - overscan - bias - dark × exptime) / flat
+signal = raw - overscan - bias - dark × exptime
+signal = desmear(signal) if shutterless else signal   # before the flat
+reduced = signal / flat
 reduced = interpolate_bad_pixels(reduced, bad_pixel_map)
 ```
 
@@ -613,6 +618,29 @@ reduced = interpolate_bad_pixels(reduced, bad_pixel_map)
 - FITS headers updated with calibration history
 
 **Parallel Processing:** Supports multiprocessing for faster execution on multi-core systems.
+
+#### Shutterless frames (readout smear)
+
+**Module:** `src/calibration/smear.py`
+
+Without a mechanical shutter the CCD keeps integrating while it is read out, so every source leaves a one-sided trail along the readout axis: each pixel downstream of a source receives `t_read / (N × t_exp)` of that source's flux in the same row. On the SSO ANDORs the trail runs along +x (NAXIS1), `t_read` = 4.33 s and N = 2048, so the trail is 1.1×10⁻⁴ of the source per pixel at 20 s and the sky picks up a ramp reaching ~22% of the sky level at the far edge. `desmear()` inverts this exactly, row by row, after bias/dark subtraction and **before** the flat (the trail charge was collected by the upstream pixels, with their sensitivity).
+
+Whether a frame was shutterless is decided per frame:
+1. a row in `src/calibration/shutter_overrides.csv` for that `TELESCOP` whose UTC window holds `DATE-OBS`, else
+2. the `CAMSHUTT` header (written by Astra on all ANDORs since 2026-07-17, but set by hand, so it can be wrong), else
+3. shutter used.
+
+Every T6 product of an instrument with smear parameters records the decision: `SMEARCOR` (T/F), and when corrected `SMEARTRD` (t_read used), `SMEARTAU`, `SMEARSRC` (override/CAMSHUTT) and `SMSATROW` (rows containing a clipped pixel).
+
+**Known limit:** a saturated pixel's lost charge is not recorded, so its trail is under-corrected in every pixel downstream of it in that row. `saturated_trail_mask()` marks those pixels; flagging the stars that sit on them is not yet done.
+
+**Checking a night:** `src/calibration/smear_check.py` measures the trail behind bright isolated stars (or the ramp across a flat) and says whether frames were shutterless and what `t_read` they imply. Use it before adding an override window — a wrong window de-smears shuttered frames, and on a 7 s flat that puts a ~60% ramp into the master flat:
+
+```bash
+python calibration/smear_check.py @frames.txt --desmear
+```
+
+An asymmetric PSF fakes a small trail (+0.3 s on Ganymede at 20 s, −1.5 s on Io at 39 s with the default windows), which is negligible for telling shutterless from shuttered but matters when measuring `t_read` itself.
 
 ---
 
