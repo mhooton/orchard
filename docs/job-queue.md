@@ -190,7 +190,8 @@ that is not last night, used by the look-back, by `q add --download` and by the 
   `AutoFlat/` and `Calibration/` subdirectories, has the same `DATE-OBS`. ESO's dp_id is `SPECU<n>.<DATE-OBS>`:
   ACP's `Sp1609-3431-S001-R001-C001-I+z.fts` on Io 2018-09-05 has `DATE-OBS = '2018-09-05T23:11:08.710'` and is
   `SPECU1.2018-09-05T23:11:08.710` at ESO, with identical pixels (ESO stores the 2018 frames as float32, so
-  their copies take twice the disk);
+  their copies take twice the disk). A row whose file sits in the previous or next night's directory is
+  present too: 161 frames, almost all morning darks, were filed under the next night;
 - each file is downloaded under a temporary name into `<queue_root>/staging/` (same filesystem as the archive),
   at most `fetch.workers` (3) at a time, each with `fetch.attempts` (4) tries and exponential backoff from 30 s;
   after 8 network failures in a row the job stops and exits 75, so the queue retries it an hour later. gzip
