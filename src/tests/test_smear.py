@@ -114,33 +114,55 @@ def header(camshutt=None, date_obs='2026-08-01T03:00:00', telescope='SPECULOOS-E
 @pytest.mark.parametrize('value, used', [(True, True), (False, False), (0, False), (1, True),
                                          ('F', False), ('true', True)])
 def test_camshutt_values(value, used):
-    assert smear.shutter_state(header(value), overrides=[]) == (used, 'CAMSHUTT')
+    assert smear.shutter_state(header(value), overrides=[]) == (used, 'CAMSHUTT', None)
 
 
 def test_no_header_means_shutter_used():
-    assert smear.shutter_state(header(), overrides=[]) == (True, 'default')
+    assert smear.shutter_state(header(), overrides=[]) == (True, 'default', None)
 
 
 def test_override_window_beats_header():
     rows = [{'telescope': 'SPECULOOS-EUROPA', 'start': datetime(2026, 7, 31, 12),
-             'end': datetime(2026, 8, 1, 12), 'camshutt': False, 'note': ''}]
-    assert smear.shutter_state(header(True), rows) == (False, 'override')
+             'end': datetime(2026, 8, 1, 12), 'camshutt': False, 'readout_time': None, 'note': ''}]
+    assert smear.shutter_state(header(True), rows) == (False, 'override', None)
     # outside the window, or another telescope: back to the header
-    assert smear.shutter_state(header(True, date_obs='2026-08-01T12:00:00'), rows) == (True, 'CAMSHUTT')
-    assert smear.shutter_state(header(True, telescope='SPECULOOS-IO'), rows) == (True, 'CAMSHUTT')
+    assert smear.shutter_state(header(True, date_obs='2026-08-01T12:00:00'), rows) == (True, 'CAMSHUTT', None)
+    assert smear.shutter_state(header(True, telescope='SPECULOOS-IO'), rows) == (True, 'CAMSHUTT', None)
 
 
 def test_override_file_parses(tmp_path):
     path = tmp_path / 'overrides.csv'
-    path.write_text('# comment\ntelescope,start_utc,end_utc,camshutt,note\n'
-                    'SPECULOOS-GANYMEDE,2025-04-08T12:00:00,2025-04-09T12:00:00,F,checked\n')
+    path.write_text('# comment\ntelescope,start_utc,end_utc,camshutt,readout_time,note\n'
+                    'SPECULOOS-GANYMEDE,2025-04-08T12:00:00,2025-04-09T12:00:00,F,,checked\n'
+                    'SPECULOOS-GANYMEDE,2026-02-27T16:00:00,2026-03-02T16:00:00,F,1.5,fast readout\n')
     rows = smear.load_shutter_overrides(str(path))
     assert rows == [{'telescope': 'SPECULOOS-GANYMEDE', 'start': datetime(2025, 4, 8, 12),
-                     'end': datetime(2025, 4, 9, 12), 'camshutt': False, 'note': 'checked'}]
+                     'end': datetime(2025, 4, 9, 12), 'camshutt': False, 'readout_time': None, 'note': 'checked'},
+                    {'telescope': 'SPECULOOS-GANYMEDE', 'start': datetime(2026, 2, 27, 16),
+                     'end': datetime(2026, 3, 2, 16), 'camshutt': False, 'readout_time': 1.5,
+                     'note': 'fast readout'}]
 
 
 def test_shipped_override_file_parses():
-    smear.load_shutter_overrides()
+    for row in smear.load_shutter_overrides():
+        assert row['start'] < row['end']
+
+
+def test_shipped_override_windows_do_not_overlap():
+    rows = sorted(smear.load_shutter_overrides(), key=lambda r: (r['telescope'], r['start']))
+    for a, b in zip(rows, rows[1:]):
+        assert a['telescope'] != b['telescope'] or a['end'] <= b['start']
+
+
+def test_override_readout_time_is_used():
+    rows = [{'telescope': 'SPECULOOS-GANYMEDE', 'start': datetime(2026, 2, 27, 16),
+             'end': datetime(2026, 3, 2, 16), 'camshutt': False, 'readout_time': 1.5, 'note': ''}]
+    true = star_field()
+    h = header(None, date_obs='2026-02-28T03:00:00', telescope='SPECULOOS-GANYMEDE', exptime=41.0)
+    tau = smear.smear_tau(1.5, 2048, 41.0)
+    out = smear.correct_frame(smear.add_smear(true, tau), h, ANDOR, raw=true, overrides=rows)
+    np.testing.assert_allclose(out, true, rtol=1e-10)
+    assert h['SMEARTRD'] == 1.5 and h['SMEARSRC'] == 'override'
 
 
 def test_correct_frame_shuttered_is_untouched():
@@ -197,7 +219,7 @@ def test_smear_check_recovers_injected_readout_time():
     assert abs(tau0) < 3 * err0
 
 
-@pytest.mark.parametrize('t_read', [0.0, 4.33])
+@pytest.mark.parametrize('t_read', [0.0, 1.5, 4.33])
 def test_flat_ramp_recovers_readout_time(t_read):
     rng = np.random.default_rng(3)
     yy, xx = np.mgrid[:600, :2046]
@@ -207,4 +229,13 @@ def test_flat_ramp_recovers_readout_time(t_read):
     observed = smear.add_smear(flat, smear.smear_tau(t_read, 2048, exptime)) + rng.normal(0, 30, flat.shape)
     assert smear_check.ramp_t_read(observed, 2048, exptime) == pytest.approx(t_read, abs=0.1)
     expected = 'SHUTTERLESS' if t_read else 'shuttered'
-    assert smear_check.flat_verdict(smear_check.ramp_t_read(observed, 2048, exptime)) == expected
+    assert smear_check.flat_verdict(smear_check.ramp_t_read(observed, 2048, exptime), exptime) == expected
+
+
+def test_flat_verdict_on_real_values():
+    # Ganymede, 2026-02 and -03: shuttered, 1 MHz shutterless, 3 MHz shutterless,
+    # and a 120 s shuttered flat whose twilight gradient mimics t_read 2.4 s
+    assert smear_check.flat_verdict(0.08, 7.6) == 'shuttered'
+    assert smear_check.flat_verdict(4.30, 6.0) == 'SHUTTERLESS'
+    assert smear_check.flat_verdict(1.50, 6.0) == 'SHUTTERLESS'
+    assert smear_check.flat_verdict(2.43, 120.0) == 'inconclusive'
