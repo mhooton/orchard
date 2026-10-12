@@ -56,11 +56,20 @@ REF_ROWS = (16, 24)  # reference rows sit this far from the star across the axis
 ISOLATION = 0.1     # reject a star with a neighbour this bright (peak ratio) near its windows
 
 
-def load_signal(path):
-    """Trimmed, overscan-subtracted raw frame plus what is needed to measure it."""
+def load_signal(path, reduced=False):
+    """
+    Trimmed, overscan-subtracted frame plus what is needed to measure it.
+
+    reduced=True takes a T6 product (proc*.fits) as it is: already trimmed,
+    calibrated and, if it was shutterless, de-smeared, so what is left of the
+    trail there is what the pipeline failed to remove.
+    """
     with open_fits_file(path) as hdul:
         params = get_instrument_parameters(hdul)
         header = hdul[0].header.copy()
+        if reduced:
+            data = np.array(hdul[0].data, dtype=np.float64)
+            return data, data, header, params
         overscan = apply_image_slice(hdul, 'overscan', 0.)
         if isinstance(overscan, np.ndarray) and overscan.size > 1:
             overscan = float(np.ma.median(sigma_clip(overscan, maxiters=None)))
@@ -187,9 +196,9 @@ def flat_verdict(t_read, exptime, n=2048, span=1446):
     return 'inconclusive'
 
 
-def check(path, apply_desmear):
+def check(path, apply_desmear, reduced=False):
     """Measure one frame. Returns (pairs, pairs_after, n_shifts, exptime, readout_time, header)."""
-    s, raw, header, params = load_signal(path)
+    s, raw, header, params = load_signal(path, reduced)
     smear = params.get('smear')
     if not smear:
         raise ValueError('no smear parameters for this instrument')
@@ -214,6 +223,8 @@ def main():
     parser.add_argument('frames', nargs='+', help='raw FITS frames, or @file listing them')
     parser.add_argument('--desmear', action='store_true',
                         help='also de-smear with the configured t_read and report the fraction removed')
+    parser.add_argument('--reduced', action='store_true',
+                        help='frames are T6 products (proc*.fits): measure the trail left after reduction')
     parser.add_argument('--gap', type=int, default=GAP,
                         help=f'trail windows start this many pixels from the star (default {GAP}); '
                              'smaller keeps more stars but lets PSF asymmetry bias t_read')
@@ -231,7 +242,7 @@ def main():
     groups = {}
     for path in frames:
         try:
-            pairs, after, n, exptime, readout_time, header = check(path, args.desmear)
+            pairs, after, n, exptime, readout_time, header = check(path, args.desmear, args.reduced)
         except Exception as e:
             print(f'{os.path.basename(path)}: ERROR {e}', flush=True)
             continue
