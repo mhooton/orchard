@@ -448,17 +448,18 @@ class LightCurve:
         new_err_pwv = np.nanmean(bin_e)
         new_rms_pwv = np.nanstd(bin_y)
 
+        # the third field records whether the target's aperture reaches a
+        # saturated smear trail; such an aperture is chosen only if all are
+        on_trail = " " + str(int(self.smeared))
+
         if os.path.exists(fname + "_bestap.txt"):
             # Read in the file
             with open(fname + "_bestap.txt", 'r') as file:
                 filedata = file.read()
 
-            # aperture = filedata.split()[0]
-            ap_err = float(filedata.split()[1])
-
-            if ap_err > (new_err * new_rms):
+            if replaces_best_ap(filedata, new_err * new_rms, self.smeared):
                 # Replace the target string
-                filedata = str(ap) + " " + str(new_err * new_rms)
+                filedata = str(ap) + " " + str(new_err * new_rms) + on_trail
 
                 # plot target diff lc within limits
                 self.plot_standard(num_comp, self.bin, fname + "_bestap", True,True,(8, 8))
@@ -468,7 +469,7 @@ class LightCurve:
                 file.write(filedata)
 
         else:
-            filedata = str(ap) + " " + str(new_err * new_rms)
+            filedata = str(ap) + " " + str(new_err * new_rms) + on_trail
             with open(fname + "_bestap.txt", 'w') as file:
                 file.write(filedata)
 
@@ -480,19 +481,33 @@ class LightCurve:
             with open(fname + "_bestap_pwv.txt", 'r') as file:
                 filedata = file.read()
 
-            ap_err_pwv = float(filedata.split()[1])
-
-            if ap_err_pwv > (new_err_pwv * new_rms_pwv):
+            if replaces_best_ap(filedata, new_err_pwv * new_rms_pwv, self.smeared):
                 # Replace the target string
-                filedata = str(ap) + " " + str(new_err_pwv * new_rms_pwv)
+                filedata = str(ap) + " " + str(new_err_pwv * new_rms_pwv) + on_trail
             # Write the file out again
             with open(fname + "_bestap_pwv.txt", 'w') as file:
                 file.write(filedata)
         else:
-            filedata = str(ap) + " " + str(new_err_pwv * new_rms_pwv)
+            filedata = str(ap) + " " + str(new_err_pwv * new_rms_pwv) + on_trail
             if ~np.isnan(new_err_pwv * new_rms_pwv):
                 with open(fname + "_bestap_pwv.txt", 'w') as file:
                     file.write(filedata)
+
+def replaces_best_ap(stored, new_metric, new_on_trail):
+    """
+    Whether a new aperture should replace the one recorded in a *_bestap.txt.
+
+    stored is that file's text: "<ap> <metric>", and since smear-trail flagging a
+    third field, 1 when the target's aperture reaches a saturated smear trail in
+    some frame. An aperture on a trail never displaces one that is not, and is
+    displaced by any that is not; otherwise the lower metric wins, as before.
+    """
+    fields = stored.split()
+    stored_on_trail = len(fields) > 2 and fields[2] == '1'
+    if stored_on_trail != bool(new_on_trail):
+        return stored_on_trail
+    return float(fields[1]) > new_metric
+
 
 class ArtificialLightCurve:
     def __init__(self,lcurves):
@@ -778,13 +793,15 @@ def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
                                  dtype=[('ALC', np.float64)])
     alc_table['ALC'] = alc.nlc
 
+    # FLAG is the bad-weather flag under its original name, kept because the
+    # portal ingest reads it; BAD_WEATHER_FLAG (formerly BW_FLAG) is the same.
     flag_table = np.recarray(ntimes,
                                  dtype=[('FLAG', np.int64),
-                                        ('BW_FLAG', np.int64),
+                                        ('BAD_WEATHER_FLAG', np.int64),
                                         ('SMEAR_FLAG', np.int64)])
 
     flag_table['FLAG'] = [int("0b" + str(int(b)),2) for b in tel.bw_mask]#int("0b" + str(int(tel.bw_mask)),2)
-    flag_table['BW_FLAG'] = tel.bw_mask
+    flag_table['BAD_WEATHER_FLAG'] = tel.bw_mask
     # the target's aperture reaches an under-corrected smear trail in this frame
     flag_table['SMEAR_FLAG'] = targ.smear
 
@@ -977,7 +994,11 @@ def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
         print('add alc')
         hdulist.append(fits.BinTableHDU(alc_table, name='ALC_' + str(ap)))
         print('add flags')
-        hdulist.append(fits.BinTableHDU(flag_table, name='FLAGS'))
+        flags_hdu = fits.BinTableHDU(flag_table, name='FLAGS')
+        flags_hdu.header.comments['TTYPE1'] = 'bad weather, as BAD_WEATHER_FLAG (portal)'
+        flags_hdu.header.comments['TTYPE2'] = 'frame in bad weather (ALC variability)'
+        flags_hdu.header.comments['TTYPE3'] = 'target aperture on a saturated smear trail'
+        hdulist.append(flags_hdu)
         hdulist[0].header['DR2ID'] = header_id(targ.gaia_dr2_id)
         hdulist[0].header['DR3ID'] = header_id(targ.gaia_dr3_id)
         hdulist[0].header['PIPE_V'] = version
