@@ -157,10 +157,11 @@ def ramp_t_read(oriented, n, exptime, edge=200):
     Readout time implied by the ramp across a flat.
 
     Uniform light smeared on readout gives raw(x) = S * (1 + tau * x) along the
-    readout axis, so two bands near either end fix tau. Vignetting and twilight
-    gradients bias this by a few tenths of a second, which is why a flat gave
-    4.58 s against 4.33 s from star trails, but a shutterless flat stands out
-    by more than an order of magnitude.
+    readout axis, so two bands near either end fix tau. A twilight gradient adds
+    an apparent t_read proportional to exposure time, with opposite effect in
+    the evening and the morning: on Ganymede in February 2026 6 s evening flats
+    gave 4.27-4.31 s and 8 s morning flats 4.57 s, either side of the 4.33 s
+    from star trails (the 4.58 s from a flat in August 2026 was a morning one).
     """
     k = oriented.shape[-1]
     left = float(np.median(oriented[:, edge:2 * edge]))
@@ -170,10 +171,18 @@ def ramp_t_read(oriented, n, exptime, edge=200):
     return tau * n * exptime
 
 
-def flat_verdict(t_read):
-    if t_read > 2.0:
+def flat_verdict(t_read, exptime, n=2048, span=1446):
+    """
+    Judge on the fractional ramp the readout would cause, not on t_read alone:
+    a twilight gradient mimics a t_read that grows with exposure time, so a long
+    flat can neither show a 1.5 s (3 MHz) readout nor rule one out.
+    span is the distance between the two bands ramp_t_read() compares.
+    """
+    ramp = t_read * span / (n * exptime)
+    if t_read > 0.75 and ramp > 0.05:
         return 'SHUTTERLESS'
-    if abs(t_read) < 1.0:
+    could_see_fast_readout = 1.4 * span / (n * exptime) > 0.03
+    if abs(t_read) < 0.5 and could_see_fast_readout:
         return 'shuttered'
     return 'inconclusive'
 
@@ -230,7 +239,7 @@ def main():
                  f'exp={exptime:6.1f}s')
         if after is None:
             # a flat: pairs is the t_read implied by its readout ramp
-            print(f'{label}  FLAT  ramp t_read={pairs:6.2f} s  {flat_verdict(pairs)}', flush=True)
+            print(f'{label}  FLAT  ramp t_read={pairs:6.2f} s  {flat_verdict(pairs, exptime)}', flush=True)
             continue
         print(describe(label, pairs, after, n, exptime, readout_time), flush=True)
         key = (str(header.get('TELESCOP', '')).strip(), exptime)

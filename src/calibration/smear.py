@@ -32,6 +32,9 @@ exposure times would settle.
 Whether a frame was taken without the shutter comes from the CAMSHUTT header
 (written by Astra on all ANDORs since 2026-07-17, but set by hand, so it can be
 wrong) unless shutter_overrides.csv says otherwise for that telescope and time.
+The readout rate is not in the header either: Ganymede was read out in ~1.5 s,
+consistent with 3 MHz, for its last shutterless nights in February-March 2026,
+so an override window can carry its own readout time.
 """
 
 import csv
@@ -170,11 +173,13 @@ def load_shutter_overrides(path=OVERRIDES_PATH):
         lines = [line for line in f if line.strip() and not line.lstrip().startswith('#')]
     rows = []
     for row in csv.DictReader(lines):
+        readout_time = (row.get('readout_time') or '').strip()
         rows.append({
             'telescope': row['telescope'].strip(),
             'start': _parse_utc(row['start_utc']),
             'end': _parse_utc(row['end_utc']),
             'camshutt': _parse_camshutt(row['camshutt']),
+            'readout_time': float(readout_time) if readout_time else None,
             'note': (row.get('note') or '').strip(),
         })
     return rows
@@ -188,8 +193,12 @@ def shutter_state(header, overrides=None):
     DATE-OBS wins; then the CAMSHUTT header; with neither, the shutter is
     assumed used, which is true of almost every frame taken before July 2026.
 
+    An override row can also give the readout time, for windows where the
+    camera was read out at a different rate (nothing in the header says so).
+
     Returns:
-        (shutter_used, source) with source one of 'override', 'CAMSHUTT', 'default'
+        (shutter_used, source, readout_time) with source one of 'override',
+        'CAMSHUTT', 'default', and readout_time None unless an override sets it
     """
     if overrides is None:
         overrides = load_shutter_overrides()
@@ -199,10 +208,10 @@ def shutter_state(header, overrides=None):
         when = _parse_utc(str(date_obs))
         for row in overrides:
             if row['telescope'] == telescope and row['start'] <= when < row['end']:
-                return row['camshutt'], 'override'
+                return row['camshutt'], 'override', row.get('readout_time')
     if 'CAMSHUTT' in header:
-        return _parse_camshutt(header['CAMSHUTT']), 'CAMSHUTT'
-    return True, 'default'
+        return _parse_camshutt(header['CAMSHUTT']), 'CAMSHUTT', None
+    return True, 'default', None
 
 
 def correct_frame(signal, header, params, raw=None, overrides=None):
@@ -227,25 +236,27 @@ def correct_frame(signal, header, params, raw=None, overrides=None):
     if not smear:
         return signal
 
-    shutter_used, source = shutter_state(header, overrides)
+    shutter_used, source, readout_time = shutter_state(header, overrides)
     if shutter_used:
         header['SMEARCOR'] = (False, 'Readout smear not removed (shutter used)')
         return signal
 
+    if readout_time is None:
+        readout_time = smear['readout_time']
     exptime = float(header['EXPTIME'])
     axis = smear.get('axis', 1)
     direction = smear.get('direction', 1)
-    tau = smear_tau(smear['readout_time'], smear['n_shifts'], exptime)
+    tau = smear_tau(readout_time, smear['n_shifts'], exptime)
     corrected = desmear(signal, tau, axis=axis, direction=direction)
 
     header['SMEARCOR'] = (True, 'Readout smear removed (shutterless frame)')
-    header['SMEARTRD'] = (float(smear['readout_time']), '[s] Readout time used for smear correction')
+    header['SMEARTRD'] = (float(readout_time), '[s] Readout time used for smear correction')
     header['SMEARTAU'] = (float(tau), 'Smear per pixel crossed, t_read/(N t_exp)')
     header['SMEARSRC'] = (source, 'Where the shutter state came from')
     if raw is not None and 'saturation_threshold' in params:
         trail = saturated_trail_mask(raw, params['saturation_threshold'], axis=axis, direction=direction)
         rows = int(np.any(trail, axis=axis).sum())
         header['SMSATROW'] = (rows, 'Rows with a clipped pixel: smear under-corrected')
-    header.add_history(f'Readout smear removed: t_read {smear["readout_time"]} s, '
+    header.add_history(f'Readout smear removed: t_read {readout_time} s, '
                        f'tau {tau:.4g}, shutter state from {source}')
     return corrected
