@@ -1577,7 +1577,7 @@ def cap_comparison_stars(lcurves, max_stars=10):
 # inverse-variance weights measured leave-one-out.
 
 STABLE_FAINT_LIMIT = 3.0      # mag fainter than the target: the faint end fluxthresh already searched to
-STABLE_KERNEL_ARCMIN = 2.0    # distance-kernel scale: weight halves at this separation from the target
+STABLE_KERNEL_ARCMIN = 1.0    # distance-kernel scale: weight halves at this separation from the target
 STABLE_MAX_ITER = 20
 STABLE_TOL = 1e-4
 
