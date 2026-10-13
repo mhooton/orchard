@@ -1560,6 +1560,122 @@ def cap_comparison_stars(lcurves, max_stars=10):
     print(f"Capped comparison stars from {nonzero} to {max_stars}.")
     return lcurves
 
+
+# Comparison-star weighting ('stable' ALC, the default since 2026-10).
+#
+# The legacy chain above (fluxthresh -> preclean -> iter_algorithm -> cap_comparison_stars) turns
+# small input changes into a different ensemble: fluxthresh takes the argmin of a nearly flat curve
+# and lands at either end of its range (20 or ~1,350 stars); iter_algorithm measures each star
+# against an ALC that contains the star itself, so weight runs away onto one star, and its
+# recovery calls init_weights() on every star, which silently undoes fluxthresh, preclean and the
+# distance weight; the final top-10 cut then picks 10 of hundreds of near-equal weights. On the
+# 2026-10-12 smear A/B (Ganymede 20260223, Sp1054-5431) a 0.3% flux change moved the target from
+# 9.6 to 24.8 ppt.
+#
+# The scheme below has no argmin, no top-N cut and no reset, so the weights are a continuous
+# function of the photometry: fixed magnitude range, preclean, a fixed distance kernel, and
+# inverse-variance weights measured leave-one-out.
+
+STABLE_FAINT_LIMIT = 3.0      # mag fainter than the target: the faint end fluxthresh already searched to
+STABLE_KERNEL_ARCMIN = 2.0    # distance-kernel scale: weight halves at this separation from the target
+STABLE_MAX_ITER = 20
+STABLE_TOL = 1e-4
+
+
+def distance_kernel(sep_rad, scale_arcmin=STABLE_KERNEL_ARCMIN):
+    """Smooth weight for a comparison star at `sep_rad` from the target: 1 / (1 + (sep / scale)^2).
+
+    Unlike distance_weight() the scale is in arcmin, not a fraction of the farthest star's
+    separation, so it does not change with where the target sits in the field."""
+    if scale_arcmin is None or scale_arcmin <= 0:
+        return np.ones(len(sep_rad))
+    sep_arcmin = np.degrees(np.asarray(sep_rad, dtype=float)) * 60.
+    return 1. / (1. + (sep_arcmin / scale_arcmin) ** 2)
+
+
+def loo_inverse_variance(nflux, prior, w_start, max_iter=STABLE_MAX_ITER, tol=STABLE_TOL):
+    """Leave-one-out inverse-variance weights.
+
+    nflux: (n_star, n_frame) normalised fluxes, NaN where missing; prior: fixed per-star factor
+    (distance kernel x eligibility); w_start: starting weights. Each star's variance is that of its
+    light curve divided by the ALC built from all the *other* stars, so a star cannot lower its own
+    variance by dominating the ALC (the runaway that iter_algorithm has). Returns (sigma, w):
+    the per-star scatter (NaN when it cannot be measured) and the converged weights (sum 1).
+    """
+    F = np.asarray(nflux, dtype=float)
+    F0 = np.where(np.isfinite(F), F, 0.)   # as ArtificialLightCurve's nansum treats a missing point
+    prior = np.asarray(prior, dtype=float)
+    w = np.where(prior > 0, np.asarray(w_start, dtype=float), 0.)
+    w = w / np.sum(w)
+    sigma = np.full(len(F), np.nan)
+    for _ in range(max_iter):
+        alc = w @ F0
+        loo = alc[None, :] - w[:, None] * F0
+        loo = np.where(loo > 0.001, loo, np.nan)
+        loo = loo / np.nanmedian(loo, axis=1, keepdims=True)
+        diff = F / loo
+        diff = diff / np.nanmedian(np.where(diff > 0.001, diff, np.nan), axis=1, keepdims=True)
+        sigma = np.nanstd(diff, axis=1)
+        good = np.isfinite(sigma) & (sigma > 0) & (prior > 0)
+        new = np.where(good, prior / np.where(good, sigma, 1.) ** 2, 0.)
+        if np.sum(new) <= 0:
+            break
+        new = new / np.sum(new)
+        done = np.max(np.abs(new - w)) < tol * np.max(new)
+        w = new
+        if done:
+            break
+    return sigma, w
+
+
+def stable_weights(lcurves, targ, faint=STABLE_FAINT_LIMIT, kernel_arcmin=STABLE_KERNEL_ARCMIN):
+    """Weights for the comparison stars without any discontinuous step. Returns (lcurves, num_comp).
+
+    W1 is the leave-one-out inverse variance, W2 the distance kernel and W3 eligibility (magnitude
+    range and preclean); SATURATED/LOWFLUX stars keep W1 = 0 from init_weights. num_comp is the
+    number of stars that carry 95% of the weight, as iter_algorithm reports it."""
+    min_mag = np.nanmedian(targ.izmag) + faint
+    mags = np.nanmedian(extract(lcurves, 'izmag'), axis=1)
+    for l, m in zip(lcurves, mags):
+        l.w3 = 1. if (np.isfinite(m) and m <= min_mag) else 0.
+    lcurves = set_all_weights(lcurves)
+    print("Magnitude range: comparison stars down to %.2f, %d stars" % (
+        min_mag, np.count_nonzero(extract(lcurves, 'weight'))))
+
+    lcurves = preclean(lcurves)
+
+    seps = []
+    for l in lcurves:
+        l.sep = targ_separation(targ.ra, targ.dec, l.ra, l.dec)
+        seps.append(l.sep)
+    for l, k in zip(lcurves, distance_kernel(seps, kernel_arcmin)):
+        l.w2 = k
+
+    w1 = np.array(extract(lcurves, 'w1'), dtype=float)
+    w2 = np.array(extract(lcurves, 'w2'), dtype=float)
+    w3 = np.array(extract(lcurves, 'w3'), dtype=float)
+    prior = np.where(np.isfinite(w1) & (w1 > 0), w2 * w3, 0.)
+    use = np.where(prior > 0)[0]
+    if len(use) < 2:
+        print("WARNING: fewer than two usable comparison stars; keeping flux weights")
+        lcurves = set_all_weights(lcurves)
+        return lcurves, len(use)
+
+    nflux = np.array([np.ma.filled(np.ma.asarray(lcurves[i].nflux, dtype=float), np.nan) for i in use])
+    sigma, w = loo_inverse_variance(nflux, prior[use], w1[use] * prior[use])
+    for l in lcurves:
+        l.w1 = 0.
+    for i, s in zip(use, sigma):
+        lcurves[i].w1 = 1. / s ** 2 if (np.isfinite(s) and s > 0) else 0.
+    lcurves = set_all_weights(lcurves)
+
+    weights = np.sort(np.nan_to_num(np.array(extract(lcurves, 'weight'), dtype=float)))[::-1]
+    num_comp = int(np.searchsorted(np.cumsum(weights), 0.95) + 1)
+    neff = 1. / np.sum(weights ** 2)
+    print("Stable weights: %d stars weighted, %d carry 95%% of the weight, effective number %.1f" % (
+        np.count_nonzero(weights), num_comp, neff))
+    return lcurves, num_comp
+
 def bin_data(jd, y, b):
     mins_jd = float(b) / 1440.
     t = np.array(jd)
@@ -2836,7 +2952,7 @@ def plot_pwv_comparison(tel, targ_jd, targ_gaia, filt, date, savename):
     print(f"PWV comparison plot saved: {savename}")
 
 def main(date, targ_gaia, ap, filt, outfits, goutfits, globallc, binning, version, outdir, lcdir, targ_teff, tlist,
-             oldtlists, basedir, saturation_limit):
+             oldtlists, basedir, saturation_limit, alc_method='stable'):
     if basedir is not None:
         # Use the basedir passed from the pipeline
         print(f"Using basedir from pipeline: {basedir}")
@@ -2938,24 +3054,28 @@ def main(date, targ_gaia, ap, filt, outfits, goutfits, globallc, binning, versio
         print("SET WEIGHTS")
         comp_lcurves = set_all_weights(comp_lcurves)
 
-        # MAGNITUDE CUT-OFF based on ALC
-        print("FLUX THRESH")
-        comp_lcurves = fluxthresh(comp_lcurves,target_lcurve)
-        # INITIAL VARIABILITY CHECK - remove LCs which behave differently to other LCs
-        print("PRECLEAN LCS")
-        comp_lcurves = preclean(comp_lcurves)
+        if alc_method == 'legacy':
+            # MAGNITUDE CUT-OFF based on ALC
+            print("FLUX THRESH")
+            comp_lcurves = fluxthresh(comp_lcurves,target_lcurve)
+            # INITIAL VARIABILITY CHECK - remove LCs which behave differently to other LCs
+            print("PRECLEAN LCS")
+            comp_lcurves = preclean(comp_lcurves)
 
-        # DISTANCE WEIGHT
-        for l in comp_lcurves:
-            sep = targ_separation(target_lcurve.ra, target_lcurve.dec, l.ra, l.dec)
-            l.sep = sep
-        # comp_lcurves = distweight(comp_lcurves,target_lcurve)
+            # DISTANCE WEIGHT
+            for l in comp_lcurves:
+                sep = targ_separation(target_lcurve.ra, target_lcurve.dec, l.ra, l.dec)
+                l.sep = sep
+            # comp_lcurves = distweight(comp_lcurves,target_lcurve)
 
-        alc, comp_lcurves, num_comp = iter_algorithm(comp_lcurves, target_lcurve)
-        if alc == None:
-            return None
-        # CAP COMPARISON STARS AND RECOMPUTE ALC
-        comp_lcurves = cap_comparison_stars(comp_lcurves, max_stars=10)
+            alc, comp_lcurves, num_comp = iter_algorithm(comp_lcurves, target_lcurve)
+            if alc == None:
+                return None
+            # CAP COMPARISON STARS AND RECOMPUTE ALC
+            comp_lcurves = cap_comparison_stars(comp_lcurves, max_stars=10)
+        else:
+            print("STABLE COMPARISON WEIGHTS")
+            comp_lcurves, num_comp = stable_weights(comp_lcurves, target_lcurve)
         alc = ArtificialLightCurve(comp_lcurves)
         # FINAL TARGET DIFFERENTIAL LC (using final ALC)
         target_lcurve.diff_photom(alc)
@@ -3121,6 +3241,9 @@ if __name__ == "__main__":
     parser.add_argument('-oldtarg', '--oldtarglists', help="Older Target lists to check, separated by spaces", required=False)
     parser.add_argument('--no_fits',help="Don't produce any fits files",action='store_true')
     parser.add_argument('--basedir', help="Base directory path", required=False)
+    parser.add_argument('--alc', choices=['stable', 'legacy'], default='stable',
+                        help="Comparison-star weighting: 'stable' (default) or the pre-2026-10 'legacy' chain "
+                             "(fluxthresh, iter_algorithm, top-10 cap)")
     args = parser.parse_args()
     # print(args)
 
@@ -3179,7 +3302,7 @@ if __name__ == "__main__":
 
     try:
         lc = main(args.date,gaia_dr2_id,int(args.ap), args.filt, outfits, goutfits, globallc, args.bin,version,outdir,
-                  lcdir,args.teff,args.targlist,oldtarglists,args.basedir, saturation_limit)
+                  lcdir,args.teff,args.targlist,oldtarglists,args.basedir, saturation_limit, args.alc)
 
     except Exception as e:
         print(e)
