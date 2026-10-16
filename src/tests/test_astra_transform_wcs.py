@@ -393,3 +393,68 @@ def test_native_parity_under_mirror_history_is_ambiguous():
     h = mirrored_spirit(FLIPPED, history='WCS updated for horizontal mirroring')
     h['CDELT1'] = h['CDELT2'] = 1.0       # keep it out of the mir_pc branch
     assert [k for k, _ in diagnose(h)] == ['ambiguous']
+
+
+# --- writing the repair to disk: header bytes only, backed up, reversible ----------------------------------------
+
+import tarfile                                                   # noqa: E402
+from download.repair_astra_wcs import apply_to_file, read_header_bytes, restore   # noqa: E402
+
+
+def raw_like_frame(path, filler_cards=0):
+    """A small uint16 frame stored like the raw archive (BITPIX 16, BZERO 32768) with the old-transform WCS."""
+    h = old_transform_output()
+    for k in ('NAXIS', 'NAXIS1', 'NAXIS2'):
+        del h[k]
+    for i in range(filler_cards):
+        h['FILL{:04d}'.format(i)] = (i, 'padding to fill the header block')
+    data = (np.arange(30 * 20, dtype=np.uint16).reshape(30, 20) * 97) % 65535
+    fits.PrimaryHDU(data=data, header=h).writeto(path)
+    os.utime(path, (1_600_000_000, 1_600_000_000))
+    return open(path, 'rb').read()
+
+
+def data_bytes(path):
+    raw, _ = read_header_bytes(path)
+    return open(path, 'rb').read()[len(raw):]
+
+
+@pytest.mark.parametrize('filler', [0, 'overflow'])
+def test_apply_writes_header_only_and_restore_undoes_it(tmp_path, filler):
+    path = str(tmp_path / 'frame.fits')
+    if filler == 'overflow':
+        # fill the header so that the two cards the repair adds need one more 2880-byte block
+        raw = raw_like_frame(path)
+        ncards = len(read_header_bytes(path)[1])
+        n_fill = (36 - (ncards + 1) % 36) % 36
+        os.remove(path)
+        raw = raw_like_frame(path, filler_cards=n_fill)
+    else:
+        raw = raw_like_frame(path)
+    old_header_len = len(read_header_bytes(path)[0])
+    old_data = data_bytes(path)
+    with tarfile.open(str(tmp_path / 'backup.tar'), 'a') as t:
+        found = apply_to_file(path, t)
+    assert {k for k, _ in found} == {'rot_pc', 'stale_pa'}
+    new_raw, header = read_header_bytes(path)
+    assert header['ASTRAWCS'] == 2
+    assert data_bytes(path) == old_data                          # pixels untouched, byte for byte
+    assert (len(new_raw) > old_header_len) == (filler == 'overflow')
+    assert os.stat(path).st_mtime == 1_600_000_000                # timestamps kept
+    with fits.open(path) as h:                                    # still a valid FITS file that astropy reads
+        assert h[0].data.dtype.kind in 'ui' and h[0].data[3, 4] == (3 * 20 + 4) * 97 % 65535
+    assert restore(str(tmp_path / 'backup.tar')) == 1
+    assert open(path, 'rb').read() == raw                         # back to the original, byte for byte
+
+
+def test_apply_leaves_reported_only_frames_alone(tmp_path):
+    path = str(tmp_path / 'frame.fits')
+    h = old_transform_output()
+    for k in ('NAXIS', 'NAXIS1', 'NAXIS2'):
+        del h[k]
+    fits.PrimaryHDU(data=np.zeros((2048, 2088), dtype=np.uint16), header=h).writeto(path)   # native shape
+    before = open(path, 'rb').read()
+    with tarfile.open(str(tmp_path / 'b.tar'), 'a') as t:
+        found = apply_to_file(path, t)
+    assert [k for k, _ in found] == ['image_not_rotated']
+    assert open(path, 'rb').read() == before

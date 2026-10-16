@@ -27,13 +27,21 @@ stored image, and is left alone; so is a CD matrix (astrometry.net's, rotated by
 within ~1e-6 deg/px of right for these nearly skew-free matrices). Repaired frames get ASTRAWCS = 2 and a
 HISTORY line, so a second run finds nothing to do.
 
-Usage:  python repair_astra_wcs.py NIGHT_DIR [NIGHT_DIR ...] [--apply] [--csv report.csv]
+Writing touches header bytes only: the data are never decoded, the original header of every changed frame is saved
+first (one tar per night), and file mode and timestamps are kept. --restore puts the saved headers back.
+
+Usage:  python repair_astra_wcs.py NIGHT_DIR [NIGHT_DIR ...] [--apply --backup DIR] [--csv report.csv]
+        python repair_astra_wcs.py --restore DIR/<telescope>_images_<night>.tar
 """
 import argparse
 import csv
 import glob
+import hashlib
+import io
 import os
+import shutil
 import sys
+import tarfile
 
 import numpy as np
 from astropy.io import fits
@@ -155,28 +163,138 @@ def frames(night_dir):
     return sorted(out)
 
 
+# Writing. These are the archive's raw frames, so the data are never decoded: the header is read and written as
+# bytes, the data bytes stay where they are, and the original header goes to a tar file first so the repair can be
+# undone with --restore. Decoding scaled 16-bit data through astropy's update mode can rewrite it as float.
+BLOCK = 2880
+
+
+def read_header_bytes(path):
+    """The primary header exactly as stored (to the END card, padded to whole blocks), and its parse."""
+    chunks = []
+    with open(path, 'rb') as f:
+        while True:
+            block = f.read(BLOCK)
+            if len(block) < BLOCK:
+                raise ValueError('{}: no END card before the end of the file'.format(path))
+            chunks.append(block)
+            if any(block[i:i + 8] == b'END     ' for i in range(0, BLOCK, 80)):
+                raw = b''.join(chunks)
+                return raw, fits.Header.fromstring(raw.decode('ascii'))
+
+
+def write_header_bytes(path, new_raw, old_raw):
+    """
+    Replace the header of path. In place when the new header has as many blocks as the old one, which is the
+    usual case; otherwise via a temporary file holding the new header and the untouched data bytes, swapped in
+    with os.replace. Keeps the file's mode and timestamps.
+    """
+    st = os.stat(path)
+    if len(new_raw) == len(old_raw):
+        with open(path, 'r+b') as f:
+            f.seek(0)
+            f.write(new_raw)
+            f.flush()
+            os.fsync(f.fileno())
+    else:
+        tmp = path + '.repair-tmp'
+        with open(path, 'rb') as src, open(tmp, 'wb') as dst:
+            src.seek(len(old_raw))
+            dst.write(new_raw)
+            shutil.copyfileobj(src, dst, 1 << 20)
+            dst.flush()
+            os.fsync(dst.fileno())
+        if os.path.getsize(tmp) != st.st_size - len(old_raw) + len(new_raw):
+            os.remove(tmp)
+            raise IOError('{}: size check failed, left untouched'.format(path))
+        os.chmod(tmp, st.st_mode & 0o7777)
+        os.replace(tmp, path)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+    if read_header_bytes(path)[0] != new_raw:
+        raise IOError('{}: header read back differs from what was written'.format(path))
+
+
+def data_digest(path, header_len):
+    h = hashlib.sha1()
+    with open(path, 'rb') as f:
+        f.seek(header_len)
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def apply_to_file(path, backup):
+    """Diagnose path and repair it on disk. Returns the list from diagnose(); backup is an open tarfile."""
+    old_raw, header = read_header_bytes(path)
+    found = diagnose(header)
+    if not found or any(k in ('image_not_rotated', 'ambiguous') for k, _ in found):
+        return found
+    before = data_digest(path, len(old_raw))
+    repair(header, found)
+    new_raw = header.tostring(padding=True).encode('ascii')
+    info = tarfile.TarInfo(os.path.abspath(path).lstrip('/') + '.hdr')
+    info.size = len(old_raw)
+    info.mtime = os.stat(path).st_mtime
+    backup.addfile(info, io.BytesIO(old_raw))
+    backup.fileobj.flush()
+    write_header_bytes(path, new_raw, old_raw)
+    if data_digest(path, len(new_raw)) != before:
+        raise IOError('{}: data bytes changed'.format(path))
+    return found
+
+
+def restore(tar_path):
+    """Put back every header saved in tar_path. Returns the number of files restored."""
+    n = 0
+    with tarfile.open(tar_path) as t:
+        for m in t.getmembers():
+            path = '/' + m.name[:-len('.hdr')]
+            old_raw = t.extractfile(m).read()
+            current_raw, _ = read_header_bytes(path)
+            write_header_bytes(path, old_raw, current_raw)
+            n += 1
+    return n
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split('\n')[1])
-    p.add_argument('night_dirs', nargs='+')
+    p.add_argument('night_dirs', nargs='*')
     p.add_argument('--apply', action='store_true', help='write the fixes (default: report only)')
+    p.add_argument('--backup', help='directory for the per-night tar of original headers (required with --apply)')
+    p.add_argument('--restore', help='put back the headers saved in this tar file, and do nothing else')
     p.add_argument('--csv', help='write one row per affected frame here')
     args = p.parse_args(argv)
+    if args.restore:
+        print('{} headers restored from {}'.format(restore(args.restore), args.restore))
+        return
+    if args.apply and not args.backup:
+        p.error('--apply needs --backup')
     rows, counts = [], {}
     for nd in args.night_dirs:
-        for path in frames(nd):
-            try:
-                with fits.open(path, mode='update' if args.apply else 'readonly', memmap=False) as h:
-                    found = diagnose(h[0].header)
-                    if not found:
-                        continue
-                    for k, _ in found:
-                        counts[k] = counts.get(k, 0) + 1
-                    rows.append((path, ';'.join('{}:{}'.format(k, d) for k, d in found)))
-                    if args.apply and not any(k in ('image_not_rotated', 'ambiguous') for k, _ in found):
-                        repair(h[0].header, found)
-            except Exception as e:
-                rows.append((path, 'error:{}'.format(e)))
-                counts['error'] = counts.get('error', 0) + 1
+        backup = None
+        if args.apply:
+            os.makedirs(args.backup, exist_ok=True)
+            name = '_'.join(os.path.abspath(nd).rstrip('/').split('/')[-3:]) + '.tar'
+            backup = tarfile.open(os.path.join(args.backup, name), 'a')
+        try:
+            for path in frames(nd):
+                try:
+                    if args.apply:
+                        found = apply_to_file(path, backup)
+                    else:
+                        found = diagnose(read_header_bytes(path)[1])
+                except Exception as e:
+                    rows.append((path, 'error:{}'.format(e)))
+                    counts['error'] = counts.get('error', 0) + 1
+                    continue
+                if not found:
+                    continue
+                for k, _ in found:
+                    counts[k] = counts.get(k, 0) + 1
+                rows.append((path, ';'.join('{}:{}'.format(k, d) for k, d in found)))
+        finally:
+            if backup is not None:
+                backup.close()
     if args.csv:
         with open(args.csv, 'w', newline='') as f:
             w = csv.writer(f)
