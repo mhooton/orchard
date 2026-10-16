@@ -111,6 +111,53 @@ def test_refuses_k2_and_stored_frames(tmp_path):
     assert ro.check(native, 1) is None
 
 
+def spirit_frame(seed=0):
+    rng = np.random.default_rng(seed)
+    return rng.integers(250, 60000, size=(1280, 1024), dtype=np.uint16)
+
+
+def mirrored_twice(path, data, imagetyp='Light Frame', cards=2):
+    write(path, data, IMAGETYP=imagetyp, ASTRAMIR='Y', CTYPE1='RA---TAN', CTYPE2='DEC--TAN', CRVAL1=150.0,
+          CRVAL2=-30.0, CRPIX1=512.0, CRPIX2=640.0, PC1_1=-8.6e-5, PC1_2=0.0, PC2_1=0.0, PC2_2=8.6e-5)
+    with fits.open(path, mode='update') as hl:
+        for _ in range(cards):
+            hl[0].header.add_history('WCS updated for horizontal mirroring')
+    return path
+
+
+def test_flip_mirrors_a_doubly_mirrored_spirit_frame_back(tmp_path):
+    s = spirit_frame(4)
+    night = tmp_path / 'Observations' / 'Callisto' / 'images' / '20251222'
+    path = mirrored_twice(str(night / 'SPECU4.s.fits'), np.flip(s, axis=1))
+    before = md5(path)
+    q, man = tmp_path / 'quarantine', tmp_path / 'manifest.csv'
+    args = [frames_csv(tmp_path, [(path, 'flip')]), '--apply', '--quarantine', str(q), '--manifest', str(man)]
+    assert ro.main(args) == 0
+    with fits.open(path) as hl:
+        assert np.array_equal(hl[0].data, s)
+        h = hl[0].header
+    raw = fits.getheader(path)
+    assert (raw['NAXIS1'], raw['NAXIS2']) == (1024, 1280)
+    assert raw['BITPIX'] == 16 and raw['BZERO'] == 32768
+    assert h['ASTRAMIR'] == 'Y' and 'ASTRAROT' not in h
+    assert not any(c in h for c in ('CTYPE1', 'CRVAL1', 'PC1_1'))
+    assert any('orient repair: fliplr' in str(x) for x in h['HISTORY'])
+    assert md5(q / 'Callisto' / '20251222' / 'SPECU4.s.fits') == before
+    assert list(csv.DictReader(open(man)))[0]['k'] == 'flip'
+    # a second run refuses it, so it cannot be flipped back again
+    after = md5(path)
+    assert ro.main(args) == 1 and md5(path) == after
+
+
+def test_flip_refuses_a_light_frame_mirrored_once_and_andor_frames(tmp_path):
+    once = mirrored_twice(str(tmp_path / 'once.fits'), spirit_frame(), cards=1)
+    assert 'mirroring card' in ro.check(once, 'flip')
+    andor = write(str(tmp_path / 'andor.fits'), stored_frame(), ASTRAMIR='Y')
+    assert 'not a SPIRIT frame' in ro.check(andor, 'flip')
+    dark = mirrored_twice(str(tmp_path / 'dark.fits'), spirit_frame(), imagetyp='Dark Frame', cards=0)
+    assert ro.check(dark, 'flip') is None       # calibration frames carry no mirroring card
+
+
 def test_transform_does_not_turn_a_frame_twice(tmp_path):
     native = np.rot90(stored_frame(), -1)
     write(str(tmp_path / 'f.fits'), native, IMAGETYP='Dark Frame')
