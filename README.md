@@ -149,6 +149,23 @@ Telescope and instrument parameters are defined in `src/calibration/instrument_c
 }
 ```
 
+### Telescope Name Aliases
+
+Settings are looked up by the frame's `TELESCOP` header. A frame that names its
+telescope differently from the configuration is mapped on by `telescope_aliases`:
+
+```json
+"telescope_aliases": {
+  "ACP->Artemis": "Artemis"
+}
+```
+
+Artemis frames say `ACP->Artemis` from the start of the survey until 2022-06-15
+(ACP's telescope hub was in the chain) and `Artemis` from 2022-06-16. It is the same
+camera either side: the flat-field pixel response correlates at 0.92 across the change,
+as it does between neighbouring nights. Without the alias, older frames fall back to
+generic defaults (no trim or overscan, no plate scale) and T8 stops at the WCS check.
+
 ### Instrument-Specific Features
 
 **ANDOR (Optical):**
