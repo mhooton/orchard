@@ -11,7 +11,9 @@ Nothing is written unless --apply is given. Only raw light frames are considered
             Fix: remove the WCS and PA, so astrometry.py solves the frame.
   unrot     ASTRAROT set but no transform HISTORY, and the transfer's PA still agrees with the matrix: an earlier
             downloader rotated the image and left the whole WCS, CRPIX included, as ESO delivered it (Callisto 2024).
-            Fix: transform CRPIX and the matrix as astra_transform now does.  unmir is the same for a mirror.
+            Fix: transform CRPIX and the matrix as astra_transform now does.
+  unmir     The same for a mirrored SPIRIT frame, detected by parity (a mirror leaves PA unchanged): no transform
+            HISTORY and a matrix with the ESO parity (-1; every stored SPIRIT frame solved independently has +1).
   stale_pa  Any transformed frame whose PA describes the native orientation rather than the stored one.
   image_not_rotated  ASTRAROT on an Andor image still 2088 x 2048: the WCS was turned and the image was not
             (Ganymede, November 2025). Reported only.
@@ -49,6 +51,13 @@ def history(header):
     return ' '.join(str(h) for h in header.get('HISTORY', []))
 
 
+def pa_agrees(header, m, tol=1.0):
+    """True if the transfer's PA keyword still describes matrix m (within tol degrees)."""
+    if 'PA' not in header:
+        return False
+    return abs((float(header['PA']) - plate_pa(m) + 180) % 360 - 180) < tol
+
+
 def diagnose(header):
     """List of (signature, detail) for one header. Pure: does not modify the header."""
     if str(header.get('IMAGETYP', '')) != 'Light Frame' or 'ASTRAWCS' in header:
@@ -77,23 +86,27 @@ def diagnose(header):
     elif sky and pc_without_cdelt and mirrored and 'horizontal mirroring' in hist:
         fixed = m @ np.array(MIRROR_X, dtype=float)
         found.append(('mir_pc', 'mirror'))
-    elif (sky and m is not None and not transformed_by_history and convention in ('CD', 'PC') and 'CDELT1' not in header
-          and 'PA' in header and abs((float(header['PA']) - plate_pa(m) + 180) % 360 - 180) < 1.0):
-        # The image was rotated or mirrored by an earlier downloader that left the whole WCS (CRPIX too) as it came
-        # from ESO: no transform HISTORY, and the transfer's PA still agrees with the matrix. Seen on Callisto 2024.
-        if rot:
-            steps = int(round(float(rot) / 90.0)) % 4
-            fixed = m @ np.linalg.matrix_power(np.array(ROT90_ACW, dtype=float), steps)
-            found.append(('unrot', '{} x 90 deg'.format(steps)))
-        else:
-            fixed = m @ np.array(MIRROR_X, dtype=float)
-            found.append(('unmir', 'mirror'))
-    elif (sky and m is not None and transformed_by_history and 'PA' in header
-          and abs((float(header['PA']) - plate_pa(m) + 180) % 360 - 180) < 1.0):
+    elif (rot and sky and m is not None and not transformed_by_history and convention in ('CD', 'PC')
+          and 'CDELT1' not in header and pa_agrees(header, m)):
+        # The image was rotated by an earlier downloader that left the whole WCS (CRPIX too) as it came from ESO:
+        # no transform HISTORY, and the transfer's PA still agrees with the matrix. Seen on Callisto in 2024.
+        steps = int(round(float(rot) / 90.0)) % 4
+        fixed = m @ np.linalg.matrix_power(np.array(ROT90_ACW, dtype=float), steps)
+        found.append(('unrot', '{} x 90 deg'.format(steps)))
+    elif rot and sky and m is not None and transformed_by_history and pa_agrees(header, m):
         # Transform HISTORY is there, yet the transfer's PA still agrees with the matrix, so the matrix is still the
         # native one; with more than one transform recorded (Ganymede 2025-07-28 has two), CRPIX cannot be trusted
         # either. Reported only: re-solve these frames instead.
         return [('ambiguous', 'matrix still native, CRPIX history unclear')]
+    elif mirrored and sky and m is not None and np.linalg.det(m) < 0:
+        # A mirror leaves PA (the angle of -Y) unchanged, so for SPIRIT the test is parity: every SPIRIT frame we
+        # store, plate-solved independently, has parity +1, and the ESO original has -1.
+        if transformed_by_history or 'CDELT1' in header:
+            # either the transform ran and the matrix is still native, or the matrix is orchard's own solution (PC
+            # with CDELT = 1, made on the stored image) and came out mirrored; neither is a header fix
+            return [('ambiguous', 'mirrored image with the native parity')]
+        fixed = m @ np.array(MIRROR_X, dtype=float)
+        found.append(('unmir', 'mirror'))
     if sky and fixed is not None and 'PA' in header:
         pa = plate_pa(fixed)
         if abs((float(header['PA']) - pa + 180) % 360 - 180) > 0.01:

@@ -348,3 +348,48 @@ def test_a_native_matrix_under_transform_history_is_reported_not_fixed():
     before = h.copy()
     repair(h, found)
     assert h == before
+
+
+def mirrored_spirit(native_m, history=None):
+    h = base_header()
+    h['NAXIS'] = 2
+    h['NAXIS1'], h['NAXIS2'] = NX, NY
+    for (i, j), v in np.ndenumerate(np.asarray(native_m)):
+        h['CD{}_{}'.format(i + 1, j + 1)] = v
+    h['PA'] = (plate_pa(np.asarray(native_m)), '[deg, 0-360 CCW] Position angle of plate')
+    h['ASTRAMIR'] = ('Y', 'Y axis flip applied to astra images')
+    if history:
+        h.add_history(history)
+    return h
+
+
+def test_mirror_keeps_pa_so_a_correctly_mirrored_frame_is_not_flagged(tmp_path):
+    native = header_cd(FLIPPED)          # SPIRIT's ESO parity is -1
+    native['PA'] = (plate_pa(np.array(FLIPPED)), '[deg, 0-360 CCW] Position angle of plate')
+    write_frame(tmp_path, native)
+    astra_transform_unified(['frame'], transform_mode='mirror', n_repeats=1, dirname=str(tmp_path))
+    out = fits.getheader(tmp_path / 'frame.fits')
+    assert abs(out['PA'] - native['PA']) < 1e-9      # the angle of -Y does not change under a left-right mirror
+    del out['ASTRAWCS']                               # as if written by the old code, which got CD mirrors right
+    assert [k for k, _ in diagnose(out)] == []
+
+
+def test_unmirrored_spirit_matrix_without_history_is_fixed(tmp_path):
+    h = mirrored_spirit(FLIPPED)
+    found = dict(diagnose(h))
+    assert 'unmir' in found
+    good = header_cd(FLIPPED)
+    good['PA'] = h['PA']
+    write_frame(tmp_path, good, name='g')
+    astra_transform_unified(['g'], transform_mode='mirror', n_repeats=1, dirname=str(tmp_path))
+    g = fits.getheader(tmp_path / 'g.fits')
+    repair(h, list(found.items()))
+    ys, xs = np.mgrid[0:NY, 0:NX]
+    sep = WCS(h).pixel_to_world(xs.ravel(), ys.ravel()).separation(WCS(g).pixel_to_world(xs.ravel(), ys.ravel())).arcsec
+    assert sep.max() < 1e-6
+
+
+def test_native_parity_under_mirror_history_is_ambiguous():
+    h = mirrored_spirit(FLIPPED, history='WCS updated for horizontal mirroring')
+    h['CDELT1'] = h['CDELT2'] = 1.0       # keep it out of the mir_pc branch
+    assert [k for k, _ in diagnose(h)] == ['ambiguous']
