@@ -323,3 +323,13 @@ def test_repair_finds_a_wcs_left_entirely_native(tmp_path):
     assert sep.max() < 1e-6
     assert abs(old['PA'] - good['PA']) < 1e-9
     assert diagnose(old) == []
+
+
+def test_a_native_shaped_image_with_astrarot_is_reported_not_fixed():
+    h = old_transform_output()
+    h['NAXIS1'], h['NAXIS2'] = 2088, 2048
+    found = diagnose(h)
+    assert [k for k, _ in found] == ['image_not_rotated']
+    before = h.copy()
+    repair(h, found)
+    assert h == before

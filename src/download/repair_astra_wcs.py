@@ -13,6 +13,8 @@ Nothing is written unless --apply is given. Only raw light frames are considered
             downloader rotated the image and left the whole WCS, CRPIX included, as ESO delivered it (Callisto 2024).
             Fix: transform CRPIX and the matrix as astra_transform now does.  unmir is the same for a mirror.
   stale_pa  Any transformed frame whose PA describes the native orientation rather than the stored one.
+  image_not_rotated  ASTRAROT on an Andor image still 2088 x 2048: the WCS was turned and the image was not
+            (Ganymede, November 2025). Reported only.
             Fix: recompute PA from the matrix as it is used (wcslib precedence: PC over CD).
 
 A PC matrix written with CDELTi = 1 is orchard's own plate solution (astropy writes it that way), made on the
@@ -55,6 +57,10 @@ def diagnose(header):
     found = []
     m, convention = linear_matrix(header)
     sky = str(header.get('CTYPE1', '')).startswith('RA')
+    if rot and (header.get('NAXIS1'), header.get('NAXIS2')) == (2088, 2048):
+        # ASTRAROT set on an Andor image that is still in the native shape (the 'rotate_wcs_only' mode, seen on
+        # Ganymede in November 2025): the WCS was turned and the image was not. Reported, never fixed blind.
+        return [('image_not_rotated', 'native 2088 x 2048 with ASTRAROT')]
     if sky and m is not None and abs(np.linalg.det(m)) == 0:
         return [('singular', 'matrix is singular')]
     pc_without_cdelt = convention == 'PC' and 'CDELT1' not in header and 'CDELT2' not in header
@@ -89,6 +95,8 @@ def diagnose(header):
 def repair(header, found):
     """Apply the fixes listed by diagnose() to header in place."""
     kinds = {k for k, _ in found}
+    if 'image_not_rotated' in kinds:
+        return
     if 'singular' in kinds:
         drop_singular_wcs(header)
     elif 'unrot' in kinds:
@@ -142,7 +150,7 @@ def main(argv=None):
                     for k, _ in found:
                         counts[k] = counts.get(k, 0) + 1
                     rows.append((path, ';'.join('{}:{}'.format(k, d) for k, d in found)))
-                    if args.apply:
+                    if args.apply and not any(k == 'image_not_rotated' for k, _ in found):
                         repair(h[0].header, found)
             except Exception as e:
                 rows.append((path, 'error:{}'.format(e)))
