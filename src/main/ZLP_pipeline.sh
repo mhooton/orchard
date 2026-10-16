@@ -31,6 +31,7 @@ only_task=""
 FORCE_PLATESOLVE="0"
 USE_EXISTING_CALIBRATIONS="0"
 SAVE_FLAT_PRODUCTS="0" # T4: also write flats/proc*, std.fts and variance.fts (never read)
+FRAME_FORMAT="int16" # after T11, store calibrated frames as int16, rice (int16 + lossless Rice, .fits.fz) or float32
 CORES_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
@@ -62,6 +63,7 @@ while [[ $# -gt 0 ]]; do
         --force-platesolve) FORCE_PLATESOLVE="1"; shift ;;
         --use-existing-calibrations) USE_EXISTING_CALIBRATIONS="1"; shift ;;
         --save-flat-products) SAVE_FLAT_PRODUCTS="1"; shift ;;
+        --frame-format) FRAME_FORMAT="$2"; shift 2 ;;
         --cores) CORES_OVERRIDE="$2"; shift 2 ;;
         *) filtered_args+=("$1"); shift ;; # Keep non-task arguments
     esac
@@ -89,8 +91,13 @@ fi
 # Reassign positional parameters with filtered arguments
 set -- "${filtered_args[@]}"
 
+case "${FRAME_FORMAT}" in
+    int16|rice|float32) ;;
+    *) echo "--frame-format must be int16, rice or float32, not '${FRAME_FORMAT}'" >&2; exit 1 ;;
+esac
+
 # Make variables readonly after parsing
-readonly T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12 FORCE_PLATESOLVE USE_EXISTING_CALIBRATIONS SAVE_FLAT_PRODUCTS CORES_OVERRIDE
+readonly T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12 FORCE_PLATESOLVE USE_EXISTING_CALIBRATIONS SAVE_FLAT_PRODUCTS CORES_OVERRIDE FRAME_FORMAT
 
 #if [[ $# -ne 8 ]] && [[ $# -ne 8 ]]; then
 #    cat >&2 <<-EOF
@@ -952,6 +959,28 @@ pdf_report(){
 }
 
 # Perform version migration from v3 to v2
+pack_frames(){
+    # Store this night's calibrated frames compactly while they are still in v3, before T12 moves them:
+    # 16-bit integers (pixels move by at most 0.5 ADU), plus lossless Rice compression with --frame-format rice.
+    # framepack.py verifies every file before replacing it and leaves any frame it can't convert untouched,
+    # so a failure here costs disk space, not data, and never stops the night.
+    [ "${FRAME_FORMAT}" = "float32" ] && return 0
+    # only when this run made or touched frames (not, e.g., an --only_T12 sweep)
+    [ "$T6$T7$T8$T9$T10$T11" = "000000" ] && return 0
+    local op="int16"
+    [ "${FRAME_FORMAT}" = "rice" ] && op="pack"
+    local dirs
+    dirs=$(compgen -G "${OUTPUTDIR}/${DATE}/*/${RUNNAME}" || true)
+    [ -z "${dirs}" ] && return 0
+    echo "START frame packing (${FRAME_FORMAT})"
+    set +e
+    python ${SCRIPTDIR}/utils/framepack.py ${op} ${dirs} --workers ${CORES} \
+        --manifest ${DATDIR}/logs/framepack_${DATE}_${RUNNAME}.csv
+    echo "framepack exit code $?"
+    set -e
+    echo "END frame packing"
+}
+
 perform_version_migration(){
     echo "START T12"
     echo "Perform version migration from ${VERSION} to v2"
@@ -1348,6 +1377,7 @@ main() {
             done
 
             [ "$T11" = "1" ] && pdf_report
+            pack_frames
             [ "$T12" = "1" ] && perform_version_migration
 
         fi

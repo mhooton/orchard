@@ -236,7 +236,8 @@ def twirl_wcs(filepath, verbose=False):
     try:
         with fits.open(filepath, mode='update') as hdu:
             header = hdu[0].header
-            data = hdu[0].data
+            # read-only open for the pixels; see pointer_wcs.py
+            data = fits.getdata(filepath)
 
             if verbose:
                 print(f"[VERBOSE] FITS file opened successfully")
