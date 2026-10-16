@@ -301,7 +301,7 @@ def get_output_filename(filename, dirname, n_repeats, test=False):
 
 
 def astra_transform_unified(input_data, transform_mode='auto', n_repeats=1, completeness="all",
-                            test=False, dirname=None):
+                            test=False, dirname=None, force=False):
     """
     Unified function to transform FITS files with proper WCS handling.
 
@@ -325,6 +325,9 @@ def astra_transform_unified(input_data, transform_mode='auto', n_repeats=1, comp
         If True, write files with '_test' suffix to avoid overwriting originals
     dirname : str, optional
         Directory path when input_data is a list of filenames
+    force : bool, optional
+        Transform frames that already carry ASTRAROT (rotate, rotate_wcs_only) or ASTRAMIR (mirror).
+        By default they are skipped, so running the transform twice cannot turn a frame twice.
     """
 
     # Determine input type and build file list
@@ -402,6 +405,7 @@ def astra_transform_unified(input_data, transform_mode='auto', n_repeats=1, comp
         files_to_process = [files_to_process[0]]
 
     print(f"Processing {len(files_to_process)} FITS files...")
+    skipped = 0
 
     # Process each file
     for file_info in files_to_process:
@@ -435,6 +439,15 @@ def astra_transform_unified(input_data, transform_mode='auto', n_repeats=1, comp
             actual_transform = 'mirror' if is_spirit else 'rotate'
         else:
             actual_transform = transform_mode.lower()
+
+        # A frame that already carries the flag this transform sets has been transformed: doing it again
+        # turns it a further 90 deg (or flips it back). On 2025-12-09 this left 2,441 Ganymede frames
+        # 180 deg from the ESO orientation.
+        done_flag = {'rotate': 'ASTRAROT', 'rotate_wcs_only': 'ASTRAROT', 'mirror': 'ASTRAMIR'}.get(actual_transform)
+        if done_flag and done_flag in header and not force:
+            print(f"Skipped {name_without_ext}: already has {done_flag}, not transforming it again.")
+            skipped += 1
+            continue
 
         # Apply transformation
         if actual_transform == 'mirror':
@@ -491,7 +504,8 @@ def astra_transform_unified(input_data, transform_mode='auto', n_repeats=1, comp
     if test:
         print("Test mode: All files written with '_test' suffix.")
     else:
-        print(f"Successfully transformed {len(files_to_process)} files.")
+        print(f"Successfully transformed {len(files_to_process) - skipped} files"
+              + (f" ({skipped} already transformed, skipped)." if skipped else "."))
 
 # Backward compatibility wrapper for download script
 def astra_transform(filenames, dirname, n_repeats, test=False):
