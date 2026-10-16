@@ -3,7 +3,7 @@ from astropy.wcs import utils
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 import numpy as np
-from calibration.pipeutils import resolve_plate_scale
+from calibration.pipeutils import load_instrument_config, resolve_plate_scale, resolve_telescope
 from astropy.stats import SigmaClip
 from photutils.background import Background2D, MedianBackground
 from scipy import ndimage
@@ -270,7 +270,7 @@ def twirl_wcs(filepath, verbose=False):
                 dec = header['DEC']
                 if verbose:
                     print(f"[VERBOSE] Header RA: {ra}, DEC: {dec}")
-                if header['TELESCOP'] == 'Artemis':
+                if resolve_telescope(header.get('TELESCOP', ''), load_instrument_config()) == 'Artemis':
                     center = SkyCoord(ra, dec, unit=[u.hourangle, u.deg])
                 else:
                     center = SkyCoord(ra, dec, unit=[u.deg, u.deg])

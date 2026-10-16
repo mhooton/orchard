@@ -15,6 +15,18 @@ def load_instrument_config():
     with open(config_path, 'r') as f:
         return json.load(f)
 
+
+def resolve_telescope(telescop, config):
+    """The configured telescope name for a header's TELESCOP value.
+
+    Some frames name their telescope differently from the configuration: Artemis frames up to
+    2022-06-15 say 'ACP->Artemis' (ACP's telescope hub was in the chain), later ones 'Artemis'.
+    It is the same camera either side (flat-field pixel response correlates at 0.92 across the
+    change), so config['telescope_aliases'] maps the old name on to the configured one.
+    """
+    name = (telescop or '').strip()
+    return config.get('telescope_aliases', {}).get(name, name)
+
 def detect_instrument(hdul, trimmed=False):
     """
     Centralized instrument detection from FITS HDUList using configuration file
@@ -28,11 +40,11 @@ def detect_instrument(hdul, trimmed=False):
     """
     try:
         hdr = hdul[0].header
-        telescop = hdr.get('TELESCOP', '').strip()
         naxis2 = hdr.get('NAXIS2', 0)
 
         # Load configuration
         config = load_instrument_config()
+        telescop = resolve_telescope(hdr.get('TELESCOP', ''), config)
 
         # First, try to match telescope name exactly
         if telescop in config['telescopes']:
@@ -109,10 +121,10 @@ def get_instrument_parameters(hdul, trimmed=False):
     """
     try:
         hdr = hdul[0].header
-        telescop = hdr.get('TELESCOP', '')
 
         # Load configuration and detect instrument
         config = load_instrument_config()
+        telescop = resolve_telescope(hdr.get('TELESCOP', ''), config)
         instrument = detect_instrument(hdul, trimmed=trimmed)
 
         # Get telescope config
