@@ -269,7 +269,55 @@ def test_stack_failure_costs_only_the_stack(monkeypatch, tmp_path):
         _Args(datdir), ['unknown'], ['unknown'], ['12345'], ['Sp1300+1912'])
 
     assert stacks == ['fake_path']
-    assert vals == [['unknown'] * 5]
+    # overscan, RON, dark current, CCD temperature, PA, gain, readout mode
+    assert vals == [['unknown'] * 7]
+
+
+# ------------------------------------------------- readout mode (readout.py)
+
+def test_stack_and_vals_reads_gain_and_readout_mode(tmp_path):
+    from astropy.io import fits
+    datdir = str(tmp_path)
+    os.makedirs(os.path.join(datdir, 'reports', 'temp'))
+    liste = []
+    for i, mode in enumerate(['GAIN3.8', 'GAIN3.8', 'PED2900']):
+        path = os.path.join(datdir, 'proc%03d.fits' % i)
+        hdu = fits.PrimaryHDU([[1.0, 2.0], [3.0, 4.0]])
+        hdu.header.update({'RON': 9.3, 'DARKCUR': 0.27, 'GAIN': 3.83, 'READMODE': mode,
+                           'OVERSCAN': 300.0, 'PA': 0.5, 'CCD-TEMP': -60.0, 'DX': 0.1, 'DY': 0.1,
+                           'JD-OBS': 2461000.5 + i})
+        hdu.writeto(path)
+        liste.append(path)
+    out = os.path.join(datdir, 'reports', 'temp', 'x.fits')
+    _, vals = rep.stack_and_vals(_Args(datdir), liste, out, out + '_save', datdir, out + 'dx.png',
+                                 out + 'dy.png', [1.0], [1.0], 0)
+    assert vals[1] == 9.3 and vals[5] == 3.83
+    assert vals[6] == 'GAIN3.8+PED2900'
+
+
+@pytest.mark.parametrize('ron, gain, modes, expected', [
+    (6.3, 1.08, ['NORMAL'], (True, True)),
+    (9.3, 1.03, ['NORMAL'], (True, False)),          # a noisy normal night
+    (9.3, 3.83, ['GAIN3.8'], (False, True)),         # the mode, not the noise
+    (16.0, 3.83, ['GAIN3.8'], (False, False)),
+    (6.3, None, [], (None, True)),                   # frames from before readout.py
+])
+def test_readout_flags(ron, gain, modes, expected):
+    if 'GAIN3.8' in modes and not rep.READOUT_MODES:
+        pytest.skip('calibration.readout is not importable here')
+    assert rep.readout_flags(ron, gain, modes) == expected
+
+
+def test_make_pdf_with_readout_values(tmp_path):
+    datdir = str(tmp_path)
+    os.makedirs(os.path.join(datdir, 'reports', 'temp'))
+    outname = os.path.join(datdir, 'reports', 'Io_20260924.pdf')
+    imgs, vals, jdstart, jdend, nimages, newap, ellip, targs, gaia, flags = _synthetic_inputs(2)
+    vals = [[300.0, 9.3, 0.27, -60.0, 0.4, 3.83, 'GAIN3.8'], ['unknown'] * 5]
+    order = rep.get_chronological_order(jdstart)
+    rep.make_pdf(imgs, outname, _Args(datdir), [], vals, jdstart, jdend, nimages,
+                 newap, flags, ellip, order, targs, gaia)
+    assert _page_count(outname) == 3 + 3 * 2
 
 
 if __name__ == '__main__':

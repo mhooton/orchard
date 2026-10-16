@@ -37,6 +37,34 @@ from astropy.io.fits.verify import VerifyWarning
 warnings.filterwarnings('ignore', category=VerifyWarning)
 
 
+# Typical overscan noise (ADU) of each Andor readout mode, for the expected
+# read noise in the report; the report still runs where the pipeline package
+# cannot be imported.
+try:
+    from calibration.readout import MODES as READOUT_MODES
+except Exception:
+    READOUT_MODES = {}
+
+
+def readout_flags(ron, gain, modes):
+    """(readout cell OK?, RON cell OK?) for the calibration table.
+
+    The readout cell is green only for the standard mode.  RON keeps its old
+    6.5 +- 1.5 e- test in that mode; in another mode it is compared with that
+    mode's own read noise (typical overscan noise x the night's gain), so the
+    RON cell flags a noisy night rather than the mode itself.
+    """
+    readout_ok = None if not modes else modes == ['NORMAL']
+    if ron is None:
+        return readout_ok, None
+    if not modes or modes == ['NORMAL'] or gain is None:
+        return readout_ok, abs(ron - 6.5) <= 1.5
+    expected = [READOUT_MODES[m].noise * gain for m in modes if m in READOUT_MODES]
+    if not expected:
+        return readout_ok, False
+    return readout_ok, any(abs(ron / e - 1.0) <= 0.25 for e in expected)
+
+
 # Defaults for the image-alignment pool.  One worker unless the pipeline says
 # otherwise, so that several nights running at once cannot oversubscribe the host.
 DEFAULT_NPROC = int(os.environ.get('PDF_REPORT_NPROC', '1'))
@@ -599,6 +627,8 @@ def stack_and_vals(args, liste, outstack, outstack_save, outstack_save_dir, outf
     jd_vector = []
     ron = 'unknown'
     dark = 'unknown'
+    gain = 'unknown'
+    readmodes = set()
     vals = []
     j = 0
     count=0
@@ -623,7 +653,11 @@ def stack_and_vals(args, liste, outstack, outstack_save, outstack_save_dir, outf
             if j == 0 and 'RON' in infile[0].header and 'DARKCUR' in infile[0].header:
                 ron = infile[0].header['RON']
                 dark = infile[0].header['DARKCUR']
+                if 'GAIN' in infile[0].header:
+                    gain = infile[0].header['GAIN']
                 j = 1
+            if 'READMODE' in infile[0].header:
+                readmodes.add(str(infile[0].header['READMODE']).strip())
             if 'DX' in infile[0].header:
                 dx_vector.append(infile[0].header['DX'])
             if 'DY' in infile[0].header:
@@ -643,7 +677,8 @@ def stack_and_vals(args, liste, outstack, outstack_save, outstack_save_dir, outf
         ccdtemp = np.ma.median(ccdtemp_vector)
     else:
         ccdtemp = 'unknown'
-    vals = [overscan, ron, dark, ccdtemp, pa]
+    readmode = '+'.join(sorted(readmodes)) if readmodes else 'unknown'
+    vals = [overscan, ron, dark, ccdtemp, pa, gain, readmode]
     # print(vals)
     if (np.min(dx_vector) > -2.0) and (np.max(dx_vector) < 2.0):
         plt.figure(dpi=300, figsize=(10, 10))
@@ -826,10 +861,10 @@ def import_stack_and_vals(args, target_x_pos, target_y_pos, gaia, targs):
                 # us the whole PDF.
                 print('Could not stack images for %s: %s' % (i, e))
                 stackim = 'fake_path'
-                values = ['unknown', 'unknown', 'unknown', 'unknown', 'unknown']
+                values = ['unknown'] * 7
         else:
             stackim = 'fake_path'
-            values = ['unknown', 'unknown', 'unknown', 'unknown', 'unknown']
+            values = ['unknown'] * 7
         stacks.append(stackim)
         vals.append(values)
         target_count += 1
@@ -1134,9 +1169,8 @@ def make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap
 
     ax = page.add_subplot(gs[1, :])
     columns = ('Overscan \n[ADU]', 'RON \n[el]', 'Dark current \n[el/sec/pix]', 'CCD Temp. \n[deg]', 'PA \n[deg]',
-               'PSF Ellipticity')
-    colours = (
-    'lightsteelblue', 'lightsteelblue', 'lightsteelblue', 'lightsteelblue', 'lightsteelblue', 'lightsteelblue')
+               'PSF Ellipticity', 'Readout \n[el/ADU]')
+    colours = ('lightsteelblue',) * len(columns)
     overscan = 0.
     ron = 0.
     dark = 0.
@@ -1194,12 +1228,25 @@ def make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap
     else:
         ell_print = 'unknown'
 
-    data = [[overscan_print, ron_print, dark_print, ccdtemp_print, pa_print, ell_print]]
+    # readout mode(s) and gain written at T6 (calibration/readout.py); older
+    # frames have neither
+    readmodes = sorted({m for v in vals if len(v) > 6 and v[6] != 'unknown' for m in str(v[6]).split('+')})
+    gains = [float(v[5]) for v in vals if len(v) > 5 and v[5] != 'unknown']
+    gain = float(np.mean(gains)) if gains else None
+    if readmodes and gain is not None:
+        readout_print = '+'.join(readmodes) + "\n{0:.2f}".format(gain)
+    elif gain is not None:
+        readout_print = "{0:.2f}".format(gain)
+    else:
+        readout_print = 'unknown'
+    readout_ok, ron_ok = readout_flags(ron if ron_print != 'unknown' else None, gain, readmodes)
+
+    data = [[overscan_print, ron_print, dark_print, ccdtemp_print, pa_print, ell_print, readout_print]]
     the_table = ax.table(cellText=data, colLabels=columns, loc='center', cellLoc='center', colColours=colours)
     the_table.auto_set_font_size(False)
     the_table.set_fontsize(10)
     for i in range(2):
-        for j in range(6):
+        for j in range(len(columns)):
             the_table._cells[(i, j)].set_height(.3)
     if (overscan_print != 'unknown'):
         if (abs(overscan - 300.0) <= 2):
@@ -1208,11 +1255,17 @@ def make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap
             the_table._cells[(1, 0)]._text.set_color('red')
             the_table._cells[(1, 0)].set_text_props(fontproperties=FontProperties(weight='bold'))
     if (ron_print != 'unknown'):
-        if (abs(ron - 6.5) <= 1.5):
+        if ron_ok:
             the_table._cells[(1, 1)]._text.set_color('green')
         else:
             the_table._cells[(1, 1)]._text.set_color('red')
             the_table._cells[(1, 1)].set_text_props(fontproperties=FontProperties(weight='bold'))
+    if readout_ok is not None:
+        if readout_ok:
+            the_table._cells[(1, 6)]._text.set_color('green')
+        else:
+            the_table._cells[(1, 6)]._text.set_color('red')
+            the_table._cells[(1, 6)].set_text_props(fontproperties=FontProperties(weight='bold'))
     if (dark_print != 'unknown'):
         if (abs(dark - 0.27) <= 0.1):
             the_table._cells[(1, 2)]._text.set_color('green')
