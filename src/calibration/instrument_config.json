@@ -170,5 +170,8 @@
     "moana": {
       "jd_header_name": "JD-OBS"
     }
+  },
+  "telescope_aliases": {
+    "ACP->Artemis": "Artemis"
   }
 }

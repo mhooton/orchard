@@ -149,6 +149,23 @@ Telescope and instrument parameters are defined in `src/calibration/instrument_c
 }
 ```
 
+### Telescope Name Aliases
+
+Settings are looked up by the frame's `TELESCOP` header. A frame that names its
+telescope differently from the configuration is mapped on by `telescope_aliases`:
+
+```json
+"telescope_aliases": {
+  "ACP->Artemis": "Artemis"
+}
+```
+
+Artemis frames say `ACP->Artemis` from the start of the survey until 2022-06-15
+(ACP's telescope hub was in the chain) and `Artemis` from 2022-06-16. It is the same
+camera either side: the flat-field pixel response correlates at 0.92 across the change,
+as it does between neighbouring nights. Without the alias, older frames fall back to
+generic defaults (no trim or overscan, no plate scale) and T8 stops at the WCS check.
+
 ### Instrument-Specific Features
 
 **ANDOR (Optical):**
@@ -226,6 +243,7 @@ The main pipeline script is `ZLP_pipeline.sh` located in `src/main/`.
 | `--cores N` | Number of parallel processes | `N_CORES` env var (20), or 1 |
 | `--force-platesolve` | Re-solve images that already have WCS | Disabled |
 | `--save-flat-products` | T4: also write each calibrated flat (`reduction/flats/proc*`), `std.fts` and `variance.fts`. Nothing in the pipeline reads them | Disabled |
+| `--frame-format F` | After T11, store the night's calibrated frames as `int16` (whole ADU, half the size), `rice` (int16 plus lossless Rice compression, `proc*.fits.fz`) or `float32` (as T6 wrote them) | `int16` |
 | `--no_T1` through `--no_T12` | Skip specific pipeline stage | All enabled |
 | `--only_T1` through `--only_T12` | Run only specific stage | All enabled |
 
@@ -955,6 +973,40 @@ carries a note in place of the per-target columns.
 - `ZLP_pipeline.sh` runs the whole stage under `timeout ${PDF_REPORT_TIMEOUT}`
   (default 3600 s) and treats a failure as a warning, so the report can never
   hold up T12.
+
+---
+
+### After T11: Frame Packing
+
+**Implementation:** `pack_frames` in `ZLP_pipeline.sh`, calling `utils/framepack.py`
+
+Calibrated frames (`<target>/1/proc*.fits`) are 85% of PipelineOutput. T6 writes
+them as float32; nothing in a normal run reads them after T11, so before T12 moves
+them to v2 they are rewritten according to `--frame-format`:
+
+- `int16` (default): whole ADU, BITPIX 16, BSCALE 1 and a per-frame BZERO. No
+  pixel moves by more than 0.5 ADU except saturated cores beyond the frame's
+  65,534 ADU window, and non-finite pixels are stored as BLANK (read back as NaN).
+  Readers that apply the scaling (astropy, fitsio, CASU) see float values as before.
+- `rice`: int16, then lossless RICE_1 tile compression, renamed `proc*.fits.fz`.
+  The pipeline itself never reads `.fz` frames: anything rerun on them must be
+  decompressed first (`framepack.py decompress`).
+- `float32`: leave the frames as T6 wrote them.
+
+Every file is written to a hidden temporary file, read back and checked, then
+renamed into place with the original's mode and modification time. A frame that
+fails a check is left untouched, and a failure never stops the night. Each run
+appends one row per frame to `logs/framepack_<DATE>_<RUNNAME>.csv`. The stage is
+skipped when the run did not make or touch frames (`--only_T12`, for instance).
+
+`framepack.py` also converts frames outside a pipeline run, for example:
+
+```bash
+python utils/framepack.py int16 <night>/<target>/1 --workers 8 --manifest framepack.csv
+python utils/framepack.py decompress <night>/<target>/1
+```
+
+Never run it on a night the pipeline is working on.
 
 ---
 
