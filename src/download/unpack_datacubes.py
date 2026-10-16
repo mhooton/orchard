@@ -83,6 +83,19 @@ def is_datacube(filepath):
         return False
 
 
+def missing_bzero(header, stored_frame):
+    """
+    BZERO for a BITPIX = 16 cube written without one, from one frame's stored integers (read with
+    do_not_scale_image_data=True). Cubes from before create_datacubes.py wrote the keyword come in two kinds: counts
+    shifted by -32768 into the FITS unsigned 16-bit convention, which need BZERO = 32768, and the counts themselves,
+    which fit in a signed int16 and need none. A negative stored value can only mean the first kind (SPIRIT counts
+    are 0..16383). Returns None when the header already has BZERO or the data are not 16-bit.
+    """
+    if header.get('BITPIX') != 16 or 'BZERO' in header:
+        return None
+    return 32768 if int(np.min(stored_frame)) < 0 else 0
+
+
 def _normalise_filename(filename):
     """
     Normalise a filename from the METADATA table to match the ESO dp_id
@@ -296,15 +309,17 @@ def unpack_datacube(filepath, output_dir):
 
         # Patch missing BZERO/BSCALE for BITPIX=16 cubes created before
         # create_datacubes.py was fixed to write these keywords explicitly.
-        # Each is checked independently in case only one is absent.
-        # BZERO=32768 + BSCALE=1 is the standard FITS uint16 encoding convention
-        # for signed int16 data; without these keywords downstream readers cannot
-        # recover the correct physical pixel values.
-        if base_header.get('BITPIX') == 16:
-            if 'BZERO' not in base_header:
-                base_header['BZERO'] = (32768, 'Offset for unsigned 16-bit integer encoding')
-            if 'BSCALE' not in base_header:
-                base_header['BSCALE'] = (1, 'Scale factor for integer encoding')
+        # Each is checked independently in case only one is absent. The offset
+        # is decided from the stored integers (see missing_bzero): some of these
+        # cubes hold counts shifted into the uint16 convention, others the counts
+        # themselves, and forcing 32768 onto the latter put every pixel of
+        # Callisto 2026-03-10..25 32768 ADU too high.
+        bzero = missing_bzero(base_header, hdul[0].data[0])
+        if bzero is not None:
+            base_header['BZERO'] = (bzero, 'Offset for unsigned 16-bit integer encoding' if bzero
+                                    else 'Stored integers are the counts')
+        if base_header.get('BITPIX') == 16 and 'BSCALE' not in base_header:
+            base_header['BSCALE'] = (1, 'Scale factor for integer encoding')
 
         written_ids = []
 
