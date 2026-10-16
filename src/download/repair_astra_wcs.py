@@ -229,7 +229,6 @@ def apply_to_file(path, backup):
     found = diagnose(header)
     if not found or any(k in ('image_not_rotated', 'ambiguous') for k, _ in found):
         return found
-    before = data_digest(path, len(old_raw))
     repair(header, found)
     new_raw = header.tostring(padding=True).encode('ascii')
     info = tarfile.TarInfo(os.path.abspath(path).lstrip('/') + '.hdr')
@@ -237,9 +236,18 @@ def apply_to_file(path, backup):
     info.mtime = os.stat(path).st_mtime
     backup.addfile(info, io.BytesIO(old_raw))
     backup.fileobj.flush()
-    write_header_bytes(path, new_raw, old_raw)
-    if data_digest(path, len(new_raw)) != before:
-        raise IOError('{}: data bytes changed'.format(path))
+    if len(new_raw) == len(old_raw):
+        # written in place over the header blocks only; the size check and the read-back in write_header_bytes
+        # cover it, and reading every frame's data twice would cost ~14 TB over the archive
+        size = os.path.getsize(path)
+        write_header_bytes(path, new_raw, old_raw)
+        if os.path.getsize(path) != size:
+            raise IOError('{}: file size changed'.format(path))
+    else:
+        before = data_digest(path, len(old_raw))
+        write_header_bytes(path, new_raw, old_raw)
+        if data_digest(path, len(new_raw)) != before:
+            raise IOError('{}: data bytes changed'.format(path))
     return found
 
 
