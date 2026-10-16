@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import sys
 import os
@@ -118,58 +119,165 @@ def transformation_check(imgdir, down_files, type):
     return transformed_files
 
 
+# The pixel transforms below move the image, so the WCS has to follow. Every one of them is linear in pixel
+# offsets: an offset d' in the output image came from the offset R d' in the input, so a linear WCS matrix M
+# (pixel offset -> intermediate world coordinates) becomes M R, and CRPIX moves to where the input CRPIX lands.
+#
+# Astra/PinPoint write the matrix as PCi_j (no CDELTi), astrometry.net and CASU as CDi_j, astropy as PCi_j with
+# CDELTi = 1. The earlier code only knew CDi_j (with a formula that is right only for an unflipped matrix) and
+# CDELTi/CROTA2, so on every Astra frame it moved CRPIX and left the PC matrix as it was: the stored WCS was 90
+# degrees out (up to ~12 arcmin at the corners of an Andor frame). Negating CDELT1 for the mirror flipped the sky
+# axis, not the pixel axis, which is only the same thing when the matrix has no rotation.
+ROT90_ACW = ((0, -1), (1, 0))   # np.rot90(k=1): X' = Y, Y' = NAXIS1 + 1 - X, so dX = -dY', dY = dX'
+MIRROR_X = ((-1, 0), (0, 1))    # np.flip(axis=1): X' = NAXIS1 + 1 - X
+
+WCS_LINEAR_KEYS = ('PC1_1', 'PC1_2', 'PC2_1', 'PC2_2', 'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2')
+WCS_CELESTIAL_KEYS = ('WCSAXES', 'CTYPE1', 'CTYPE2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2', 'CUNIT1', 'CUNIT2',
+                      'CDELT1', 'CDELT2', 'CROTA1', 'CROTA2', 'LONPOLE', 'LATPOLE', 'IMAGEW', 'IMAGEH') + WCS_LINEAR_KEYS
+
+
+def linear_matrix(header):
+    """
+    The header's pixel -> intermediate-world matrix (degrees per pixel) and the convention it was written in,
+    following wcslib's precedence: PCi_j (scaled by CDELTi, default 1) when any PCi_j is present, even if CDi_j
+    is there too; then CDi_j; then CDELTi with CROTA2. Returns (None, None) when there is no matrix.
+    """
+    if any(k in header for k in ('PC1_1', 'PC1_2', 'PC2_1', 'PC2_2')):
+        # A missing diagonal PC element is 1 and a missing off-diagonal one 0 (astropy omits zeros on writing)
+        pc = np.array([[header.get('PC1_1', 1.0), header.get('PC1_2', 0.0)],
+                       [header.get('PC2_1', 0.0), header.get('PC2_2', 1.0)]], dtype=float)
+        cdelt = np.array([header.get('CDELT1', 1.0), header.get('CDELT2', 1.0)], dtype=float)
+        return np.diag(cdelt) @ pc, 'PC'
+    if any(k in header for k in ('CD1_1', 'CD1_2', 'CD2_1', 'CD2_2')):
+        return np.array([[header.get('CD1_1', 0.0), header.get('CD1_2', 0.0)],
+                         [header.get('CD2_1', 0.0), header.get('CD2_2', 0.0)]], dtype=float), 'CD'
+    if 'CDELT1' in header and 'CDELT2' in header:
+        rho = np.radians(header.get('CROTA2', 0.0))
+        c1, c2 = float(header['CDELT1']), float(header['CDELT2'])
+        return np.array([[c1 * np.cos(rho), -c2 * np.sin(rho)],
+                         [c1 * np.sin(rho), c2 * np.cos(rho)]]), 'CROTA'
+    return None, None
+
+
+def set_linear_matrix(header, m, convention):
+    """Write m back in the convention it was read in. PC keeps the existing CDELTi; CROTA becomes PC + CDELTi."""
+    if convention in ('PC', 'CROTA'):
+        cdelt = np.array([header.get('CDELT1', 1.0), header.get('CDELT2', 1.0)], dtype=float)
+        pc = np.diag(1.0 / cdelt) @ m
+        for (i, j), v in np.ndenumerate(pc):
+            header['PC{}_{}'.format(i + 1, j + 1)] = float(v)
+        for k in ('CROTA1', 'CROTA2'):
+            if k in header:
+                del header[k]
+    elif convention == 'CD':
+        for (i, j), v in np.ndenumerate(m):
+            header['CD{}_{}'.format(i + 1, j + 1)] = float(v)
+
+
+def plate_pa(m):
+    """
+    The PA keyword as the SPECULOOS transfer (headerfix.py) defines it: the position angle, from north through
+    east, of the -Y pixel axis (towards row 1), for either parity. Recomputed so that it stays true of the
+    stored orientation after a transform.
+    """
+    det = m[0, 0] * m[1, 1] - m[0, 1] * m[1, 0]
+    parity = 1.0 if det >= 0 else -1.0
+    t = parity * m[0, 0] + m[1, 1]
+    a = parity * m[1, 0] - m[0, 1]
+    return (180.0 - math.degrees(math.atan2(a, t))) % 360.0
+
+
+def drop_singular_wcs(header):
+    """
+    Remove a celestial WCS whose matrix is singular, and the PA computed from it. SPIRIT frames reach ESO with an
+    all-zero CD block (PA = 180.0); left in place, it reads as 'already solved' to astrometry.py and as an error to
+    astropy. Returns True if anything was removed.
+    """
+    m, _ = linear_matrix(header)
+    if m is None or not str(header.get('CTYPE1', '')).startswith('RA'):
+        return False
+    if abs(np.linalg.det(m)) > 0:
+        return False
+    for k in WCS_CELESTIAL_KEYS + ('PA',):
+        if k in header:
+            del header[k]
+    header.add_history('Singular WCS matrix removed (no sky solution); PA removed with it')
+    return True
+
+
+def transform_sip(header, r):
+    """
+    Carry SIP distortion (A/B forward, AP/BP inverse) through the pixel transform r. With pixel offsets
+    d = r d', the distortion F(d) becomes r^T F(r d'), which for a signed permutation r is a relabelling of the
+    coefficients: rotation swaps A and B (and their orders), the mirror flips signs.
+    """
+    r = np.array(r, dtype=int)
+    for a, b in (('A', 'B'), ('AP', 'BP')):
+        if a + '_ORDER' not in header and b + '_ORDER' not in header:
+            continue
+        polys = []
+        for name in (a, b):
+            order = int(header.get(name + '_ORDER', 0))
+            coeffs = {}
+            for p in range(order + 1):
+                for q in range(order + 1 - p):
+                    key = '{}_{}_{}'.format(name, p, q)
+                    if key in header:
+                        coeffs[(p, q)] = float(header[key])
+                        del header[key]
+            polys.append((order, coeffs))
+        # P'(u', v') = P(u, v) with u = s1 d'[i1], v = s2 d'[i2], (u, v) = r (u', v')
+        i1, i2 = int(np.flatnonzero(r[0])[0]), int(np.flatnonzero(r[1])[0])
+        s1, s2 = int(r[0, i1]), int(r[1, i2])
+        subst = []
+        for order, coeffs in polys:
+            out = {}
+            for (p, q), c in coeffs.items():
+                pq = (p, q) if (i1, i2) == (0, 1) else (q, p)
+                out[pq] = out.get(pq, 0.0) + (s1 ** p) * (s2 ** q) * c
+            subst.append((order, out))
+        rt = r.T
+        for row, name in enumerate((a, b)):
+            src = int(np.nonzero(rt[row])[0][0])
+            sign = int(rt[row, src])
+            order, coeffs = subst[src]
+            header[name + '_ORDER'] = order
+            for (p, q), c in coeffs.items():
+                header['{}_{}_{}'.format(name, p, q)] = sign * c
+
+
+def transform_wcs(header, r, new_crpix):
+    """Apply the pixel transform r (see ROT90_ACW) to the linear matrix, move CRPIX and recompute PA."""
+    m, convention = linear_matrix(header)
+    if 'CRPIX1' in header and 'CRPIX2' in header:
+        header['CRPIX1'], header['CRPIX2'] = new_crpix(float(header['CRPIX1']), float(header['CRPIX2']))
+    if m is None:
+        return
+    transform_sip(header, r)
+    m = m @ np.array(r, dtype=float)
+    set_linear_matrix(header, m, convention)
+    if 'PA' in header:
+        header['PA'] = (plate_pa(m), '[deg, 0-360 CCW] Position angle of plate')
+    # Frames transformed before this marker existed kept Astra's PC matrix; repair_astra_wcs.py looks for it
+    header['ASTRAWCS'] = (2, 'WCS matrix transformed with the image')
+
+
 def rotate_wcs_acw(header, n_rotations=1):
     """
-    Update WCS headers for 90 deg  anticlockwise IMAGE rotation.
-    Note: WCS transforms in opposite direction to compensate.
+    Update the WCS for np.rot90(data, k=n_rotations), i.e. 90 deg anticlockwise per step as displayed with row 1
+    at the top (the MaxIm 'Rotate 90 CCW' orientation). header must still describe the input image.
     """
-
-    nx = header.get('NAXIS1', 0) * 1
-    ny = header.get('NAXIS2', 0) * 1
+    nx = header.get('NAXIS1', 0)
+    ny = header.get('NAXIS2', 0)
 
     for rot in range(n_rotations):
-        # Update CRPIX for 90 deg CCW image rotation
-        if 'CRPIX1' in header and 'CRPIX2' in header:
-            old_crpix1 = header['CRPIX1']
-            old_crpix2 = header['CRPIX2']
-
-            # if rot % 2 == 1:
-            #     # Formula for 90 deg CCW image rotation (WCS transforms opposite)
-            #     header['CRPIX1'] = ny - old_crpix2 + 1
-            #     header['CRPIX2'] = old_crpix1
-            # else:
-            # Formula for 90 deg CCW image rotation (WCS transforms opposite)
-            header['CRPIX1'] = old_crpix2
-            header['CRPIX2'] = nx - old_crpix1 + 1
-
-        # Update CD matrix for 90 deg CCW image rotation (WCS rotates CW to compensate)
-        cd_keys = ['CD1_1', 'CD1_2', 'CD2_1', 'CD2_2']
-        if all(key in header for key in cd_keys):
-            old_cd11 = header['CD1_1']
-            old_cd12 = header['CD1_2']
-            old_cd21 = header['CD2_1']
-            old_cd22 = header['CD2_2']
-
-            # 90 deg CW rotation of CD matrix (opposite to image rotation)
-            header['CD1_1'] = -old_cd21
-            header['CD1_2'] = -old_cd22
-            header['CD2_1'] = old_cd11
-            header['CD2_2'] = old_cd12
-
-        # Alternative: Update CDELT/CROTA if present instead of CD matrix
-        elif 'CDELT1' in header and 'CDELT2' in header and 'CROTA2' in header:
-            header['CROTA2'] = header['CROTA2'] - 90  # Subtract 90 deg (opposite to image)
+        transform_wcs(header, ROT90_ACW, lambda c1, c2, nx=nx: (c2, nx - c1 + 1))
 
         # Update non-standard dimension keywords if present
         if 'IMAGEW' in header and 'IMAGEH' in header:
-            old_imagew = header['IMAGEW']
-            old_imageh = header['IMAGEH']
-            header['IMAGEW'] = old_imageh
-            header['IMAGEH'] = old_imagew
+            header['IMAGEW'], header['IMAGEH'] = header['IMAGEH'], header['IMAGEW']
 
-        tmp = ny * 1
-        ny = nx * 1
-        nx = tmp * 1
+        nx, ny = ny, nx
 
 
 def mirror_wcs_horizontal(header):
@@ -178,20 +286,7 @@ def mirror_wcs_horizontal(header):
     This flips the image around the vertical axis (y-axis).
     """
     nx = header.get('NAXIS1', 0)
-
-    # Update CRPIX for horizontal flip
-    if 'CRPIX1' in header:
-        header['CRPIX1'] = nx - header['CRPIX1'] + 1
-
-    # Update CD matrix for horizontal flip (negate first column)
-    cd_keys = ['CD1_1', 'CD1_2', 'CD2_1', 'CD2_2']
-    if all(key in header for key in cd_keys):
-        header['CD1_1'] = -header['CD1_1']
-        header['CD2_1'] = -header['CD2_1']
-
-    # Alternative: Update CDELT if present
-    elif 'CDELT1' in header:
-        header['CDELT1'] = -header['CDELT1']
+    transform_wcs(header, MIRROR_X, lambda c1, c2: (nx - c1 + 1, c2))
 
 
 def get_output_filename(filename, dirname, n_repeats, test=False):
@@ -330,6 +425,8 @@ def astra_transform_unified(input_data, transform_mode='auto', n_repeats=1, comp
         frame_type = header.get('IMAGETYP', '')
         naxis1 = header.get('NAXIS1', 0)
         is_light_frame = (frame_type == 'Light Frame')
+        if is_light_frame and drop_singular_wcs(header):
+            print(f"Removed the singular WCS of {name_without_ext}; astrometry.py will solve it.")
 
         # Determine transformation type
         if transform_mode == 'auto':
