@@ -778,7 +778,9 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
         result['stage'] = 'opening_file'
         with fits.open(filepath, mode='update') as hdu:
             header = hdu[0].header
-            data = hdu[0].data.astype(float)
+            # Read the pixels through a separate read-only open: touching the update-mode HDU's
+            # data on a 16-bit frame (BZERO set) makes astropy rewrite the whole frame as float32 on close
+            data = fits.getdata(filepath).astype(float)
 
             if verbose:
                 print(f"FITS file opened successfully")
