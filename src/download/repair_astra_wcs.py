@@ -15,6 +15,9 @@ Nothing is written unless --apply is given. Only raw light frames are considered
   stale_pa  Any transformed frame whose PA describes the native orientation rather than the stored one.
   image_not_rotated  ASTRAROT on an Andor image still 2088 x 2048: the WCS was turned and the image was not
             (Ganymede, November 2025). Reported only.
+  ambiguous Transform HISTORY present but the matrix still agrees with the transfer's PA, so it was never turned
+            (or turned and turned back); CRPIX may have been moved more than once (Ganymede 2025-07-28). Reported
+            only; these frames need a fresh plate solve.
             Fix: recompute PA from the matrix as it is used (wcslib precedence: PC over CD).
 
 A PC matrix written with CDELTi = 1 is orchard's own plate solution (astropy writes it that way), made on the
@@ -85,6 +88,12 @@ def diagnose(header):
         else:
             fixed = m @ np.array(MIRROR_X, dtype=float)
             found.append(('unmir', 'mirror'))
+    elif (sky and m is not None and transformed_by_history and 'PA' in header
+          and abs((float(header['PA']) - plate_pa(m) + 180) % 360 - 180) < 1.0):
+        # Transform HISTORY is there, yet the transfer's PA still agrees with the matrix, so the matrix is still the
+        # native one; with more than one transform recorded (Ganymede 2025-07-28 has two), CRPIX cannot be trusted
+        # either. Reported only: re-solve these frames instead.
+        return [('ambiguous', 'matrix still native, CRPIX history unclear')]
     if sky and fixed is not None and 'PA' in header:
         pa = plate_pa(fixed)
         if abs((float(header['PA']) - pa + 180) % 360 - 180) > 0.01:
@@ -95,7 +104,7 @@ def diagnose(header):
 def repair(header, found):
     """Apply the fixes listed by diagnose() to header in place."""
     kinds = {k for k, _ in found}
-    if 'image_not_rotated' in kinds:
+    if kinds & {'image_not_rotated', 'ambiguous'}:
         return
     if 'singular' in kinds:
         drop_singular_wcs(header)
@@ -150,7 +159,7 @@ def main(argv=None):
                     for k, _ in found:
                         counts[k] = counts.get(k, 0) + 1
                     rows.append((path, ';'.join('{}:{}'.format(k, d) for k, d in found)))
-                    if args.apply and not any(k == 'image_not_rotated' for k, _ in found):
+                    if args.apply and not any(k in ('image_not_rotated', 'ambiguous') for k, _ in found):
                         repair(h[0].header, found)
             except Exception as e:
                 rows.append((path, 'error:{}'.format(e)))

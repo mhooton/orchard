@@ -333,3 +333,18 @@ def test_a_native_shaped_image_with_astrarot_is_reported_not_fixed():
     before = h.copy()
     repair(h, found)
     assert h == before
+
+
+def test_a_native_matrix_under_transform_history_is_reported_not_fixed():
+    """Ganymede 2025-07-28: two transform HISTORY lines, CD matrix and PA both still native."""
+    h = old_transform_output()
+    for k in ('PC1_1', 'PC1_2', 'PC2_1', 'PC2_2'):
+        del h[k]
+    for (i, j), v in np.ndenumerate(np.array(EUROPA_PC)):
+        h['CD{}_{}'.format(i + 1, j + 1)] = v
+    h.add_history('WCS updated for 90 deg counterclockwise rotation')
+    found = diagnose(h)
+    assert [k for k, _ in found] == ['ambiguous']
+    before = h.copy()
+    repair(h, found)
+    assert h == before
