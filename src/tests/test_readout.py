@@ -101,6 +101,19 @@ def test_tile_sigma_recovers_gaussian_noise():
     assert ro.tile_sigma(noise) == pytest.approx(5.0, rel=0.03)
 
 
+def test_tile_sigma_matches_clipping_tile_by_tile():
+    from astropy.stats import sigma_clipped_stats
+    rng = np.random.default_rng(11)
+    data = rng.normal(0, 3.0, (150, 330)) + rng.standard_exponential((150, 330)) ** 4
+    expected = np.median([sigma_clipped_stats(data[y:y + 64, x:x + 64], sigma=4, maxiters=3)[2]
+                          for y in range(0, 150 - 63, 64) for x in range(0, 330 - 63, 64)])
+    assert ro.tile_sigma(data) == pytest.approx(expected, rel=1e-9)
+    strip = data[:15]
+    expected = np.median([sigma_clipped_stats(strip[:, x:x + 64], sigma=4, maxiters=3)[2]
+                          for x in range(0, 330 - 63, 64)])
+    assert ro.tile_sigma(strip, 15, 64) == pytest.approx(expected, rel=1e-9)
+
+
 def test_overscan_signature_reads_the_configured_strip():
     rng = np.random.default_rng(2)
     level, noise = ro.overscan_signature(frame(rng, 20000.0, 1.0, 2.45, 300.0), PARAMS)
@@ -132,9 +145,10 @@ def test_frames_without_overscan_have_no_signature():
     ('Artemis', '20260806', 6.25, 2890, 'PED2900'),
     ('Artemis', '20260807', 6.40, 2810, 'PED2900'),
     ('Artemis', '20260807', 2.43, 300, 'GAIN3.8'),
-    # Artemis 2023: up to 10.7 ADU at the normal gain is not Ganymede's FAST
-    ('Artemis', '20230815', 10.7, 301, 'UNKNOWN'),
+    # Artemis 2023: up to 10.7 ADU at the normal gain is still the normal mode
+    ('Artemis', '20230815', 10.7, 301, 'NORMAL'),
     ('Artemis', '20230815', 6.5, 301, 'NORMAL'),
+    ('Artemis', '20230815', 12.0, 301, 'UNKNOWN'),
     # Ganymede 2026-02-27..03-01 and 03-02/03
     ('SPECULOOS-GANYMEDE', '20260228', 10.1, 321, 'FAST'),
     ('SPECULOOS-GANYMEDE', '20260228', 11.1, 320, 'FAST'),         # bright flat
@@ -143,7 +157,7 @@ def test_frames_without_overscan_have_no_signature():
     ('SPECULOOS-GANYMEDE', '20260303', 29.0, 7354, 'PED7500'),     # bright flat
     # a mode never seen on the telescope is still recognised if distinctive
     ('SPECULOOS-IO', '20270101', 2.45, 300, 'GAIN3.8'),
-    ('SPECULOOS-IO', '20270101', 10.0, 318, 'UNKNOWN'),
+    ('SPECULOOS-IO', '20270101', 12.0, 318, 'UNKNOWN'),
     # Europa's 2017-12 readout fault
     ('SPECULOOS-EUROPA', '20171210', 100.0, 300, 'UNKNOWN'),
 ])
@@ -157,6 +171,13 @@ def test_classify_without_overscan_follows_the_table():
     assert ro.classify(None, None, 'SAINT-EX', '20250714') == 'NORMAL'
 
 
+def test_ganymede_normal_gain_changed_in_2022_01():
+    assert ro.regime_for_mode('SPECULOOS-GANYMEDE', 'NORMAL', '20220109').gain == 0.99
+    assert ro.regime_for_mode('SPECULOOS-GANYMEDE', 'NORMAL', '20220111').gain == 1.11
+    old = ro.frame_values(_empty('SPECULOOS-GANYMEDE', '20210815'), 300.0, 6.0)
+    assert (old['GAIN'], old['GAINSRC']) == (0.99, 'table')
+
+
 def test_regime_lookup():
     assert ro.expected_regime('Artemis', '20260806').mode == 'PED2900'
     assert ro.expected_regime('SPECULOOS-IO', '20260806').mode == 'NORMAL'
@@ -165,6 +186,13 @@ def test_regime_lookup():
     assert ro.regime_for_mode('Artemis', 'GAIN3.8', '20260807').first == '20260807'
     assert ro.regime_for_mode('Artemis', 'GAIN3.8', '20260801').first == '20251029'
     assert ro.regime_for_mode('SPECULOOS-IO', 'GAIN3.8', '20270101') is None
+
+
+def test_acp_era_artemis_frames_use_the_artemis_regimes():
+    assert ro.canonical_telescope('ACP->Artemis') == 'Artemis'
+    assert ro.expected_regime('ACP->Artemis', '20200806').mode == 'GAIN3.8'
+    assert ro.classify(2.45, 300, 'ACP->Artemis', '20200806') == 'GAIN3.8'
+    assert ro.measure_night([], [], '20200806', 'ACP->Artemis', PARAMS)['telescope'] == 'Artemis'
 
 
 def test_own_night():
@@ -201,7 +229,7 @@ def test_saturated_flats_are_not_used(tmp_path):
     mode = record['modes']['GAIN3.8']
     assert mode['gain_accepted']
     assert mode['gain'] == pytest.approx(3.83, rel=0.04)
-    assert all(p['m1'] < 30000 and p['m2'] < 30000 for p in mode['pairs'])
+    assert all(p['m1'] < 33000 and p['m2'] < 33000 for p in mode['pairs'])
 
 
 def test_borrowed_frames_are_not_measured(tmp_path):
@@ -237,7 +265,7 @@ def test_mode_switch_during_a_night_is_measured_per_mode(tmp_path):
     assert normal['GAIN'] == pytest.approx(1.08, rel=0.04) and normal['GAINSRC'] == 'night'
     assert normal['RONSRC'] == 'overscan'           # no normal-mode biases that night
     assert fast['RONSRC'] == 'bias'
-    assert fast['SATURATE_RAW'] == 34000.0          # Europa's 3.8 e-/ADU full well
+    assert fast['SATURATE_RAW'] == 34000.0          # Europa's 3.8 e-/ADU level
 
 
 def test_too_few_flat_pairs_fall_back_to_the_table(tmp_path):
@@ -273,6 +301,15 @@ def test_ped2900_gain_is_an_estimate():
     assert values['SATURATE_RAW'] == 22800.0
 
 
+def test_telescope_without_regimes_keeps_its_config_gain():
+    params = dict(PARAMS, gain=3.48)
+    values = ro.frame_values(ro.measure_night([], [], '20250101', 'SAINT-EX', params), 300.0, 6.2)
+    assert (values['READMODE'], values['GAIN'], values['GAINSRC']) == ('NORMAL', 3.48, 'config')
+    # a telescope the table knows, in a mode it has never used: the mode's gain
+    io = ro.frame_values(_empty('SPECULOOS-IO', '20270101'), 300.0, 2.45)
+    assert (io['READMODE'], io['GAIN'], io['GAINSRC']) == ('GAIN3.8', 3.80, 'table')
+
+
 def test_unknown_readout_keeps_the_expected_modes_gain_and_saturation():
     values = ro.frame_values(_empty('SPECULOOS-EUROPA', '20171210'), 300.0, 100.0)
     assert values['READMODE'] == 'UNKNOWN'
@@ -287,14 +324,13 @@ def test_frame_noise_far_from_the_bias_pairs_uses_the_frames_own(tmp_path):
     bias, flats = make_night(tmp_path, '20230815', rng, 1.03, 10.3, [24000, 21800, 19800, 18000],
                              telescope='Artemis')
     record = ro.measure_night(bias, flats, '20230815', 'Artemis', PARAMS)
-    # biases and flats at 10.3 ADU are UNKNOWN, measured nonetheless
-    assert record['calib_mode'] == 'UNKNOWN'
+    assert record['calib_mode'] == 'NORMAL'
     noisy = ro.frame_values(record, 301.0, 10.4)
     quiet = ro.frame_values(record, 301.0, 6.5)
-    assert noisy['READMODE'] == 'UNKNOWN' and noisy['GAINSRC'] == 'night'
-    assert noisy['GAIN'] == pytest.approx(1.03, rel=0.05)
-    assert quiet['READMODE'] == 'NORMAL'
-    assert quiet['RONSRC'] == 'overscan' and quiet['RDNOISE'] == pytest.approx(6.5 * 1.03)
+    assert noisy['READMODE'] == quiet['READMODE'] == 'NORMAL'
+    assert noisy['GAINSRC'] == 'night' and noisy['GAIN'] == pytest.approx(1.03, rel=0.05)
+    assert noisy['RONSRC'] == 'bias' and noisy['RDNOISE'] == pytest.approx(10.3 * noisy['GAIN'], rel=0.05)
+    assert quiet['RONSRC'] == 'overscan' and quiet['RDNOISE'] == pytest.approx(6.5 * noisy['GAIN'])
 
 
 def test_instrument_without_overscan_keeps_the_legacy_values():
@@ -343,6 +379,16 @@ def test_load_or_measure_writes_reuses_and_refreshes(tmp_path):
     # ...but not for another telescope, and T2 always measures afresh
     assert 'marker' not in ro.load_or_measure(reddir, '1', PARAMS, 'SPECULOOS-EUROPA', write=False)['notes']
     assert 'marker' not in ro.load_or_measure(reddir, '1', PARAMS, 'SPECULOOS-IO', refresh=True)['notes']
+
+
+def test_a_reduction_dir_outside_the_pipeline_layout_is_reported(tmp_path):
+    reddir = os.path.join(str(tmp_path), 'replay', 'reduction')
+    os.makedirs(reddir)
+    messages = []
+    record = ro.load_or_measure(reddir, '1', PARAMS, 'Artemis', log=messages.append)
+    assert record['night'] == 'replay'
+    assert any('not YYYYMMDD' in n for n in record['notes']) and messages
+    assert ro.night_from_reddir('/data/x/output/20251202/reduction/') == '20251202'
 
 
 def test_a_failed_measurement_still_gives_a_usable_record(tmp_path, monkeypatch):
@@ -448,6 +494,24 @@ def test_saturation_keeps_the_old_test_without_frame_levels(splc):
     mixed = splc.saturated_stars(np.array([[100., 62100.]]), np.zeros((1, 2)), np.array([50000., np.nan]),
                                  np.array(['NORMAL', 'NORMAL']), 62000.)
     assert list(mixed) == [True]
+
+
+def test_init_all_lcurves_marks_the_flagged_stars(splc):
+    """The per-star flags reach the light curves (a loop-local 'saturated'
+    once shadowed them)."""
+    nstar, nframe = 3, 20
+    rng = np.random.default_rng(12)
+    flux = [1000.0 + rng.normal(0, 5, nframe) for _ in range(nstar)]
+    tel = types.SimpleNamespace(rcore=np.full(nframe, 4.0), exposure=np.full(nframe, 30.0),
+                                gain=np.full(nframe, 3.83))
+    ids = ['SP%06d' % i for i in range(nstar)]
+    zeros = np.zeros(nstar)
+    lcs = splc.init_all_lcurves(tel, ids, ids, ids, [f / np.median(f) for f in flux], flux,
+                                np.array([False, True, False]), np.arange(nframe), np.arange(nframe),
+                                np.arange(nframe), zeros, zeros, zeros, zeros, zeros,
+                                [np.zeros(nframe)] * nstar, [np.zeros(nframe)] * nstar, zeros, zeros, zeros,
+                                zeros, 5, 'I+z', '20251202', np.full(nframe, 30.0))
+    assert [lc.saturated for lc in lcs] == [False, True, False]
 
 
 def test_readout_summary_cards(splc):

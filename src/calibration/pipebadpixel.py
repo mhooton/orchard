@@ -83,13 +83,13 @@ def bad_pixel_maps(inlist, caldir, darknames, flatnames, bpmname, biasname):
         gain = params['gain']
         telescope = hdul[0].header.get('TELESCOP', '')
         # exposure = hdul[0].header['exptime']
+        # filter = hdul[0].header['filter']
+        # filter = filter.replace("'", "")
 
     # dark current in e-/s uses the night's gain for the mode of its own
     # calibration frames (calibration/readout.py, measured at T2)
     runname = os.path.basename(biasname).split('_MasterBias')[0]
     gain = readout.calib_values(readout.load_or_measure(caldir, runname, params, telescope))['GAIN']
-        # filter = hdul[0].header['filter']
-        # filter = filter.replace("'", "")
 
     # Load master darks (needed for both BPM creation and dark current calculation)
     dark_dict = create_dark_dict(darknames)

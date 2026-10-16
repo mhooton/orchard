@@ -1131,8 +1131,8 @@ def saturated_stars(peak, sky, saturate, readmode, legacy_limit):
     return flagged
 
 
-def init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, saturated, jd, bjd, bjd_tdb, ra, dec, pmra, pmdec,
-                     parallax, x, y, g_rp, bp_rp, teff, gmag, ap, filt, date, exp):
+def init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, saturated_flags, jd, bjd, bjd_tdb, ra, dec, pmra,
+                     pmdec, parallax, x, y, g_rp, bp_rp, teff, gmag, ap, filt, date, exp):
     lcurves = []
     ap_size = ap_size_pixels(ap, tel.rcore)[0]
     zero_weight = 0
@@ -1152,7 +1152,7 @@ def init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, saturated, 
             print(f"Star {i}: Length/5: {len(flux[i]) / 5.}")
             print(f"Star {i}: Lengths: {len(flux[i])}, {len(exp)}")
 
-        if saturated[i]:
+        if saturated_flags[i]:
             # print("REMOVED SATURATED STAR: " + id[i])
             saturated = True
             zero_weight = zero_weight + 1

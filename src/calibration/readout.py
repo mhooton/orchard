@@ -39,6 +39,7 @@ READMODE is DEFAULT.
 measures a night and prints the record without writing anything.
 """
 import argparse
+import functools
 import glob
 import json
 import math
@@ -66,11 +67,13 @@ RECORD_VERSION = 1
 #   gain, saturation  for a telescope with no REGIMES entry for the mode
 Mode = namedtuple('Mode', 'noise pedestal tolerance anywhere gain saturation')
 MODES = {
-    # 5.7-6.9 ADU bias noise, 1.0-1.13 e-/ADU.  The ADC tops out at
-    # 62,600-63,950 ADU depending on the camera, hence the config's 62,000.
+    # 5.7-6.9 ADU bias noise, 0.97-1.13 e-/ADU by telescope and date.  The ADC
+    # tops out at 62,600-63,950 ADU depending on the camera, hence the config's
+    # 62,000.
     'NORMAL': Mode(6.2, (150.0, 1000.0), 1.30, True, 1.05, 62000.0),
-    # 2.4-2.6 ADU, 3.6-3.9 e-/ADU.  The pixels fill (~145,000 e-) at
-    # 36,000-40,800 ADU, well below the ADC limit.
+    # 2.4-2.6 ADU, 3.6-3.9 e-/ADU.  The pixels fill (~140,000 e-) well below
+    # the ADC limit: Europa's response bends above ~30,000 ADU, Artemis's
+    # flats stop at 39,300-40,800.
     'GAIN3.8': Mode(2.45, (150.0, 1000.0), 1.30, True, 3.80, 34000.0),
     # Ganymede 2026-02-27..03-01: 9.0 ADU bias (overscan 9.4-11), 1.19 e-/ADU,
     # bias level 319, 1.5 s readout (the shutterless trails); stars pile up at
@@ -88,8 +91,11 @@ MODES = {
     # a ~150,000 e- full well gives 7.0.
     'PED2900': Mode(6.3, (2000.0, 4000.0), 2.0, True, None, 22800.0),
 }
-# an expected (dated) mode is kept up to this ratio
-EXPECTED_TOLERANCE = 1.45
+# The mode the dated table expects is kept up to this ratio; wider for NORMAL,
+# whose noise wanders (Artemis 2023-07..2024-01 read 6.4-10.7 ADU within a
+# night at 1.03 e-/ADU), so such a night keeps one label.
+EXPECTED_TOLERANCE = {'NORMAL': 1.8}
+EXPECTED_TOLERANCE_DEFAULT = 1.45
 
 # Dated readout regimes per telescope (TELESCOP keyword).  Nights are the
 # pipeline's YYYYMMDD night labels, both ends inclusive; an entry that is not
@@ -106,11 +112,13 @@ REGIMES = {
         Regime('20100101', '20991231', 'NORMAL', 1.08, 62000.0, True,
                'flat pairs 2017-2026: 1.06-1.10'),
         Regime('20190725', '20191026', 'GAIN3.8', 3.80, 34000.0, True,
-               'switched during 2019-07-25; 3.63-3.86; flats fill at 35,800-38,500'),
+               'switched during 2019-07-25; 3.77-3.84; response bends above ~30,000'),
     ],
     'SPECULOOS-GANYMEDE': [
-        Regime('20100101', '20991231', 'NORMAL', 1.11, 62000.0, True,
-               'flat pairs 2022-2026: 1.09-1.13 (0.99 in 2019-06)'),
+        Regime('20100101', '20220109', 'NORMAL', 0.99, 62000.0, True,
+               'flat pairs 2019-03 to 2022-01-09: 0.97-1.00'),
+        Regime('20220110', '20991231', 'NORMAL', 1.11, 62000.0, True,
+               'flat pairs from 2022-01-11: 1.09-1.12'),
         Regime('20260227', '20260301', 'FAST', 1.19, 59500.0, True,
                '1.19 on all three nights'),
         Regime('20260302', '20260303', 'PED7500', 1.34, 39500.0, True,
@@ -121,25 +129,30 @@ REGIMES = {
                'flat pairs 2018, 2021: 1.01'),
     ],
     'Artemis': [
-        Regime('20100101', '20991231', 'NORMAL', 1.03, 62000.0, True,
-               'flat pairs 2021-2025: 1.01-1.03'),
-        Regime('20200806', '20200807', 'GAIN3.8', 3.83, 37300.0, True,
-               'bias and overscan 2.4-2.5 ADU; gain from 2025-26'),
+        Regime('20100101', '20991231', 'NORMAL', 1.02, 62000.0, True,
+               'flat pairs 2019-2025: 0.97-1.04, mostly 1.01-1.03'),
+        Regime('20200806', '20200807', 'GAIN3.8', 3.85, 37300.0, True,
+               'flat pairs 3.82, 3.89'),
         Regime('20251029', '20260805', 'GAIN3.8', 3.83, 37300.0, True,
-               '3.83 (2025-12, 2026-04, 2026-06); flats fill at 39,300-40,800'),
+               'flat pairs 3.81-3.83 (2026-02, -04, -06); flats fill at 39,300-40,800'),
         Regime('20260806', '20260807', 'PED2900', 6.5, 22800.0, False,
                'bias level ~2,900; gain 5.9-7.1 from the same stars, not measured'),
         Regime('20260807', '20991231', 'GAIN3.8', 3.83, 37300.0, True,
-               'back in the 3.8 e-/ADU mode during 2026-08-07'),
+               'back in the 3.8 e-/ADU mode during 2026-08-07; 3.89 on 2026-08-08'),
     ],
 }
 
 # Measurement settings (ptc.py)
 REGION_HALF = 256          # central 512x512 pixels of the trimmed frame
 TILE = 64
-FLAT_MIN_LEVEL = 3000.0    # ADU above the zero level
-FLAT_MAX_LEVEL = 30000.0
-FLAT_SAT_FRACTION = 0.75   # and below this fraction of the mode's saturation
+# Flat-pair levels in ADU above the zero level.  Pair gains rise 2-4% from
+# 20,000 to 39,000 ADU in the normal mode (charge spreading at high signal), so
+# one window keeps nights comparable; Artemis's 3.8 e-/ADU flats sit at
+# 29,000-31,000.  Europa's 3.8 e-/ADU gains climb from 3.8 to 4.1 above
+# ~30,000 ADU as the pixels fill, hence the cap below each mode's saturation.
+FLAT_MIN_LEVEL = 3000.0
+FLAT_MAX_LEVEL = 33000.0
+FLAT_SAT_FRACTION = 0.85   # of (saturation - zero level)
 FLAT_MAX_RATIO = 0.15      # |m1/m2 - 1| for a usable pair
 MIN_GAIN_PAIRS = 3
 MAX_GAIN_SCATTER = 0.10    # robust relative scatter of the pair gains
@@ -178,18 +191,24 @@ def overscan_strip(data, params):
 
 
 def tile_sigma(diff, tile_y=TILE, tile_x=TILE):
-    """Median over tiles of the sigma-clipped standard deviation."""
+    """Median over tiles of the sigma-clipped standard deviation.
+
+    All tiles are clipped at once (one row each), which gives the same result
+    as clipping them one by one in a fraction of the time.
+    """
     ny, nx = diff.shape
     tile_y, tile_x = min(tile_y, ny), min(tile_x, nx)
-    sig = []
+    my, mx = ny // tile_y, nx // tile_x
+    if my == 0 or mx == 0:
+        return float('nan')
+    tiles = np.asarray(diff[:my * tile_y, :mx * tile_x], dtype=float)
+    tiles = tiles.reshape(my, tile_y, mx, tile_x).transpose(0, 2, 1, 3).reshape(my * mx, tile_y * tile_x)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        for y in range(0, ny - tile_y + 1, tile_y):
-            for x in range(0, nx - tile_x + 1, tile_x):
-                _, _, s = sigma_clipped_stats(diff[y:y + tile_y, x:x + tile_x], sigma=4, maxiters=3)
-                if np.isfinite(s):
-                    sig.append(s)
-    return float(np.median(sig)) if sig else float('nan')
+        _, _, sig = sigma_clipped_stats(tiles, sigma=4, maxiters=3, axis=1)
+    sig = np.asarray(sig, dtype=float)
+    sig = sig[np.isfinite(sig)]
+    return float(np.median(sig)) if sig.size else float('nan')
 
 
 def overscan_signature(data, params):
@@ -224,8 +243,23 @@ def central_region(data, params, half=REGION_HALF):
 
 # ----------------------------------------------------------- classification
 
+@functools.lru_cache(maxsize=1)
+def _telescope_aliases():
+    try:
+        from calibration.pipeutils import load_instrument_config
+        return dict(load_instrument_config().get('telescope_aliases', {}))
+    except Exception:
+        return {}
+
+
+def canonical_telescope(telescop):
+    """The configured name for a TELESCOP value ('ACP->Artemis' is Artemis)."""
+    name = str(telescop or '').strip()
+    return _telescope_aliases().get(name, name)
+
+
 def regimes_for(telescope):
-    return REGIMES.get(str(telescope).strip(), [])
+    return REGIMES.get(canonical_telescope(telescope), [])
 
 
 def expected_regime(telescope, night):
@@ -283,7 +317,8 @@ def classify(noise, level, telescope, night):
         ratio = max(noise / mode.noise, mode.noise / noise)
         return ratio if ratio <= tolerance else None
 
-    if fits_mode(expected, max(MODES[expected].tolerance, EXPECTED_TOLERANCE)) is not None:
+    keep = max(MODES[expected].tolerance, EXPECTED_TOLERANCE.get(expected, EXPECTED_TOLERANCE_DEFAULT))
+    if fits_mode(expected, keep) is not None:
         return expected
     used = {r.mode for r in regimes_for(telescope)}
     best, best_ratio = 'UNKNOWN', None
@@ -445,7 +480,7 @@ def measure_night(bias_files, flat_files, night, telescope, params, log=print):
     night = str(night)
     record = {
         'version': RECORD_VERSION,
-        'telescope': str(telescope).strip(),
+        'telescope': canonical_telescope(telescope),
         'night': night,
         'andor': has_overscan(params),
         'config_gain': _float_or_none((params or {}).get('gain')),
@@ -455,6 +490,11 @@ def measure_night(bias_files, flat_files, night, telescope, params, log=print):
         'calib_mode': None,
         'notes': [],
     }
+    if not valid_night(night):
+        # without the night's label neither the dated table nor the own-night
+        # test of the calibration frames can work
+        log('readout: %r is not a YYYYMMDD night; nothing is measured' % night)
+        record['notes'].append('night label %r is not YYYYMMDD' % night)
     regime = expected_regime(telescope, night)
     record['expected_mode'] = regime.mode if regime else ('NORMAL' if record['andor'] else 'DEFAULT')
     own_bias = [p for p in bias_files if own_night(p, night)]
@@ -536,7 +576,9 @@ def mode_gain(record, mode):
     regime = regime_for_mode(telescope, mode, night)
     if regime is not None and regime.gain:
         return float(regime.gain), ('table' if regime.measured else 'estimate')
-    if regime is None and mode in MODES and MODES[mode].gain:
+    # a telescope the table knows, in a mode it has not used here before (a
+    # telescope it does not know at all keeps its config gain)
+    if regime is None and regimes_for(telescope) and mode in MODES and MODES[mode].gain:
         return float(MODES[mode].gain), 'table'
     gain = record.get('config_gain')
     return (float(gain) if gain else 1.0), 'config'
@@ -646,11 +688,15 @@ def night_lists(reddir, runname):
 
 
 def night_from_reddir(reddir):
-    """YYYYMMDD from .../output/<night>/reduction."""
+    """YYYYMMDD from .../output/<night>/reduction, the pipeline's layout."""
     parts = [p for p in os.path.normpath(reddir).split(os.sep) if p]
     if len(parts) >= 2 and parts[-1] == 'reduction':
         return parts[-2]
     return parts[-1] if parts else ''
+
+
+def valid_night(night):
+    return len(str(night)) == 8 and str(night).isdigit()
 
 
 def load_or_measure(reddir, runname, params, telescope, night=None, refresh=False, write=True,
@@ -662,7 +708,7 @@ def load_or_measure(reddir, runname, params, telescope, night=None, refresh=Fals
     still gets its mode from its own overscan and its values from the table.
     """
     night = str(night or night_from_reddir(reddir))
-    telescope = str(telescope).strip()
+    telescope = canonical_telescope(telescope)
     if not refresh:
         record = read_record(reddir)
         if record is not None and record.get('night') == night \
