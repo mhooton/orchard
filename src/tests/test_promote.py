@@ -542,3 +542,21 @@ def test_holds_can_be_listed_by_reason_and_decided_in_bulk(env, capsys):
     assert states == {'20010106': 'rejected', '20010107': 'accepted', '20010108': 'accepted'}
     assert os.path.isdir(env.v2('output', '20010107', A)) and os.path.isdir(env.v2('output', '20010108', A))
     assert os.path.isdir(env.v3('output', '20010106', A))
+
+
+def test_a_binary_with_two_table_rows_agrees_with_a_plan_naming_either(env):
+    """Resolved binaries share an Sp name and have a row each: the plan naming the second is no disagreement."""
+    bright, faint = gaia_id('bright component'), gaia_id('faint component')
+    with open(os.path.join(env.base, 'ml_40pc_v2.csv'), 'w') as f:
+        f.write('Sp_ID,Gaia_DR2_ID,Gaia_DR3_ID,RA,DEC,T_eff\n{0},{1},{1},15.0,10.0,3000\n{0},{2},{2},15.0,10.0,2600\n'
+                .format(A, bright, faint))
+    env.toy.night(TEL, NIGHT, [A], now() - dt.timedelta(minutes=30), gids={A: faint})
+    d = env.v3('output', NIGHT, A)
+    env.toy.target_dir('v3', TEL, NIGHT, A, gid=faint, others=(bright,))       # both components have curves
+    assert run(env, 'run', '--identity', 'table', '--telescope', TEL, '--night', NIGHT, '--csv',
+               str(env.tmp / 'table.csv')) == 0
+    import csv
+    (row,) = list(csv.DictReader(open(str(env.tmp / 'table.csv'))))
+    assert row['verdict'] == 'PROMOTE', row['reasons']
+    assert row['expected_id'] == faint and row['expected_src'] == 'target table, plan agrees'
+    assert os.path.isdir(d)

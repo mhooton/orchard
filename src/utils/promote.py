@@ -596,8 +596,10 @@ class CachedRawFrames(RawFrames):
 
 class TableIdentity(Identity):
     """A3 from the K1 target table (ml_40pc_v2.csv) for Sp targets, with both of its Gaia IDs, and from the plan
-    file for every other target, as before. Where the plan file names a different star from the table, the
-    disagreement is kept in .conflicts, and promote.py holds the candidate."""
+    file for every other target, as before. A name can have several rows (the components of a resolved binary
+    share one): the plan's row when the plan names one of them, else the one the light curves carry. Where the
+    plan names a star that is in none of the name's rows, the disagreement is kept in .conflicts, and promote.py
+    holds the candidate."""
 
     def __init__(self, base, table_path):
         super(TableIdentity, self).__init__(base, target_list=table_path)
@@ -609,27 +611,31 @@ class TableIdentity(Identity):
                     self.rows.setdefault(norm_target(self.table.sp_id(i)), []).append(i)
         self.conflicts = {}
 
-    def _row(self, target, catalogue_ids):
-        rows = self.rows.get(norm_target(target), [])
-        hit = [i for i in rows if set(self.table.ids(i)) & set(catalogue_ids or ())]
-        return (hit or rows or [None])[0]
-
     def expected(self, tel, date, target, catalogue_ids=()):
         gid, src, dec = super(TableIdentity, self).expected(tel, date, target, catalogue_ids)
         if self.table is None or not norm_target(target).startswith('SP'):
             return gid, src, dec
-        row = self._row(target, catalogue_ids)
-        if row is None:
+        rows = self.rows.get(norm_target(target), [])
+        if not rows:
             return gid, src + ', not in the target table', dec
-        ids = self.table.ids(row)
         plan_id = gid if src.startswith('plan') else ''
         key = (tel, date, target)
-        if plan_id and plan_id not in ids and not (super(TableIdentity, self).counterpart(plan_id, dec) & set(ids)):
-            self.conflicts[key] = 'the plan file names {} ({}), the target table {}'.format(plan_id, src,
-                                                                                            ' / '.join(ids))
+        if plan_id:
+            same = [i for i in rows if plan_id in self.table.ids(i)]
+            if not same:
+                other = super(TableIdentity, self).counterpart(plan_id, dec)     # the plan may use the other release
+                same = [i for i in rows if other & set(self.table.ids(i))]
+            if not same:
+                self.conflicts[key] = 'the plan file names {} ({}), the target table {} for {}'.format(
+                    plan_id, src, ' or '.join(' / '.join(self.table.ids(i)) for i in rows), target)
+            row = (same or rows)[0]
+        else:
+            hit = [i for i in rows if set(self.table.ids(i)) & set(catalogue_ids or ())]
+            row = (hit or rows)[0]
+        ids = self.table.ids(row)
         _, table_dec = self.table.coords(row)
         how = 'target table' + ('' if not plan_id else ', plan disagrees' if key in self.conflicts else ', plan agrees')
-        return ids[0], how, table_dec
+        return (plan_id if plan_id in ids else ids[0]), how, table_dec
 
     def counterpart(self, gid, dec):
         row = self.table.row_for_id(gid) if self.table is not None else None
