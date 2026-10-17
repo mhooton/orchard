@@ -901,20 +901,20 @@ Generates final calibrated light curves through differential photometry. Selects
    - Retrieves effective temperature from Filippazzo catalogue or FITS header
    - Locates target in photometry catalogues
 
-2. **Comparison Star Selection:**
-   - Filters candidates by:
-     - Brightness (within 2 mag of target)
-     - Low intrinsic variability (RMS < threshold)
-     - Angular separation (avoid close companions)
-     - No saturation or flags
-   - Typical selection: 10-50 comparison stars per field
+2. **Comparison Star Selection** (`stable_weights`, the default; `--alc legacy` restores the pre-2026-10 chain):
+   - Candidates: every star that is not saturated, not low-flux and no more than 3 mag fainter than the target
+   - `preclean` drops stars that disagree with the rest of the field in more than 20% of frames
+   - A smooth distance kernel, `1 / (1 + (sep / STABLE_KERNEL_ARCMIN)²)`, favours stars near the target
+   - There is no magnitude-threshold search, no top-N cut and no reset, so a small change in the photometry gives a
+     small change in the weights. The legacy chain could swap its whole ensemble on a 0.3% flux change.
 
 3. **Iterative Differential Photometry:**
    - Creates weighted artificial comparison: `C(t) = Σ wᵢ × Fᵢ(t)`
    - Computes differential flux: `flux_diff = F_target / C(t)`
-   - Iteratively adjusts weights to minimise RMS
-   - Algorithm converges in 5-10 iterations
-   - Poor comparison stars automatically down-weighted
+   - Weights are inverse variances, `wᵢ ∝ kernelᵢ / σᵢ²`. Each star's σᵢ is measured against the ALC of all the
+     *other* stars (leave-one-out), so no star can lower its own σ by dominating the ALC.
+   - The weights are iterated to convergence, usually in a few iterations
+   - `WEIGHTS_<ap>`: W1 = 1/σ², W2 = distance kernel, W3 = eligibility (0/1), W_TOTAL = their normalised product
 
 4. **PWV Atmospheric Correction** (optional):
    - Only applied for cool stars (2000K < Teff < 3200K) at Paranal
