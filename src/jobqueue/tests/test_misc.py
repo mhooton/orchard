@@ -1,13 +1,15 @@
 """Signatures, /proc readings (against a fake /proc), ESO credential handling, the CLI and the shadow report."""
 import datetime as dt
 import os
+import re
 
 import pytest
 
 from jobqueue import cli
 from jobqueue.config import DEFAULTS, load_config
 from jobqueue.eso import EsoError, read_eso_credentials, scrub
-from jobqueue.resources import ProcResources, external_locks, parse_sso_download_argv, parse_zlp_argv
+from jobqueue.resources import (ZLP_FLAGS_WITH_VALUE, ProcResources, external_locks, parse_sso_download_argv,
+                                parse_zlp_argv)
 from jobqueue.shadow_report import build_report
 from jobqueue.signatures import extract, is_transient
 from jobqueue.util import ensure_local_fs
@@ -84,14 +86,25 @@ def test_external_pipeline_and_download_processes_hold_locks(tmp_path):
     sso = ['python', 'download/SSO_download.py', '--dir', '/data/SPECULOOSPipeline', '--telescope', 'Io', '--sdate',
            '20261007', '--edate', '20261008', '--max-retries', '25']
     ours = ['bash', './main/ZLP_pipeline.sh', '1', '/data/SPECULOOSPipeline', '20261008', '8', '2', 'Callisto']
-    proc = fake_proc(tmp_path, [(10, 10, zlp), (11, 11, sso), (12, 500, ours), (13, 13, ['sleep', '5'])])
+    packed = ['bash', './main/ZLP_pipeline.sh', '--frame-format', 'rice', '1', '/data/SPECULOOSPipeline', '20261008',
+              '8', '2', 'Ganymede']   # 'rice' is the option's value, not RUNNAME
+    proc = fake_proc(tmp_path, [(10, 10, zlp), (11, 11, sso), (12, 500, ours), (13, 13, ['sleep', '5']),
+                                (14, 14, packed)])
     held = external_locks(own_sessions=[500], proc=proc)
-    assert set(held) == {'tel:Europa', 'night:Europa:20261008', 'night:Io:20261007'}
+    assert set(held) == {'tel:Europa', 'night:Europa:20261008', 'night:Io:20261007', 'tel:Ganymede',
+                         'night:Ganymede:20261008'}
     assert parse_zlp_argv(['./main/ZLP_pipeline.sh', '--cores', '8', '1', 'B', '20261001 20261002', '8', '2', 'Io',
                            'Sp0001 Sp0002']) == {'tel:Io', 'night:Io:20261001', 'night:Io:20261002',
                                                  'target:SP0001', 'target:SP0002'}
     assert parse_sso_download_argv(['SSO_download.py', '--telescope', 'all', '--sdate', '20261007']) == {
         'night:Io:20261007', 'night:Europa:20261007', 'night:Ganymede:20261007', 'night:Callisto:20261007'}
+
+
+def test_zlp_flags_with_value_match_the_pipeline_argument_loop():
+    script = os.path.join(os.path.dirname(__file__), '..', '..', 'main', 'ZLP_pipeline.sh')
+    with open(script, encoding='utf-8') as f:     # the script's comments have em-dashes
+        arms = re.findall(r'^\s*(--[\w-]+)\)(.*?);;', f.read(), re.M | re.S)
+    assert {flag for flag, body in arms if re.search(r'\bshift 2\b', body)} == ZLP_FLAGS_WITH_VALUE
 
 
 def test_queue_database_refuses_nfs(tmp_path):
