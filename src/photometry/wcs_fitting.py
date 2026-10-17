@@ -396,6 +396,41 @@ def wcsfit_qc(casuin, catfile_name, catsrc, ext, catpath, localfits_path, verbos
                 my_X, my_Y, my_ID, plot=True)
 
 
+STALE_LINEAR_WCS_KEYS = ('PC1_1', 'PC1_2', 'PC2_1', 'PC2_2', 'CDELT1', 'CDELT2')
+
+
+def drop_stale_pc_matrix(fname):
+    """
+    Remove a PCi_j/CDELTi linear WCS left in a frame next to the CDi_j that
+    wcsfit has just written. Returns True if anything was removed.
+
+    Frames from Astra 0.3.2 onwards carry a PC matrix: Astra's own (for the
+    unrotated image - astra_transform rotates CD, not PC), overwritten in place
+    by T7's per-frame pointer_wcs solve wherever T7 re-solved the frame
+    (astropy's to_header() writes the PC form). wcsfit writes CD and leaves
+    the PC cards alone, and wcslib takes PC over CD when a header has both:
+    imcore_list, imcore and astropy were all measured to (imstack, also CASU
+    on wcslib, is presumably the same). So later stages placed stars with the
+    stale matrix instead of the fitted one: on
+    Ganymede 2026-02 the forced apertures sat 1-3 px off at the field edge, by
+    a different amount in every frame, and the flux-ratio scatter of star
+    pairs grew with their separation (aperture 3: 35 -> 238 ppt; Sp1054-5431's
+    own aperture-3 scatter was 71 ppt, 7.5 ppt with the PC cards removed).
+
+    Opens the header only (do_not_scale_image_data), so 16-bit frames keep
+    their BZERO and their data bytes.
+    """
+    with fits.open(fname, mode='update', do_not_scale_image_data=True) as hdul:
+        header = hdul[0].header
+        if 'CD1_1' not in header or 'PC1_1' not in header:
+            return False
+        for key in STALE_LINEAR_WCS_KEYS:
+            if key in header:
+                del header[key]
+        header.add_history('PC/CDELT removed after wcsfit: CD is the fitted WCS')
+    return True
+
+
 def casu_solve(casuin, thresh=2, verbose=False, catsrc='vizgaia3', rcore=4, ipix=6, ext='fits'):
     catpath = os.path.join(os.getcwd(), 'catcache')
 
@@ -414,6 +449,10 @@ def casu_solve(casuin, thresh=2, verbose=False, catsrc='vizgaia3', rcore=4, ipix
         make_localfits_table(casuin, localfits_path)
         casutools.wcsfit(casuin, catfile_name, catsrc=catsrc, verbose=verbose,
                          wcsref=localfits_path)
+        # Before anything reads this frame's WCS again: T9's imcore_list (and,
+        # presumably, T8's imstack) would otherwise use a stale PC matrix over
+        # the fitted CD.
+        drop_stale_pc_matrix(casuin)
 
         # The WCS fit has succeeded. Everything below is a diagnostic, so a
         # failure in it must not mark the frame as unsolved. It used to:
