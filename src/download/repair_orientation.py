@@ -7,17 +7,21 @@ download/astra_transform.py produces with np.rot90(k=1), and SPIRIT frames mirro
   k3    Andor frame rotated twice, 180 deg from ESO (Ganymede 2025-11-15 and 11-25..29, Europa 2025-11-28)
   flip  SPIRIT frame mirrored twice, so back in ESO orientation with ASTRAMIR='Y' (Callisto 2025-12-22/23, ...);
         light frames show it as two 'WCS updated for horizontal mirroring' HISTORY cards
+  mirror  SPIRIT frame never mirrored, in ESO orientation without ASTRAMIR (darks on Callisto 2025-04-24 and
+        2026-03-05..09)
 The operation is decided per frame outside this tool (the detector tells: hot pixels in darks and lights,
 flat-field structure in flats and lights) and given to it in a CSV.
 
-Report-only unless --apply. Input: a CSV with columns file,k where k is 1/k1, 3/k3 or flip. A frame is refused
-unless it is in the state its operation repairs: an Andor frame for k1/k3 must be in the native 2088 x 2048 shape;
-a frame for flip must be a 1024 x 1280 SPIRIT frame with ASTRAMIR='Y', no earlier repair card and, if it is a
-light frame, at least two mirroring cards. So running the tool twice cannot repair a frame twice.
+Report-only unless --apply. Input: a CSV with columns file,k where k is 1/k1, 3/k3, flip or mirror. A frame is
+refused unless it is in the state its operation repairs: an Andor frame for k1/k3 must be in the native 2088 x 2048
+shape; a frame for flip must be a 1024 x 1280 SPIRIT frame with ASTRAMIR='Y', no earlier repair card and, if it is
+a light frame, at least two mirroring cards; a frame for mirror must be a 1024 x 1280 SPIRIT frame with no ASTRAMIR
+and no mirroring card. So running the tool twice cannot repair a frame twice.
 
 With --apply, per frame: the stored integers are turned with np.rot90(k) or flipped left-right (BITPIX, BZERO and
 BSCALE kept); the celestial WCS is removed (it belonged to the old orientation; T7 with --force-platesolve solves
-the frame again); for a turn ASTRAROT is set to 90 and IMAGEW/IMAGEH are swapped, for a flip ASTRAMIR stays 'Y';
+the frame again); for a turn ASTRAROT is set to 90 and IMAGEW/IMAGEH are swapped, for a flip ASTRAMIR stays 'Y', for a mirror
+it is set to 'Y' as astra_transform would have;
 HISTORY records the repair. The new file is written beside the old one under a hidden name and read back: the
 stored integers and the physical values must equal the operation applied to the old ones. Then the old file is
 hard-linked into --quarantine/<telescope>/<night>/ and the new file is renamed over the old name (atomic), and one
@@ -62,22 +66,22 @@ def telescope_night(path):
 
 
 def operation(value):
-    """'1', 'k1', '3', 'k3' -> 1 or 3; 'flip' -> 'flip'; anything else -> None."""
+    """'1', 'k1', '3', 'k3' -> 1 or 3; 'flip', 'mirror' -> themselves; anything else -> None."""
     v = str(value).strip().lower()
-    if v == 'flip':
-        return 'flip'
+    if v in ('flip', 'mirror'):
+        return v
     v = v.lstrip('k')
     return int(v) if v in ('1', '3') else None
 
 
 def apply_op(data, op):
-    return np.flip(data, axis=1) if op == 'flip' else np.rot90(data, op)
+    return np.flip(data, axis=1) if op in ('flip', 'mirror') else np.rot90(data, op)
 
 
 def check(path, op):
     """None if the frame can be repaired by op, else the reason it is refused."""
-    if op not in (1, 3, 'flip'):
-        return f'refused: operation {op!r} (only k1, k3 and flip are repairs)'
+    if op not in (1, 3, 'flip', 'mirror'):
+        return f'refused: operation {op!r} (only k1, k3, flip and mirror are repairs)'
     h = fits.getheader(path)
     shape = (h.get('NAXIS1'), h.get('NAXIS2'))
     history = [str(x) for x in h.get('HISTORY', [])]
@@ -92,6 +96,15 @@ def check(path, op):
         if 'LIGHT' in str(h.get('IMAGETYP', '')).upper() and cards < 2:
             return f'refused: light frame with {cards} mirroring card(s), not mirrored twice'
         return None
+    if op == 'mirror':
+        if shape != SPIRIT_SHAPE:
+            return f'refused: NAXIS {shape[0]}x{shape[1]} is not a SPIRIT frame'
+        if 'ASTRAMIR' in h:
+            return f"refused: ASTRAMIR={h['ASTRAMIR']!r}, already mirrored"
+        cards = sum('horizontal mirroring' in x for x in history)
+        if cards:
+            return f'refused: {cards} mirroring card(s) without ASTRAMIR'
+        return None
     if shape != NATIVE_SHAPE:
         return f'refused: NAXIS {shape[0]}x{shape[1]} is not the native shape'
     return None
@@ -103,6 +116,9 @@ def repaired_header(hdr, op, today):
         del hdr[key]
     if op == 'flip':
         hdr.add_history(f'{today} {REPAIR_CARD}: fliplr; was mirrored twice')
+    elif op == 'mirror':
+        hdr['ASTRAMIR'] = ('Y', 'Y axis flip applied to astra images')
+        hdr.add_history(f'{today} {REPAIR_CARD}: fliplr; was never mirrored')
     else:
         if 'IMAGEW' in hdr and 'IMAGEH' in hdr:
             hdr['IMAGEW'], hdr['IMAGEH'] = hdr['IMAGEH'], hdr['IMAGEW']
@@ -120,7 +136,7 @@ def repair(path, op, quarantine, today=None):
         old = np.array(hl[0].data)
     new = np.ascontiguousarray(apply_op(old, op))
     bzero, bscale, bitpix = hdr.get('BZERO'), hdr.get('BSCALE'), hdr.get('BITPIX')
-    shape = SPIRIT_SHAPE if op == 'flip' else STORED_SHAPE
+    shape = SPIRIT_SHAPE if op in ('flip', 'mirror') else STORED_SHAPE
     hdu = fits.PrimaryHDU(data=new, header=repaired_header(hdr, op, today), do_not_scale_image_data=True)
     # PrimaryHDU(do_not_scale_image_data=True) drops BZERO/BSCALE: put them back as they were
     if bzero is not None:
@@ -152,7 +168,7 @@ def repair(path, op, quarantine, today=None):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('frames', help='CSV with columns file,k (k1, k3 or flip)')
+    ap.add_argument('frames', help='CSV with columns file,k (k1, k3, flip or mirror)')
     ap.add_argument('--apply', action='store_true', help='repair the frames (default: report only)')
     ap.add_argument('--quarantine', help='directory for the originals, on the same filesystem as the frames')
     ap.add_argument('--manifest', help='CSV appended with one row per repaired frame')
@@ -177,7 +193,7 @@ def main(argv=None):
             refused += 1
             continue
         if not a.apply:
-            print(f"would {'flip' if op == 'flip' else f'turn by np.rot90(k={op})'} {path}")
+            print(f"would {op if op in ('flip', 'mirror') else f'turn by np.rot90(k={op})'} {path}")
             done += 1
             continue
         try:

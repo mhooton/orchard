@@ -6,6 +6,7 @@ native 2088 x 2048 shape: Callisto frames never rotated (np.rot90 k=1 turns them
 twice, 180 deg from ESO (k=3), because astra_transform turned frames that already carried ASTRAROT. Covers:
   - download/repair_orientation.py turns both kinds into the stored frame exactly, keeps BITPIX/BZERO, removes the
     WCS, keeps the original in quarantine, writes a manifest, and refuses a frame it has already turned
+  - the same tool flips SPIRIT frames mirrored twice (flip) or never (mirror) back to mirrored once
   - astra_transform skips frames that already carry ASTRAROT / ASTRAMIR unless forced
   - createlists (T1) refuses a night holding a native-shaped frame
 
@@ -156,6 +157,47 @@ def test_flip_refuses_a_light_frame_mirrored_once_and_andor_frames(tmp_path):
     assert 'not a SPIRIT frame' in ro.check(andor, 'flip')
     dark = mirrored_twice(str(tmp_path / 'dark.fits'), spirit_frame(), imagetyp='Dark Frame', cards=0)
     assert ro.check(dark, 'flip') is None       # calibration frames carry no mirroring card
+
+
+def test_mirror_mirrors_a_never_mirrored_spirit_dark(tmp_path):
+    s = spirit_frame(6)
+    night = tmp_path / 'Observations' / 'Callisto' / 'images' / '20250424'
+    path = write(str(night / 'SPECU4.d.fits'), np.flip(s, axis=1), IMAGETYP='Dark Frame', CTYPE1='RA---TAN',
+                 CRVAL1=150.0)
+    before = md5(path)
+    q, man = tmp_path / 'quarantine', tmp_path / 'manifest.csv'
+    args = [frames_csv(tmp_path, [(path, 'mirror')]), '--apply', '--quarantine', str(q), '--manifest', str(man)]
+    assert ro.check(path, 'flip') == 'refused: no ASTRAMIR=Y'
+    assert ro.main(args) == 0
+    with fits.open(path) as hl:
+        assert np.array_equal(hl[0].data, s)
+        h = hl[0].header
+    raw = fits.getheader(path)
+    assert (raw['NAXIS1'], raw['NAXIS2']) == (1024, 1280)
+    assert raw['BITPIX'] == 16 and raw['BZERO'] == 32768
+    assert h['ASTRAMIR'] == 'Y' and 'ASTRAROT' not in h and 'CTYPE1' not in h
+    assert any('orient repair: fliplr; was never mirrored' in str(x) for x in h['HISTORY'])
+    assert md5(q / 'Callisto' / '20250424' / 'SPECU4.d.fits') == before
+    assert list(csv.DictReader(open(man)))[0]['k'] == 'mirror'
+    # a second run refuses it: it now carries ASTRAMIR and a repair card
+    after = md5(path)
+    assert ro.main(args) == 1 and md5(path) == after
+    # and astra_transform leaves the repaired frame alone
+    astra_transform_unified(['SPECU4.d'], transform_mode='auto', n_repeats=1, dirname=str(night))
+    assert md5(path) == after
+
+
+def test_mirror_refuses_mirrored_and_andor_frames(tmp_path):
+    once = mirrored_twice(str(tmp_path / 'once.fits'), spirit_frame(), cards=1)
+    assert 'already mirrored' in ro.check(once, 'mirror')
+    carded = write(str(tmp_path / 'carded.fits'), spirit_frame(1))
+    with fits.open(carded, mode='update') as hl:
+        hl[0].header.add_history('WCS updated for horizontal mirroring')
+    assert 'mirroring card' in ro.check(carded, 'mirror')
+    andor = write(str(tmp_path / 'andor.fits'), stored_frame())
+    assert 'not a SPIRIT frame' in ro.check(andor, 'mirror')
+    plain = write(str(tmp_path / 'plain.fits'), spirit_frame(2), IMAGETYP='Dark Frame')
+    assert ro.check(plain, 'mirror') is None
 
 
 def test_transform_does_not_turn_a_frame_twice(tmp_path):

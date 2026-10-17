@@ -6,6 +6,7 @@ import numpy as np
 from astropy.io import fits as pyfits
 from calibration.pipeutils import (get_instrument_parameters, apply_image_slice, clean_bad_pixels, open_fits_file,
                                    create_dark_dict, create_flat_dict)
+from calibration import readout
 from functools import partial
 from multiprocessing.dummy import Pool as ThreadPool
 import timeit
@@ -16,7 +17,8 @@ import warnings
 from astropy.io.fits.verify import VerifyWarning
 warnings.filterwarnings('ignore', category=VerifyWarning)
 
-def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, bpm, ron, darkcur, version):
+def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, bpm, ron, darkcur, version,
+                readout_record=None):
 
     path, fname = os.path.split(filename)
     outname = outdir + 'proc' + fname.replace("'", "").replace(" ", "--").replace(".fts", ".fits")
@@ -35,10 +37,15 @@ def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, 
         else:
             overscan = overscan_data  # Will be 0. if no overscan configured
 
-        data = apply_image_slice(hdulist, 'trim', hdulist[0].data)
+        # this frame's readout mode, gain, read noise and saturation level,
+        # from its own overscan strip and the night's measurements
+        if readout_record is None:
+            readout_record = readout.measure_night([], [], '', hdulist[0].header.get('TELESCOP', ''), params)
+        os_level, os_noise = readout.overscan_signature(hdulist[0].data, params)
+        legacy_ron = float(ron) if np.size(bias) > 0 else None
+        values = readout.frame_values(readout_record, os_level, os_noise, legacy_ron_e=legacy_ron)
 
-        # Get gain from params instead of parameter
-        gain = params['gain']
+        data = apply_image_slice(hdulist, 'trim', hdulist[0].data)
 
         # Apply corrections to this science image (if there's a masterflat for this filter)
         if filter not in flat_dict.keys():
@@ -94,16 +101,22 @@ def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, 
             hdulist[0].header.set('OVERSCAN', overscan)
             hdulist[0].header.add_history('Overscan of ' + str(overscan) + ' subtracted')
 
-            if np.median(bias) != 0 or np.ptp(bias) != 0:
+            bias_used = np.median(bias) != 0 or np.ptp(bias) != 0
+            if bias_used:
                 hdulist[0].header.add_history('Bias subtracted using ' + str(biasname))
-                hdulist[0].header['RON'] = (float(ron), 'Read out noise (e-s)')
 
             if (hasattr(dark, 'shape') and (np.median(dark) != 0 or np.ptp(dark) != 0)) or np.isscalar(
                     dark) and dark != 0:
                 hdulist[0].header.add_history('Dark subtracted using ' + str(used_darkname))
                 hdulist[0].header['DARKCUR'] = (darkcur, 'Dark current (e-s per second)')
 
-            hdulist[0].header['GAIN'] = (float(gain), 'Gain used to calculate RON/Dark Cur')
+            # RON was only ever written when a bias was subtracted; the
+            # instruments readout.py does not handle keep that
+            if values['READMODE'] == 'DEFAULT' and not bias_used:
+                values['RDNOISE'] = None
+            pedestal = float(overscan) + (float(np.median(bias)) if bias_used else 0.0)
+            for key, value, comment in readout.header_cards(values, pedestal=pedestal):
+                hdulist[0].header[key] = (value, comment)
             hdulist[0].header['PV'] = (version, 'Pipeline Version')
 
             if 'trim' in params and hdulist[0].header.get('CRPIX1') is not None:
@@ -135,6 +148,12 @@ def reducer(inlist, outdir, biasname, darknames, flatnames, bpmname, reddir, ver
 
     with open_fits_file(first_filename) as hdul:
         params = get_instrument_parameters(hdul)
+        telescope = hdul[0].header.get('TELESCOP', '')
+
+    # the night's read noise and gain per readout mode (measured at T2)
+    runname = os.path.basename(biasname).split('_MasterBias')[0]
+    readout_record = readout.load_or_measure(reddir, runname, params, telescope)
+    print(readout.summary(readout_record))
 
     # Import master bias
     if usebias == "1":
@@ -196,7 +215,8 @@ def reducer(inlist, outdir, biasname, darknames, flatnames, bpmname, reddir, ver
     start_time = timeit.default_timer()
     pool = ThreadPool()
     fn = partial(reduce_file, outdir=outdir, params=params, biasname=biasname, bias=bias,
-                 dark_dict=dark_dict, flat_dict=flat_dict, bpm=bpm, ron=ron, darkcur=darkcur, version=version)
+                 dark_dict=dark_dict, flat_dict=flat_dict, bpm=bpm, ron=ron, darkcur=darkcur, version=version,
+                 readout_record=readout_record)
 
     with open(inlist) as infile:
         filenames = [line.strip() for line in infile]

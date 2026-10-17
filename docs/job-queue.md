@@ -84,8 +84,9 @@ process group. Output goes to `<queue_root>/logs/jobs/<YYYY-MM>/<id>-<kind>-<tel
 unlike `PipelineOutput/v3/<TEL>/logs/<NIGHT>_1_v3.log` is never overwritten by a later run. The runner writes
 `<log>.status.json` with the exit code when the command ends.
 
-Every job records its start, end, exit code and the deployed code version: the first word of `src/VERSION` if
-it exists, otherwise `tree-<hash>` of the deployed `.py` and `.sh` files (the production tree is a working copy,
+Every job records its start, end, exit code and the code it ran: the release it was pinned to (see *Deploying
+code*), or, with no release, the first word of `src/VERSION` if it exists, otherwise `tree-<hash>` of the
+deployed `.py` and `.sh` files (the production tree is a working copy,
 not a git checkout).
 
 When a job fails, its **failure signature** is the last exception line of its log (else the last error line),
@@ -268,6 +269,7 @@ q signatures                   # failed jobs grouped by failure signature
 q requeue --signature "gaia_dr3_id" --dry-run                 # then without --dry-run
 q stop                         # stop the dispatcher; jobs carry on, the watchdog restarts it
 q probe                        # read-only: load, memory, disk %util, code version, locks held outside the queue
+q release                      # code releases; q release deploy --from <stage>/src --sha <sha> (see Deploying code)
 q lookback --dry-run           # what the look-back would do today, queueing nothing
 q report --days 3              # the daily report (live: jobs, results, delays; shadow: next to the cron)
 ```
@@ -341,6 +343,71 @@ After a clean week of shadow reports. On appct as `speculoos`, in the daytime:
 `q drain` stops new starts, and running jobs finish (or `q cancel --kill`); `q stop` stops the dispatcher. The
 deployed `src/jobqueue/` directory can stay: nothing imports it.
 
+## Deploying code: releases
+
+Every job runs from a **release**: a frozen copy of the production tree, so a deploy never waits for a gap in
+the queue. Before releases, a deploy had to wait until no `ZLP_pipeline.sh` was running, because a night that
+ran T8 on the old code and T9 on the new would mix them; with three telescopes and a backlog that gap could be
+days away, and on 16 October a Callisto night was killed to make one.
+
+- A release is `<queue_root>/releases/<id>/src` (on appct `/export/data/SPECULOOSPipeline/queue/releases`), with
+  `<id>` = `<UTC time>-<sha7>`. It is the live tree (`/opt/orchard/src`) as it was when the release was built,
+  with the staged commit laid over it, so deployed-only files (`reporting/.env`, the target tables) come along.
+  Caches, logs and core dumps in the live tree stay out (`release_exclude`). Its files are read-only. Files
+  unchanged since the previous release are hard links to it, so a release costs only what changed.
+- `releases/current` is a relative symlink to the release new jobs get. When the dispatcher starts a job it
+  points the job's working directory, `ORCHARD_PATH` and the live-tree entries of `PYTHONPATH` at that release,
+  so `ZLP_pipeline.sh` (`SCRIPTDIR=$ORCHARD_PATH`), every script it runs and `python -m jobqueue jobs …` read the
+  release from the first stage to the last. Activating another release changes nothing for running jobs; a retry
+  starts on whatever is current then. Paths outside the live tree (a scratch checkout) are left alone.
+- The job's `code_sha` is the release id, `q status` shows the current release and marks running jobs on an
+  older one, and each job log's header has its `ORCHARD_PATH`.
+- The live tree is still what everything outside the queue runs: the dispatcher, the watcher and look-back,
+  cron, `q`, and people. Activating a release marks the live tree for an update, which writes the files that
+  differ (each through a temporary file and a rename, as the rsync recipe did), backs up what it replaces in
+  `releases/live_backups/`, and deletes nothing. It waits while a pipeline, download or job process still runs
+  from the live tree (one started outside the queue, or by the queue before releases existed), and the
+  dispatcher does it on the first poll after the last one ends. Pinned jobs and anyone's scratch copy (an
+  `ORCHARD_PATH` elsewhere) do not hold it up. If the update rewrites the queue's own code, the dispatcher exits
+  and the watchdog starts the new one within 5 minutes; running jobs carry on.
+- With no `current` release the dispatcher launches from the live tree exactly as before.
+
+### Deploying main
+
+Stage the commit as before, then one command on appct does the rest:
+
+```bash
+git archive <sha> src | ssh speculoos@appcs.ra.phy.cam.ac.uk \
+    'mkdir -p /appct/data/speculoos/deploy_staging/main_<sha> && tar -x -C /appct/data/speculoos/deploy_staging/main_<sha>'
+q release deploy --from /gaia_database/deploy_staging/main_<sha>/src --sha <sha>
+```
+
+`deploy` takes a minute or two whatever the queue is doing. It builds the release, runs the suite from it
+(`tests/` and `jobqueue/tests/`, with the pytest pylib in `test_pylib`; it stops before activating if anything
+fails, and `--skip-tests` skips it), activates it, and brings the live tree up to it straight away if nothing
+runs from the live tree, else says what it is waiting for and leaves the update to the dispatcher. If the
+queue's own code changed it restarts the dispatcher (`q stop`; the watchdog starts the new one within 5
+minutes; running jobs carry on). The steps also run one at a time:
+
+```bash
+q release build --from <stage>/src --sha <sha>   # or no --from: a snapshot of the live tree as it is
+q release test <id>
+q release activate <id>                          # jobs started from now on run it; the live tree follows
+q release                                        # releases, which jobs run on each, whether the live tree matches
+q release sync-live --dry-run                    # what differs in the live tree
+q release sync-live [--force]                    # update the live tree now (--force: even while it is in use)
+```
+
+**Rollback:** `q release activate <previous id>`. New jobs get the old code at once; the live tree follows.
+
+**When to hold the queue anyway:** a change that must not overlap with runs of the old code (a new output
+layout two runs would both write, say) still needs `q drain`, waiting for the running jobs, then the deploy and
+`q undrain`. That is the exception; a fix to a pipeline stage is not.
+
+**Data files in the tree** (`calibration/*.csv`, `utils/ml_40pc_v2.csv`) reach jobs with the next release. If
+one is edited in the live tree, snapshot it with `q release deploy` (no `--from`). The same goes for any
+hand edit in the live tree: until the next release, jobs do not see it.
+
 ## Configuration
 
 Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUEUE_CONFIG`, or
@@ -360,6 +427,9 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `timeout_factor`, `min_timeout_minutes` | 3, 120 | |
 | `retry_delay_minutes`, `max_retries` | 60, 2 | transient failures |
 | `pipeline_cores` | 20 | sets `N_CORES` for the job |
+| `releases_dir` | `<queue_root>/releases` | code releases; `current` is the one new jobs get |
+| `release_exclude` | see file | caches, logs, core dumps left out of a release (`/x` anchors at the tree's root) |
+| `test_pylib`, `test_paths` | `mh_scratch/k1-deploy-check/pylib`, `tests`, `jobqueue/tests` | `q release test` |
 | `minutes_per_1000_frames` | ANDOR 69, SPIRIT 22 | estimates (2026 production medians) |
 | `watcher.*` | see file | stability, deadlines, `recent_days` = 5 |
 | `lookback.*` | 30 nights, 2 reruns/night | |
@@ -373,6 +443,7 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `src/jobqueue/scheduler.py` | admission and strict priority (pure) |
 | `src/jobqueue/dispatcher.py` | the daemon, watchdog, code version |
 | `src/jobqueue/runner.py` | runs one job, writes its status |
+| `src/jobqueue/releases.py` | code releases: build, pin a job, activate, bring the live tree up to date |
 | `src/jobqueue/resources.py` | `/proc`: load, memory, disk %util, liveness, locks held outside the queue |
 | `src/jobqueue/signatures.py` | failure signatures, transient or deterministic |
 | `src/jobqueue/eso.py` | authenticated read-only TAP |

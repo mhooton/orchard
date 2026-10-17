@@ -4,6 +4,7 @@ import os
 import numpy as np
 import glob
 from calibration.pipeutils import get_instrument_parameters, apply_image_slice, open_fits_file
+from calibration import readout
 from astropy.io import fits
 from astropy.stats import sigma_clip
 from reporting.QC import main as QC
@@ -19,6 +20,7 @@ def biasmaker(inlist, biasname, outdir, reportdir, run, targ):
     with open_fits_file(first_filename) as hdul:
         params = get_instrument_parameters(hdul)
         gain = params['gain']
+        telescope = hdul[0].header.get('TELESCOP', '')
 
     """Create master bias from list of bias images."""
     os.system('mkdir ' + outdir)
@@ -118,6 +120,16 @@ def biasmaker(inlist, biasname, outdir, reportdir, run, targ):
 
         adu_diff = np.std(b1 - b0)
         ron = adu_diff * float(gain) / (2. ** 0.5)
+
+        # The night's own bias and flat pairs give the read noise and gain of
+        # each readout mode (calibration/readout.py); T3-T6 read them back from
+        # readout.json.  `ron` above stays the value for the instruments that
+        # module does not handle (no overscan: SPIRIT, MOANA).
+        record = readout.load_or_measure(outdir, run, params, telescope, refresh=True)
+        print(readout.summary(record))
+        ron_e = readout.calib_values(record, legacy_ron_e=ron)['RDNOISE']
+        if ron_e is not None:
+            ron = ron_e
 
         with open(outdir + "readoutnoise.dat", "w") as f:
             f.write('%s' % ron)
