@@ -324,8 +324,9 @@ def run_tests(cfg, rid, log=print):
     with open(out, 'w') as f:
         rc = subprocess.call(cmd, cwd=rel['src'], env=env, stdout=f, stderr=subprocess.STDOUT)
     with open(out) as f:
-        tail = [line.rstrip() for line in f.readlines()[-3:]]
-    summary = 'exit {}: {}'.format(rc, ' | '.join(t for t in tail if t))
+        lines = [line.strip() for line in f if line.strip()]
+    # pytest's last line is the count ("308 passed in 128.57s"); the lines before it are progress dots
+    summary = 'exit {}: {}'.format(rc, lines[-1].strip('= ') if lines else 'no output')
     with open(os.path.join(rel['path'], TESTS_JSON), 'w') as f:
         json.dump({'exit_code': rc, 'at': iso(utcnow()), 'summary': summary, 'paths': paths}, f)
     log('suite ' + summary)

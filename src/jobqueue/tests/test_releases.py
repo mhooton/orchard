@@ -12,7 +12,7 @@ from jobqueue import cli
 from jobqueue.config import load_config
 from jobqueue.dispatcher import Dispatcher
 from jobqueue.releases import (SYNC_KEY, ReleaseError, activate, build, code_dir, current, current_id, live_diff,
-                               live_tree_users, pin, read_release, releases_dir, sync_live)
+                               live_tree_users, pin, read_release, releases_dir, run_tests, sync_live)
 from jobqueue.tests.conftest import Clock, FixedResources
 
 PY = sys.executable
@@ -98,6 +98,23 @@ def test_build_without_a_stage_snapshots_the_live_tree(cfg, live):
     rel = build(cfg, log=lambda m: None)
     assert rel['id'].endswith('-live') and rel['differs_from_live'] == []
     assert read(os.path.join(rel['src'], 'photometry', 'x.py')) == 'VERSION = 1\n'
+
+
+def test_run_tests_records_pytests_final_line(cfg, live, tmp_path):
+    """The suite runs from the release with the pylib's pytest; q release shows its count, not the progress dots."""
+    pylib = tmp_path / 'pylib'
+    write(str(pylib / 'pytest' / '__init__.py'), '')
+    write(str(pylib / 'pytest' / '__main__.py'),
+          'import os, sys\n'
+          'print("." * 72 + " [ 93%]")\nprint("." * 20 + " " * 52 + " [100%]")\n'
+          'print("308 passed in 128.57s (0:02:08) cwd=" + os.getcwd())\nsys.exit(0)\n')
+    cfg['test_pylib'] = str(pylib)
+    rel = build(cfg, log=lambda m: None)
+    assert run_tests(cfg, rel['id'], log=lambda m: None) == 0
+    assert read_release(cfg, rel['id'])['tests'] == 'exit 0: 308 passed in 128.57s (0:02:08) cwd=' + rel['src']
+    cfg['test_pylib'] = str(tmp_path / 'none')
+    with pytest.raises(ReleaseError):
+        run_tests(cfg, rel['id'], log=lambda m: None)
 
 
 def test_two_builds_in_the_same_second_get_different_ids(cfg, live, clock):
