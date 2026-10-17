@@ -60,6 +60,9 @@ def cmd_status(cfg, store, a):
         print('dispatcher NOT RUNNING (last heartbeat {})'.format(info.get('heartbeat', 'never')))
     paused = sorted(store.paused())
     print('drain      {}   paused: {}'.format('ON' if store.draining() else 'off', ', '.join(paused) or 'none'))
+    from .releases import current_id
+    release = current_id(cfg)
+    print('code       {}'.format('release ' + release if release else 'live tree (no release)'))
     if a.resources:
         from .resources import ProcResources
         s = ProcResources(cfg['disk_devices']).snapshot()
@@ -78,10 +81,11 @@ def cmd_status(cfg, store, a):
     running = store.jobs(states=['running'])
     print('\nRUNNING ({})'.format(len(running)))
     for j in running:
-        print('  {:>6} {} {:8} {:9} {:8} {:>3}c  {:>6} of est {:.0f}m  {}{}'.format(
+        print('  {:>6} {} {:8} {:9} {:8} {:>3}c  {:>6} of est {:.0f}m  {}{}{}'.format(
             j['id'], j['class'], j['kind'], j['telescope'] or '-', j['night'] or '-', j['cores'],
             _ago(j['started_at'], now), j['est_minutes'], 'pid {}'.format(j['pid']) if j['pid'] else '',
-            ' [shadow]' if j['shadow'] else ''))
+            ' [shadow]' if j['shadow'] else '',
+            '  code {}'.format(j['code_sha']) if release and j['code_sha'] != release else ''))
     queued = store.jobs(states=['queued'])
     queued.sort(key=lambda j: (CLASSES.index(j['class']), -j['priority'], j['created_at'], j['id']))
     print('\nQUEUED ({}{})'.format(len(queued), ', first {}'.format(a.limit) if len(queued) > a.limit else ''))
@@ -403,6 +407,126 @@ def cmd_stop(cfg, store, a):
     return 0
 
 
+# --------------------------------------------------------------------------- code releases
+
+def _release_or_current(cfg, rid):
+    from .releases import ReleaseError, current_id
+    rid = rid or current_id(cfg)
+    if not rid:
+        raise ReleaseError('no release given and none is current')
+    return rid
+
+
+def _print_blocked(blocked):
+    for pid, cmd in sorted(blocked.items()):
+        print('  pid {} {}'.format(pid, cmd))
+
+
+def _after_sync(cfg, store, a, res):
+    from .releases import queue_code_changed
+    for path in res['written']:
+        print('  wrote ' + path)
+    if res.get('backup'):
+        print('replaced files are backed up in {}'.format(res['backup']))
+    if queue_code_changed(res):
+        print('the queue\'s own code changed: restarting the dispatcher (the watchdog starts the new one within 5 min)')
+        cmd_stop(cfg, store, a)
+
+
+def _deploy_sync(cfg, store, a):
+    """After activating: bring the live tree up now if nothing runs from it, else leave it to the dispatcher."""
+    from .releases import sync_pending
+    res = sync_pending(cfg, store)
+    if res is None:
+        return 0
+    if 'blocked' in res:
+        print('the live tree is still used by {} process(es) started before releases or outside the queue; the '
+              'dispatcher brings it up to date once they end (q release shows when):'.format(len(res['blocked'])))
+        _print_blocked(res['blocked'])
+        return 0
+    _after_sync(cfg, store, a, res)
+    print('live tree matches {}'.format(res['release']))
+    return 0
+
+
+def cmd_release(cfg, store, a):
+    from .releases import (SYNC_KEY, ReleaseError, activate, build, current_id, list_releases, live_diff, run_tests,
+                           sync_live)
+    try:
+        if a.action == 'list':
+            cur = current_id(cfg)
+            running = {}
+            for j in store.jobs(states=['running']):
+                running.setdefault(j['code_sha'], []).append(j['id'])
+            print('current: {}'.format(cur or 'none (jobs run from the live tree)'))
+            releases = list_releases(cfg)
+            for r in releases[-a.limit:]:
+                print('{} {:28} {:>8}  built {}  {:>3} changed  {:>3} differed from live{}{}'.format(
+                    '*' if r['id'] == cur else ' ', r['id'], (r.get('sha') or '-')[:8], r['built_at'],
+                    len(r.get('changed_since_previous') or []), len(r.get('differs_from_live') or []),
+                    '  running jobs {}'.format(running[r['id']]) if r['id'] in running else '',
+                    '  tests {}'.format(r['tests']) if r.get('tests') else ''))
+            known = {r['id'] for r in releases}
+            for sha, ids in sorted(((k, v) for k, v in running.items() if k not in known), key=lambda kv: str(kv[0])):
+                print('  live tree {:20} running jobs {}'.format(sha or '-', ids))
+            if store.kv_get(SYNC_KEY):
+                print('live tree sync pending: the dispatcher does it once nothing runs from the live tree')
+            if cur:
+                diff = live_diff(cfg, cur)
+                print('live tree {}: {}'.format(cfg['src_dir'], 'matches {}'.format(cur) if not diff else
+                                                '{} file(s) differ from {}{}'.format(
+                                                    len(diff), cur, ': ' + ', '.join(diff[:8]) +
+                                                    (' ...' if len(diff) > 8 else ''))))
+            return 0
+        if a.action == 'build':
+            rel = build(cfg, stage=a.stage, sha=a.sha)
+            for path in rel['differs_from_live']:
+                print('  differs from live: ' + path)
+            print('next: q release test {0}; q release activate {0}'.format(rel['id']))
+            return 0
+        if a.action == 'test':
+            return 1 if run_tests(cfg, _release_or_current(cfg, a.id)) else 0
+        if a.action == 'activate':
+            activate(cfg, a.id, store=store)
+            return _deploy_sync(cfg, store, a)
+        if a.action == 'sync-live':
+            rid = _release_or_current(cfg, a.id)
+            res = sync_live(cfg, rid, dry_run=a.dry_run, force=a.force)
+            if 'blocked' in res:
+                print('live tree not updated: {} process(es) still run from it:'.format(len(res['blocked'])))
+                _print_blocked(res['blocked'])
+                return 2
+            if a.dry_run:
+                print('{} file(s) of {} differ in the live tree'.format(len(res['written']), rid))
+                for path in res['written']:
+                    print('  ' + path)
+                return 0
+            if rid == current_id(cfg):
+                store.kv_delete(SYNC_KEY)
+            _after_sync(cfg, store, a, res)
+            print('live tree matches {}'.format(rid))
+            return 0
+        if a.action == 'deploy':
+            rel = build(cfg, stage=a.stage, sha=a.sha)
+            for path in rel['differs_from_live']:
+                print('  differs from live: ' + path)
+            if not rel['differs_from_live'] and a.stage:
+                print('note: nothing in {} differs from the live tree'.format(a.stage))
+            if a.skip_tests:
+                print('tests skipped')
+            elif run_tests(cfg, rel['id']):
+                print('tests failed: {} is built but NOT active; read {}/tests.log, then '
+                      'q release activate {} if the failures are known'.format(rel['id'], rel['path'], rel['id']))
+                return 1
+            activate(cfg, rel['id'], store=store)
+            return _deploy_sync(cfg, store, a)
+    except ReleaseError as e:
+        print('error: {}'.format(e))
+        return 1
+    raise ValueError(a.action)
+
+
+
 def _eso(cfg):
     from .eso import EsoArchive
     return EsoArchive(cfg['eso_env_file'])
@@ -555,6 +679,33 @@ def build_parser():
         s.add_argument('--days', type=int, default=3)
         s.add_argument('--out')
         s.set_defaults(fn=cmd_shadow_report)
+
+    s = sub.add_parser('release', help='code releases: every job runs from a frozen copy of the deployed tree, '
+                                       'so deploying never waits for the queue (see docs/job-queue.md)')
+    rs = s.add_subparsers(dest='action')
+    s.set_defaults(fn=cmd_release, action='list', limit=10)
+    r = rs.add_parser('list', help='releases, the current one, what runs on each, and whether the live tree matches')
+    r.add_argument('--limit', type=int, default=10)
+    for name, text in (('build', 'build a release from the live tree with a staged commit laid over it'),
+                       ('deploy', 'build, test, activate, then bring the live tree up to it')):
+        r = rs.add_parser(name, help=text)
+        r.add_argument('--from', dest='stage', help='src/ of `git archive <sha> src`, as the container sees it '
+                                                   '(none: snapshot the live tree as it is)')
+        r.add_argument('--sha', help='the staged commit')
+        if name == 'deploy':
+            r.add_argument('--skip-tests', action='store_true')
+    r = rs.add_parser('test', help='run the test suite from a release (default the current one)')
+    r.add_argument('id', nargs='?')
+    r = rs.add_parser('activate', help='make a release current: jobs started from now on run it, and the live '
+                                       'tree follows as soon as nothing runs from it (also a rollback)')
+    r.add_argument('id')
+    r = rs.add_parser('sync-live', help='bring the live tree up to a release now (default the current one; the '
+                                        'dispatcher does this itself after activate): writes what differs, backs '
+                                        'up what it replaces, deletes nothing')
+    r.add_argument('id', nargs='?')
+    r.add_argument('--dry-run', action='store_true', help='list the files that differ')
+    r.add_argument('--force', action='store_true',
+                   help='write even while pipeline processes run from the live tree (they may mix old and new code)')
 
     s = sub.add_parser('probe', help='read-only: load, memory, disk %%util, code version, external locks')
     s.set_defaults(fn=cmd_probe)

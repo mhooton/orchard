@@ -45,9 +45,10 @@ def main(argv=None):
 
     os.makedirs(os.path.dirname(os.path.abspath(a.log)), exist_ok=True)
     with open(a.log, 'ab', buffering=0) as log:
-        log.write('=== jobqueue job {} | started {} | host {} | pid {} | code {}\n=== cwd {}\n=== cmd {}\n'.format(
-            a.job, started, socket.gethostname(), os.getpid(), a.sha or '-', a.cwd or os.getcwd(),
-            ' '.join(cmd)).encode())
+        log.write('=== jobqueue job {} | started {} | host {} | pid {} | code {}\n=== cwd {} | ORCHARD_PATH {}\n'
+                  '=== cmd {}\n'.format(a.job, started, socket.gethostname(), os.getpid(), a.sha or '-',
+                                        a.cwd or os.getcwd(), os.environ.get('ORCHARD_PATH', '-'),
+                                        ' '.join(cmd)).encode())
         try:
             child = subprocess.Popen(cmd, cwd=a.cwd or None, stdin=subprocess.DEVNULL, stdout=log,
                                      stderr=subprocess.STDOUT)

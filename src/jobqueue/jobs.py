@@ -26,6 +26,7 @@ from .config import ensure_dirs, load_config, queue_paths
 from .nights import (FitsError, diff_eso_disk, foreign_times, is_cube_layout, list_frames, night_dir, read_header,
                      row_files, science_count, strip_suffix, transformation_check_kind,
                      transformation_check_would_delete, verify_frame)
+from .releases import code_dir
 from .util import parse_night, read_json, utcnow, write_json_atomic
 
 EX_TEMPFAIL = 75
@@ -185,7 +186,7 @@ def download(cfg, telescope, night):
                '--sdate', night, '--edate', edate, '--max-retries', '1']
         print('running: {} > {}'.format(' '.join(cmd), log_path), flush=True)
         with open(log_path, 'w') as out:
-            rc = subprocess.call(cmd, cwd=cfg['src_dir'], stdout=out, stderr=subprocess.STDOUT)
+            rc = subprocess.call(cmd, cwd=code_dir(cfg), stdout=out, stderr=subprocess.STDOUT)
         print('SSO_download.py exit {}'.format(rc), flush=True)
 
     names = list_frames(path)
