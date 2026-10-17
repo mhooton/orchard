@@ -192,6 +192,9 @@ T2 writes the night's measurements to `reduction/readout.json`.
 `python -m calibration.readout <reduction dir>` prints them for any night without writing
 anything. Instruments without an overscan (SPIRIT, MOANA) keep the configured values.
 
+To do: nothing yet collects these values over time or flags a change of mode
+([#31](https://github.com/mhooton/orchard/issues/31)).
+
 ### Instrument-Specific Features
 
 **ANDOR (Optical):**
