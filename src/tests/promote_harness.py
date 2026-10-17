@@ -60,7 +60,10 @@ class Harness(object):
         cmd = [sys.executable, os.path.join(SRC, 'utils', 'promote.py')] + list(args)
         shown = ' '.join(a if ' ' not in a else '"{}"'.format(a) for a in args)
         print('\n$ promote.py {}'.format(shown))
-        p = subprocess.run(cmd + ['--base', self.base], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        # every path explicit, so nothing can fall back to the production queue root
+        paths = ['--base', self.base, '--db', os.path.join(self.queue, 'promote.sqlite'),
+                 '--queue-db', os.path.join(self.queue, 'queue.sqlite')]
+        p = subprocess.run(cmd + paths, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            universal_newlines=True)
         out = p.stdout.replace(self.base + '/', '').replace(self.base, '<base>')
         for line in out.rstrip('\n').splitlines():
