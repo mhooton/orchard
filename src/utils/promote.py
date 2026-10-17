@@ -1217,7 +1217,7 @@ def _child(a, tel, night, extra=()):
     return subprocess.call(argv)
 
 
-def make_promoter(a, cfg, paths, apply, journal):
+def make_promoter(a, cfg, paths, apply, journal, queue=None):
     th = dict(promote_check.THRESHOLDS)
     th.update(cfg.get('promote', {}).get('thresholds') or {})
     for k in promote_check.THRESHOLDS:
@@ -1234,8 +1234,8 @@ def make_promoter(a, cfg, paths, apply, journal):
     raw = None if a.no_raw else CachedRawFrames(a.base, raw_path, seed=a.raw_seed,
                                                 readonly=not apply and not a.raw_cache)
     own = os.environ.get('JOBQUEUE_JOB_ID')
-    return Promoter(a.base, journal=journal, queue=open_queue(a.queue_db), identity=identity, raw=raw, th=th,
-                    apply=apply, own_job=int(own) if own and own.isdigit() else None)
+    return Promoter(a.base, journal=journal, queue=queue or open_queue(a.queue_db), identity=identity, raw=raw,
+                    th=th, apply=apply, own_job=int(own) if own and own.isdigit() else None)
 
 
 def cmd_run(a, cfg, paths):
@@ -1267,6 +1267,9 @@ def cmd_run(a, cfg, paths):
                               if (not tels or v['telescope'] in tels) and (not a.night or v['night'] == a.night)}
                              - set(found))
             j.close()
+        if a.csv or a.report:
+            print('note: --csv and --report go with one night (or a dry run); the journal holds every verdict '
+                  '(promote.py list --all)')
         rc = 0
         for tel, night in nights:
             rc = max(rc, _child(a, tel, night))
@@ -1274,7 +1277,7 @@ def cmd_run(a, cfg, paths):
     journal = Journal(a.db) if a.apply else (Journal(a.db, readonly=True) if os.path.exists(a.db) else None)
     inv = journal.invocation_start('run', sys.argv[1:], _code(), os.environ.get('JOBQUEUE_JOB_ID'), a.job) \
         if a.apply else None
-    p = make_promoter(a, cfg, paths, a.apply, journal)
+    p = make_promoter(a, cfg, paths, a.apply, journal, queue=conn)
     p.invocation = inv
     started = time.time()
     results = []
@@ -1553,16 +1556,17 @@ def main(argv=None):
     except (AttributeError, ValueError):
         pass
     a = build_parser().parse_args(argv)
-    # what a child gets: the command as given, without --telescope/--night (the child adds its own)
+    # what a child gets: the command as given, without --telescope/--night (it gets its own) or --csv/--report
+    # (each child would overwrite the last one's)
     keep, skip = [], False
     for k, x in enumerate(argv):
         if skip:
             skip = False
             continue
-        if x in ('--telescope', '--night'):
+        if x in ('--telescope', '--night', '--csv', '--report'):
             skip = True
             continue
-        if x.startswith(('--telescope=', '--night=')):
+        if x.startswith(('--telescope=', '--night=', '--csv=', '--report=')):
             continue
         keep.append(x)
     a.argv = keep
