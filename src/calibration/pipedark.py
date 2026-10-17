@@ -6,7 +6,7 @@ import glob
 import numpy as np
 from astropy.io import fits as pyfits
 from astropy.stats import sigma_clip
-from calibration.pipeutils import get_instrument_parameters, apply_image_slice, open_fits_file
+from calibration.pipeutils import get_instrument_parameters, apply_image_slice, open_fits_file, frame_telescope
 from calibration import readout
 from reporting.QC import main as QC
 import pipeutils
@@ -40,7 +40,7 @@ def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ
     with open_fits_file(first_filename) as hdul:
         params = get_instrument_parameters(hdul)
         gain = params['gain']
-        telescope = hdul[0].header.get('TELESCOP', '')
+        telescope = frame_telescope(hdul)
 
     # the night's gain for the mode of its own calibration frames (T2 measured it)
     if run is not None:

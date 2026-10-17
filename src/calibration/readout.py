@@ -772,7 +772,7 @@ def main(argv=None):
     parser.add_argument('--runname', default='1')
     parser.add_argument('--json', action='store_true', help='print the whole record')
     args = parser.parse_args(argv)
-    from calibration.pipeutils import get_instrument_parameters, open_fits_file
+    from calibration.pipeutils import get_instrument_parameters, open_fits_file, frame_telescope
     bias, flats = night_lists(args.reddir, args.runname)
     first = (bias or flats or [None])[0]
     if first is None:
@@ -780,7 +780,7 @@ def main(argv=None):
         return 1
     with open_fits_file(first) as hdul:
         params = get_instrument_parameters(hdul)
-        telescope = hdul[0].header.get('TELESCOP', '')
+        telescope = frame_telescope(hdul)
     record = measure_night(bias, flats, args.night or night_from_reddir(args.reddir), telescope, params)
     print(json.dumps(record, indent=1, default=_json_default) if args.json else summary(record))
     return 0

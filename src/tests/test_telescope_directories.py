@@ -149,5 +149,20 @@ def test_frames_built_in_memory_still_fall_back():
     hdul = fits.HDUList([fits.PrimaryHDU(data=np.zeros((2088, 8), dtype=np.uint16))])
     hdul[0].header['TELESCOP'] = ''
     assert pu.frame_path(hdul) is None
+    assert pu.frame_telescope(hdul) == ''
     p = pu.get_instrument_parameters(hdul)
     assert 'trim' not in p and 'arcsec_per_pixel' not in p
+
+
+def test_readout_sees_one_telescope_for_the_whole_night(tmp_path):
+    # T2 takes the telescope from a bias frame (''), T5/T6 from a science frame ('ACP->Callisto'):
+    # both must name the configured telescope, or readout.json is re-measured at T5 and the
+    # dated REGIMES table is never consulted
+    from calibration import readout as ro
+    night = tmp_path / 'Observations' / 'Callisto' / 'images' / '20180615'
+    bias = _write(night / 'Calibration' / 'Bias-S001-R001-C001-B1.fts', '', (2088, 2048), IMAGETYP='Bias Frame')
+    light = _write(night / 'Sp2331-2749-S001-R001-C001-I+z.fts', 'ACP->Callisto', (2088, 2048))
+    with fits.open(bias) as bh, fits.open(light) as lh:
+        assert pu.frame_telescope(bh) == pu.frame_telescope(lh) == 'SPECULOOS-CALLISTO'
+        assert ro.expected_regime(pu.frame_telescope(bh), '20180615').mode == 'NORMAL'
+    assert ro.expected_regime('', '20180615') is None

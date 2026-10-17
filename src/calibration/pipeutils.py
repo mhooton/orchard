@@ -63,6 +63,11 @@ def frame_path(hdul):
         return None
     return name if isinstance(name, str) else None
 
+
+def frame_telescope(hdul):
+    """The configured telescope of an opened frame, by resolve_telescope (TELESCOP, alias, directory)."""
+    return resolve_telescope(hdul[0].header.get('TELESCOP', ''), load_instrument_config(), frame_path(hdul))
+
 def detect_instrument(hdul, trimmed=False):
     """
     Centralized instrument detection from FITS HDUList using configuration file
