@@ -393,13 +393,14 @@ def night_busy(conn, tel, night, own_job=None, proc=None):
     """Why the night must be left alone now ('' if it need not): a queue job that holds its lock is running, or a
     pipeline, download or promotion process outside the queue works on it."""
     lock = 'night:{}:{}'.format(tel, night)
-    why = []
+    why, sessions = [], [os.getsid(0)]
     if conn is not None:
-        for r in conn.execute("SELECT id, kind, locks FROM jobs WHERE state = 'running'"):
+        for r in conn.execute("SELECT id, kind, locks, pid FROM jobs WHERE state = 'running'"):
+            sessions.append(r['pid'])           # each queue job runs in its own session, led by its runner
             if r['id'] != own_job and lock in json.loads(r['locks'] or '[]'):
                 why.append('queue job {} ({}) is running on it'.format(r['id'], r['kind']))
     from jobqueue.resources import external_locks
-    held = external_locks([os.getsid(0)], proc or PROC)
+    held = external_locks(sessions, proc or PROC)
     if lock in held:
         why.append('a process outside the queue holds it: {}'.format(held[lock]))
     return '; '.join(why)

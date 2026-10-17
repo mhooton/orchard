@@ -508,3 +508,20 @@ def test_resuming_waits_while_the_night_is_busy(env, monkeypatch):
     con.close()
     assert run(env, 'resume', '--apply', '--telescope', TEL, '--night', NIGHT) == 0
     assert any('.run' in n for n in os.listdir(env.v2('logs')))
+
+
+def test_night_busy_names_queue_jobs_and_outside_processes_apart(env, tmp_path):
+    from jobqueue.tests.test_misc import fake_proc
+    path, (jid,) = queue_db(env, [{'state': 'running', 'start': now()}])
+    con = sqlite3.connect(path)
+    con.execute('UPDATE jobs SET pid = 700 WHERE id = ?', (jid,))
+    con.commit()
+    con.close()
+    runner = ['python', '-m', 'jobqueue.runner', '--log', 'x', '--', './main/ZLP_pipeline.sh', '1', '/data', NIGHT, '8',
+              '2', TEL]
+    manual = ['bash', './main/ZLP_pipeline.sh', '1', '/data', '20010105', '8', '2', TEL]
+    proc = fake_proc(tmp_path, [(700, 700, runner), (800, 800, manual)])
+    conn = promote.open_queue(path)
+    assert promote.night_busy(conn, TEL, NIGHT, proc=proc) == 'queue job {} (pipeline) is running on it'.format(jid)
+    assert promote.night_busy(conn, TEL, NIGHT, own_job=jid, proc=proc) == ''
+    assert promote.night_busy(conn, TEL, '20010105', proc=proc).startswith('a process outside the queue holds it: pid 800')
