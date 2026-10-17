@@ -17,6 +17,14 @@ DEFAULTS = {
     'eso_env_file': '/opt/orchard/src/reporting/.env',
     'python': 'python',
 
+    # code releases (releases.py): jobs run from <releases_dir>/current, a frozen copy of the deployed tree
+    'releases_dir': None,                     # default <queue_root>/releases
+    # left out of a release: caches, logs and core dumps that live in the production tree; '/x' anchors at the root
+    'release_exclude': ['__pycache__', '.pytest_cache', '.git', '.idea', 'catcache', 'core', 'core.[0-9]*', '._*',
+                        '.DS_Store', '*.pyc', '*.log', '*.release-tmp', '/1'],
+    'test_pylib': '/data/SPECULOOSPipeline/mh_scratch/k1-deploy-check/pylib',   # pytest for the container
+    'test_paths': ['tests', 'jobqueue/tests'],
+
     # dispatcher
     'poll_seconds': 45,
     'max_cores': 112,

@@ -716,6 +716,19 @@ def header_id(value):
     return str(value)
 
 
+def readout_summary_cards(tel):
+    """The night's readout mode(s), median gain and median read noise for the
+    _diff.fits primary header."""
+    modes = [m.decode().strip() if isinstance(m, bytes) else str(m).strip()
+             for m in np.atleast_1d(getattr(tel, 'readmode', []))]
+    modes = sorted(set(m for m in modes if m))
+    gain = np.nanmedian(np.asarray(tel.gain, dtype=float)) if np.size(tel.gain) else np.nan
+    ron = np.nanmedian(np.asarray(tel.ron, dtype=float)) if np.size(tel.ron) else np.nan
+    return [('READMODE', '+'.join(modes) if modes else 'N', 'readout mode(s) of the frames'),
+            ('GAIN', round(float(gain), 4) if np.isfinite(gain) else 'N', '[e-/ADU] median gain'),
+            ('RDNOISE', round(float(ron), 3) if np.isfinite(ron) else 'N', '[e-] median read noise')]
+
+
 def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
     # SAVE all differential lightcurves to an outputfits file
     # MAIN TABLE: All differential LCs: NUMBER OF STARS BY TIME - N x T THIS SHOULD INCLUDE TARGET: 1 x T
@@ -883,7 +896,9 @@ def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
                                         ('SEEING', np.float32),
                                         ('SKYLEVEL', np.float32),
                                         ('TEL_ALT', np.float32),
-                                        ('TELNAME', 'a20')])
+                                        ('TELNAME', 'a20'),
+                                        ('SATURATE', np.float32),
+                                        ('READMODE', 'a8')])
 
     image_data['AIRMASS'] = tel.airmass
     image_data['ALTITUDE'] = tel.altitude
@@ -920,6 +935,8 @@ def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
     image_data['SKYLEVEL'] = tel.bg
     image_data['TEL_ALT'] = tel.tel_alt
     image_data['TELNAME'] = tel.telname
+    image_data['SATURATE'] = getattr(tel, 'saturate', np.nan)
+    image_data['READMODE'] = getattr(tel, 'readmode', '')
 
 
     # CALCULATE PHOTOMETRIC ZP
@@ -955,6 +972,8 @@ def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
         hdulist[0].header['DR2ID'] = header_id(targ.gaia_dr2_id)
         hdulist[0].header['DR3ID'] = header_id(targ.gaia_dr3_id)
         hdulist[0].header['PIPE_V'] = version
+        for key, value, comment in readout_summary_cards(tel):
+            hdulist[0].header[key] = (value, comment)
 
         if ~np.isnan(phot_zp):
             hdulist[0].header['PHOT_ZP'] = phot_zp
@@ -1081,8 +1100,39 @@ def check_blended_stars(lcurves,ap,tel):
             print("BLENDED STAR: ",lcurves[l].id)
 
 
-def init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, peak, jd, bjd, bjd_tdb, ra, dec, pmra, pmdec, parallax, x, y, g_rp,
-                     bp_rp, teff, gmag, ap, filt, date, exp, saturation_limit):
+def saturated_stars(peak, sky, saturate, readmode, legacy_limit):
+    """One flag per star: did its peak pixel reach saturation in any frame?
+
+    T6 writes each frame's saturation level, in that calibrated frame's units,
+    as SATURATE (calibration/readout.py), and condense carries it into the
+    imagelist.  CASU's Peak_height is above the local sky, so the sky is added
+    back before the comparison.  Frames without a SATURATE (calibrated before
+    it existed, or from an instrument readout.py does not handle) keep the
+    original test of the peak alone against the instrument config's level.
+    """
+    peak = np.atleast_2d(np.asarray(peak, dtype=float))
+    use = np.zeros(peak.shape[1], dtype=bool)
+    if saturate is not None:
+        level = np.asarray(saturate, dtype=float)
+        use = np.isfinite(level)
+        if readmode is not None:
+            modes = np.array([m.decode().strip() if isinstance(m, bytes) else str(m).strip()
+                              for m in readmode])
+            use &= (modes != 'DEFAULT') & (modes != '')
+    flagged = np.zeros(peak.shape[0], dtype=bool)
+    with np.errstate(invalid='ignore'):
+        if (~use).any():
+            flagged |= np.max(peak[:, ~use], axis=1) > legacy_limit
+        if use.any():
+            top = peak[:, use]
+            if sky is not None:
+                top = top + np.atleast_2d(np.asarray(sky, dtype=float))[:, use]
+            flagged |= np.any(top >= level[use][None, :], axis=1)
+    return flagged
+
+
+def init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, saturated_flags, jd, bjd, bjd_tdb, ra, dec, pmra,
+                     pmdec, parallax, x, y, g_rp, bp_rp, teff, gmag, ap, filt, date, exp):
     lcurves = []
     ap_size = ap_size_pixels(ap, tel.rcore)[0]
     zero_weight = 0
@@ -1102,10 +1152,7 @@ def init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, peak, jd, b
             print(f"Star {i}: Length/5: {len(flux[i]) / 5.}")
             print(f"Star {i}: Lengths: {len(flux[i])}, {len(exp)}")
 
-        # Use numpy max to avoid potential read-only issues
-        peak_max = np.max(peak[i])
-
-        if peak_max > saturation_limit:
+        if saturated_flags[i]:
             # print("REMOVED SATURATED STAR: " + id[i])
             saturated = True
             zero_weight = zero_weight + 1
@@ -2709,6 +2756,10 @@ def import_outfits(outfits,goutfits,ap,targ_gaia):
         dec = cat['dec'].read()
         peak = infile['peak'].read()
         try:
+            skybkg = infile['skybkg'].read()
+        except Exception:
+            skybkg = None
+        try:
             exposure = imagelist['exptime'].read()
         except Exception:
             # Nights condensed before the column was renamed carry 'exposure'. Every
@@ -2772,6 +2823,17 @@ def import_outfits(outfits,goutfits,ap,targ_gaia):
             gain = imagelist['gain'].read()
         except:
             gain =  init_gain * np.ones(len(airmass))
+
+        # Per-frame saturation level and readout mode from T6
+        # (calibration/readout.py); output files condensed before it lack them.
+        try:
+            saturate = imagelist['saturate'].read().astype(float)
+            readmode = np.array([m.decode().strip() if isinstance(m, bytes) else str(m).strip()
+                                 for m in imagelist['readmode'].read()])
+        except Exception:
+            saturate = np.full(len(airmass), np.nan)
+            readmode = np.array([''] * len(airmass))
+        saturation_inputs = (peak, skybkg, saturate, readmode)
 
         x = infile['ccdx'].read()
         y = infile['ccdy'].read()
@@ -2866,9 +2928,9 @@ def import_outfits(outfits,goutfits,ap,targ_gaia):
         # for var in [exposure,rcore,ra_move,dec_move,fwhm,psf_a_5,psf_b_5,skylevel,ambtemp,targname,airmass]:
         sorted_jd, [exposure, rcore, ra_move, dec_move, fwhm, ron, darkcur, psf_a_5, psf_b_5, psf_t_5, skylevel, airmass, ambtemp, \
             altitude, targname, azimuth, bjd, bjd_tdb, ccdtemp, dec_tel, filt, focuspos, gain, hjd, humidity, ra_tel, pa, \
-             seeing] = sort_on_time(jd,exposure,rcore,ra_move,dec_move,fwhm,ron, darkcur, psf_a_5, psf_b_5, psf_t_5,skylevel, \
+             seeing, saturate, readmode] = sort_on_time(jd,exposure,rcore,ra_move,dec_move,fwhm,ron, darkcur, psf_a_5, psf_b_5, psf_t_5,skylevel, \
                                     airmass, ambtemp, altitude, targname, azimuth, bjd, bjd_tdb,ccdtemp, dec_tel, filt, focuspos,\
-                                    gain, hjd, humidity,ra_tel, pa, seeing)
+                                    gain, hjd, humidity,ra_tel, pa, seeing, saturate, readmode)
 
 
         for i in range(len(flux)):
@@ -2890,7 +2952,9 @@ def import_outfits(outfits,goutfits,ap,targ_gaia):
         #              'psf_b_5', 'skylevel', 'ambtemp','telname','targname','jd','bjd','hjd','date']
 
         tel = Telescope(*tel_args)
-        return intarg, sp_id, no_teff, teff_header, obj_id, gaia_dr2_id, gaia_dr3_id, nflux, flux, peak, jd,bjd,bjd_tdb, ra, dec, pmra,pmdec,parallax, x,y, g_rp, bp_rp,teff,gmag,tel,exposure, targname
+        tel.saturate = saturate
+        tel.readmode = readmode
+        return intarg, sp_id, no_teff, teff_header, obj_id, gaia_dr2_id, gaia_dr3_id, nflux, flux, saturation_inputs, jd,bjd,bjd_tdb, ra, dec, pmra,pmdec,parallax, x,y, g_rp, bp_rp,teff,gmag,tel,exposure, targname
 
 
 def plot_pwv_comparison(tel, targ_jd, targ_gaia, filt, date, savename):
@@ -2981,12 +3045,13 @@ def main(date, targ_gaia, ap, filt, outfits, goutfits, globallc, binning, versio
     bw = False
 
     # IMPORT all the objects from this field
-    (intarg, targ_id, no_teff, teff_header, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, peak, jd, bjd, bjd_tdb, ra, dec,
-     pmra, pmdec, parallax, x, y, g_rp, bp_rp, teff, gmag, tel, exp, targname) = import_outfits(
+    (intarg, targ_id, no_teff, teff_header, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, saturation_inputs, jd, bjd, bjd_tdb,
+     ra, dec, pmra, pmdec, parallax, x, y, g_rp, bp_rp, teff, gmag, tel, exp, targname) = import_outfits(
         outfits, goutfits, ap, targ_gaia)
+    saturated = saturated_stars(*saturation_inputs, legacy_limit=saturation_limit)
     # INITIALISE ALL LIGHTCURVE OBJECTS
-    lcurves = init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, peak, jd, bjd, bjd_tdb, ra, dec, pmra,
-                               pmdec, parallax, x, y, g_rp, bp_rp, teff, gmag, ap, filt, date, exp, saturation_limit)
+    lcurves = init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, saturated, jd, bjd, bjd_tdb, ra, dec, pmra,
+                               pmdec, parallax, x, y, g_rp, bp_rp, teff, gmag, ap, filt, date, exp)
 
     # GET GAIA IDS from output.fits file and find which objects are in the target list
     gaia_dr2_id = extract(lcurves, 'gaia_dr2_id')  # Continue using DR2 for matching

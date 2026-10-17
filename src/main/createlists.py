@@ -40,6 +40,12 @@ warnings.filterwarnings('ignore', category=VerifyWarning)
 DIRECTORY = os.getcwd()
 DEBUG = 0
 
+# (NAXIS1, NAXIS2) of an Andor frame as ESO delivers it. Calibration (trim, overscan, masters) assumes the
+# stored MaxIm orientation, 2048 x 2088, that download/astra_transform.py produces. Frames left in the native
+# shape - never rotated, or rotated twice - were calibrated with masters in the other orientation without any
+# warning (Callisto 2024, Ganymede 2025-11), so a night holding one is refused rather than reduced.
+NATIVE_ANDOR_SHAPE = (2088, 2048)
+
 def get_liste(directory, root, ext):
     ### search for all image files in the directories """
     # print directory
@@ -67,7 +73,7 @@ def classify(files, logroot, runnumber):
     pool = ThreadPool()
     fn = partial(classify_file, logroot=logroot, runnumber=runnumber)
     results = pool.map(fn, files)
-    keys = ['dithered', 'science', 'dark', 'bias', 'flat']
+    keys = ['dithered', 'science', 'dark', 'bias', 'flat', 'native_andor']
     pool.close()
 
     return {key: sum([entry[key] for entry in results], []) for key in keys}
@@ -82,14 +88,19 @@ def classify_file(filename, logroot, runnumber):
             try:
                 imtype = hdulist[0].header['IMAGETYP']
                 naxis1 = hdulist[0].header['NAXIS1']
+                naxis2 = hdulist[0].header.get('NAXIS2')
                 filter = hdulist[0].header['FILTER']
                 # print("normal")
             except:
                 if filename.endswith(".fz"):
                     imtype = hdulist[1].header['IMAGETYP']
                     naxis1 = hdulist[1].header['NAXIS1']
+                    naxis2 = hdulist[1].header.get('NAXIS2')
                     filter = hdulist[1].header['FILTER']
                 # print("abnormal")
+            if (naxis1, naxis2) == NATIVE_ANDOR_SHAPE:
+                out['native_andor'].append(filename)
+                return out
             # print(naxis1)
             #action = hdulist[0].header['ACTION']
             try:
@@ -121,10 +132,22 @@ def classify_file(filename, logroot, runnumber):
     return out
 
 
+def refuse_native_andor(files):
+    """Stop T1 (and with it the run, which is under errexit) if any frame is in the native Andor shape. This
+    also covers frames of earlier nights borrowed for calibration."""
+    if not files:
+        return
+    files = sorted(files)
+    sys.exit("ERROR: {} frame(s) in the native Andor orientation ({} x {}), e.g. {}. Turn them into the stored "
+             "orientation with download/repair_orientation.py before reducing this night.".format(
+                 len(files), NATIVE_ANDOR_SHAPE[0], NATIVE_ANDOR_SHAPE[1], files[0]))
+
+
 def sort_liste(liste, logroot, runnumber):
     ### Sort images for bias, darks, flats, and scientific frames"""
     # print liste
     classification = classify(liste, logroot, runnumber)
+    refuse_native_andor(classification['native_andor'])
     biaslist = classification['bias']
     darklist = classification['dark']
     flatlist = classification['flat']
