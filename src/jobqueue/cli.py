@@ -223,13 +223,17 @@ def queue_night(cfg, store, eso_nights, req, cls, priority=0.0, note=None, no_t1
             what.append('{} fetch job {}: {}'.format('queued' if created else 'already queued as', fetch_id, desc))
     if req['process']:
         run_targets = list(req.get('run_targets') or [])
-        if not lock_targets and not run_targets:
-            lock_targets = night_targets(cfg['basedir'], tel, night)
+        scan = not lock_targets and not run_targets
         if dry_run:
-            what.append('would run the pipeline{}{}'.format(
+            # no target scan here: for SSO it reads the header of every raw frame of the night, and a dry run of a
+            # long backlog file once read 20 GB that way and held the queue's disk gate for an hour
+            what.append('would run the pipeline{}{}{}'.format(
                 ' after the fetch' if req['download'] else '',
-                ' for ' + ' '.join(run_targets) if run_targets else ''))
+                ' for ' + ' '.join(run_targets) if run_targets else '',
+                ' (targets read from its frames when queued)' if scan else ''))
         else:
+            if scan:
+                lock_targets = night_targets(cfg['basedir'], tel, night)
             jid, created = jobspec.add(store, jobspec.pipeline_job(
                 cfg, cls, tel, night, lock_targets=lock_targets, run_targets=run_targets, frames=count_frames(path),
                 source='cli', depends_on=fetch_id, dep_requires_success=fetch_id is not None, priority=priority,

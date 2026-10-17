@@ -385,6 +385,23 @@ def test_dry_run_queues_nothing(cfg, store):
     assert store.jobs() == [] and 'would fetch' in out[0] and 'would run the pipeline' in out[0]
 
 
+def test_dry_run_of_a_process_line_reads_no_frame_headers(cfg, store, monkeypatch):
+    def scan(*args):
+        raise AssertionError('a dry run must not read every frame header of the night')
+    monkeypatch.setattr('jobqueue.nights.night_targets', scan)
+    out = []
+    req = {'telescope': 'Callisto', 'night': '20251130', 'download': False, 'process': True, 'replace': 'never'}
+    cli.queue_night(cfg, store, None, req, 'P2', dry_run=True, log=out.append)
+    assert store.jobs() == [] and 'targets read from its frames when queued' in out[0]
+    cli.queue_night(cfg, store, None, dict(req, run_targets=['Sp0246+1625']), 'P2', dry_run=True, log=out.append)
+    assert 'for Sp0246+1625' in out[1] and 'when queued' not in out[1]
+
+    monkeypatch.setattr('jobqueue.nights.night_targets', lambda base, tel, night: ['SP0246+1625'])
+    cli.queue_night(cfg, store, None, req, 'P2', log=out.append)               # the real add still locks them
+    (pipe,) = store.jobs(kind='pipeline')
+    assert 'target:SP0246+1625' in pipe['locks']
+
+
 def test_from_file_queues_nothing_if_any_line_is_bad(cfg, store, tmp_path, monkeypatch, capsys):
     f = tmp_path / 'b.csv'
     f.write_text('Europa,20250412,1,0,1\nIooooo,20240101,0,0,1\n')
