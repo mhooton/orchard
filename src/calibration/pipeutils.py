@@ -7,6 +7,7 @@ import numpy as np
 from astropy.convolution import interpolate_replace_nans
 import json
 import os
+import re
 
 
 def load_instrument_config():
@@ -16,16 +17,51 @@ def load_instrument_config():
         return json.load(f)
 
 
-def resolve_telescope(telescop, config):
+# The telescope's directory in the data root: raw frames sit in
+# <root>/Observations/<Tel>/images/<night>/, calibrated frames and stacks in
+# <root>/PipelineOutput/<version>/<Tel>/output/<night>/.
+_TELESCOPE_DIR = re.compile(r'(?:^|/)(?:Observations|PipelineOutput/[^/]+)/([^/]+)/(?:images|output)/')
+
+
+def telescope_from_path(path, config):
+    """The configured telescope whose directory a frame sits in, or None."""
+    if not path:
+        return None
+    found = _TELESCOPE_DIR.findall(str(path).replace(os.sep, '/'))
+    if not found:
+        return None
+    return config.get('telescope_directories', {}).get(found[-1])
+
+
+def resolve_telescope(telescop, config, path=None):
     """The configured telescope name for a header's TELESCOP value.
 
     Some frames name their telescope differently from the configuration: Artemis frames up to
     2022-06-15 say 'ACP->Artemis' (ACP's telescope hub was in the chain), later ones 'Artemis'.
     It is the same camera either side (flat-field pixel response correlates at 0.92 across the
     change), so config['telescope_aliases'] maps the old name on to the configured one.
+
+    Frames from the ACP/MaxIm era name no configured telescope at all: MaxIm's bias, dark and
+    flat frames have TELESCOP = '' (SSO to 2018-09, Artemis to 2022-06) and ACP's science
+    frames 'ACP->Io', 'ACP->Europa', 'ACP->M06' and so on.  Nothing else in a calibration
+    header tells Io, Europa and Ganymede apart, so for a name that is still not configured the
+    telescope directory the frame sits in decides (config['telescope_directories']).  A
+    TELESCOP that is configured, directly or through an alias, always wins over the path.
     """
     name = (telescop or '').strip()
-    return config.get('telescope_aliases', {}).get(name, name)
+    name = config.get('telescope_aliases', {}).get(name, name)
+    if name not in config.get('telescopes', {}):
+        name = telescope_from_path(path, config) or name
+    return name
+
+
+def frame_path(hdul):
+    """The file an HDUList was read from, or None for one built in memory."""
+    try:
+        name = hdul.filename()
+    except Exception:
+        return None
+    return name if isinstance(name, str) else None
 
 def detect_instrument(hdul, trimmed=False):
     """
@@ -44,7 +80,7 @@ def detect_instrument(hdul, trimmed=False):
 
         # Load configuration
         config = load_instrument_config()
-        telescop = resolve_telescope(hdr.get('TELESCOP', ''), config)
+        telescop = resolve_telescope(hdr.get('TELESCOP', ''), config, frame_path(hdul))
 
         # First, try to match telescope name exactly
         if telescop in config['telescopes']:
@@ -124,7 +160,7 @@ def get_instrument_parameters(hdul, trimmed=False):
 
         # Load configuration and detect instrument
         config = load_instrument_config()
-        telescop = resolve_telescope(hdr.get('TELESCOP', ''), config)
+        telescop = resolve_telescope(hdr.get('TELESCOP', ''), config, frame_path(hdul))
         instrument = detect_instrument(hdul, trimmed=trimmed)
 
         # Get telescope config

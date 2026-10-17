@@ -173,5 +173,13 @@
   },
   "telescope_aliases": {
     "ACP->Artemis": "Artemis"
+  },
+  "telescope_directories": {
+    "Io": "SPECULOOS-IO",
+    "Europa": "SPECULOOS-EUROPA",
+    "Ganymede": "SPECULOOS-GANYMEDE",
+    "Callisto": "SPECULOOS-CALLISTO",
+    "Artemis": "Artemis",
+    "Saint-Ex": "SAINT-EX"
   }
 }
