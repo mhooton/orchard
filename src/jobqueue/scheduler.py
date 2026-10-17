@@ -3,27 +3,27 @@
 Jobs are considered in priority order: class (P0 first), then priority within the class, then age.
 A job starts only if all of these hold:
 
-  cores     running declared cores + its cores <= max_cores (112 of 128 threads); outside P0, the
-            P0 reserve is taken off that cap during the nightly window
+  cores     running declared cores + its cores <= max_cores (112 of 128 threads); outside P0, any
+            p0_reserve_cores (0 by default) are taken off that cap during the nightly window
   load      5-minute load average (plus cores started earlier in this pass) < load_max
   mem       MemAvailable > mem_min_gb
   disk      every array's %util < disk_util_max, for disk-heavy jobs outside P0; and at most
             max_disk_heavy_starts_per_poll such starts per pass, since %util lags a new job
   locks     none of its locks is held by a running job or by a process the queue did not start;
-            'sem:NAME' locks are counted against semaphores[NAME]
-  p0-guard  a lower-class job on a telescope stays off it if that telescope's nightly job is due
-            before the job would finish
+            'sem:NAME' locks are counted against semaphores[NAME]; 'tel:TEL' locks count only while
+            telescope_lock is set (off: any number of nights of one telescope may run at once)
 
 Strict priority: when a job cannot start, the resources it is waiting for are reserved for its class,
 and no job of a lower class may take a reserved resource. Jobs of the same class may still start
 alongside it if they do not need what it waits for (a download is not held up by a pipeline job
-waiting for cores). Nothing running is ever stopped to make room.
+waiting for cores). Nothing running is ever stopped to make room, and nothing is held back for a
+job that has not been queued yet: last night's data goes to the front when it arrives and takes the next
+capacity that frees up.
 """
-import datetime as dt
 from collections import namedtuple
 
 from . import CLASS_RANK
-from .util import hhmm, in_daily_window, parse_iso
+from .util import in_daily_window, parse_iso
 
 Decision = namedtuple('Decision', 'job start waiting')
 
@@ -42,28 +42,6 @@ def needs(job):
     return out
 
 
-def p0_guard_blocks(job, now, cfg, p0_settled):
-    """True if job would still hold its telescope when that telescope's nightly job is expected."""
-    guard = cfg.get('p0_guard') or {}
-    if job['class'] == 'P0' or not guard.get('enabled'):
-        return False
-    tel = job.get('telescope')
-    if not tel or tel in p0_settled or ('tel:' + tel) not in job['locks']:
-        return False
-    window = (guard.get('windows_utc') or {}).get(tel)
-    if not window:
-        return False
-    today = now.date()
-    ws = dt.datetime.combine(today, hhmm(window[0]))
-    we = dt.datetime.combine(today, hhmm(window[1]))
-    if we <= ws:
-        we += dt.timedelta(days=1)
-    if now >= we:
-        return False
-    finish = now + dt.timedelta(minutes=float(job['est_minutes']))
-    return finish > ws
-
-
 def eligible(queued, now, paused, dep_states):
     """Queued jobs that may be considered at all: due, class not paused, dependency settled."""
     out = []
@@ -80,19 +58,21 @@ def eligible(queued, now, paused, dep_states):
     return out
 
 
-def plan(queued, running, snapshot, cfg, now, paused=(), draining=False, external=None, dep_states=None,
-         p0_settled=()):
+def plan(queued, running, snapshot, cfg, now, paused=(), draining=False, external=None, dep_states=None):
     """Return a Decision for every eligible queued job, in the order considered."""
     if draining:
         return []
     external = external or {}
     dep_states = dep_states or {}
-    held = set(external)
+    telescope_lock = bool(cfg.get('telescope_lock'))
+    held = set(lock for lock in external if telescope_lock or not lock.startswith('tel:'))
     sem_count = {}
     used_cores = 0
     for job in running:
         used_cores += int(job['cores'])
         for lock in job['locks']:
+            if lock.startswith('tel:') and not telescope_lock:
+                continue
             if lock.startswith('sem:'):
                 sem_count[lock] = sem_count.get(lock, 0) + 1
             else:
@@ -129,14 +109,14 @@ def plan(queued, running, snapshot, cfg, now, paused=(), draining=False, externa
             elif disk_heavy_started >= int(cfg.get('max_disk_heavy_starts_per_poll') or 1):
                 waiting.append('disk')
         for lock in job['locks']:
+            if lock.startswith('tel:') and not telescope_lock:
+                continue
             if lock.startswith('sem:'):
                 cap_n = int(semaphores.get(lock[4:], 1))
                 if sem_count.get(lock, 0) >= cap_n:
                     waiting.append(lock)
             elif lock in held:
                 waiting.append(lock)
-        if p0_guard_blocks(job, now, cfg, set(p0_settled)):
-            waiting.append('p0-guard:' + job['telescope'])
         for r in needs(job):
             if r in reserved and reserved[r] < rank and r not in waiting:
                 waiting.append(r)

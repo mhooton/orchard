@@ -2,8 +2,7 @@
 
 Locks:
   night:<TEL>:<NIGHT>   every job that reads or writes that night's raw or output directories
-  tel:<TEL>             pipeline jobs, while ZLP_pipeline.sh T8/T9 `rm -rf ${DATDIR}/catcache` share one
-                        directory per telescope (config telescope_lock; off once a per-run catcache lands)
+  tel:<TEL>             pipeline jobs; enforced only while config telescope_lock is set (one job per telescope)
   target:<NAME>         pipeline jobs, one per target: v2/StackImages is shared across telescopes and nights
   sem:eso               download and fetch jobs, counted against semaphores.eso
   sem:eso_bulk          P2/P3 fetch jobs as well, counted against semaphores.eso_bulk (1), so bulk downloads
@@ -23,9 +22,7 @@ def job_env(cfg):
 
 
 def pipeline_locks(cfg, telescope, night, targets):
-    locks = {'night:{}:{}'.format(telescope, night)}
-    if cfg.get('telescope_lock', True):
-        locks.add('tel:' + telescope)
+    locks = {'night:{}:{}'.format(telescope, night), 'tel:' + telescope}
     locks.update(target_lock(t) for t in targets)
     return sorted(locks)
 

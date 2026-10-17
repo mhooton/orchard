@@ -33,9 +33,7 @@ def waiting(decisions, i):
 
 @pytest.fixture
 def cfg():
-    c = dict(DEFAULTS)
-    c['p0_guard'] = {'enabled': False}
-    return c
+    return dict(DEFAULTS)
 
 
 # ---------------------------------------------------------------- admission
@@ -55,7 +53,14 @@ def test_running_jobs_count_against_the_cap(cfg):
     assert waiting(d, 2) == ['cores']
 
 
+def test_no_cores_held_back_for_p0_by_default(cfg):
+    queued = [job(i, disk_heavy=False) for i in range(1, 6)]
+    d = plan(queued, [], snap(), cfg, AFTERNOON)
+    assert started(d) == [1, 2, 3, 4, 5]           # 100 cores of backlog in the nightly window
+
+
 def test_p0_reserve_in_the_nightly_window(cfg):
+    cfg = dict(cfg, p0_reserve_cores=40)
     queued = [job(i, disk_heavy=False) for i in range(1, 6)]
     d = plan(queued, [], snap(), cfg, AFTERNOON)
     assert started(d) == [1, 2, 3]                 # 112 - 40 reserved = 72 cores for P1-P3
@@ -116,11 +121,11 @@ def test_lower_class_never_takes_what_a_higher_class_waits_for(cfg):
 
 
 def test_lower_class_may_use_a_different_resource(cfg):
-    running = [job(90, state='running', telescope='Callisto', locks=['tel:Callisto'])]
-    q = [job(1, cls='P0', telescope='Callisto', locks=['tel:Callisto', 'night:Callisto:20261008']),
-         job(2, cls='P1', telescope='Europa', locks=['tel:Europa', 'night:Europa:20261001'])]
+    running = [job(90, state='running', telescope='Europa', locks=['target:SP0001+0001'])]
+    q = [job(1, cls='P0', telescope='Callisto', locks=['night:Callisto:20261008', 'target:SP0001+0001']),
+         job(2, cls='P1', telescope='Callisto', locks=['night:Callisto:20261001', 'target:SP0002+0002'])]
     d = plan(q, running, snap(), cfg, NOON)
-    assert waiting(d, 1) == ['tel:Callisto']
+    assert waiting(d, 1) == ['target:SP0001+0001']
     assert started(d) == [2]
 
 
@@ -150,12 +155,22 @@ def test_nothing_running_is_ever_preempted(cfg):
 # ---------------------------------------------------------------- locks
 
 
-def test_one_pipeline_job_per_telescope(cfg):
+def test_nights_of_one_telescope_run_at_the_same_time(cfg):
+    running = [job(90, state='running', telescope='Europa', locks=['tel:Europa', 'night:Europa:20261001'])]
+    q = [job(1, telescope='Europa', locks=['tel:Europa', 'night:Europa:20261002']),
+         job(2, telescope='Europa', locks=['tel:Europa', 'night:Europa:20261003'], disk_heavy=False)]
+    assert started(plan(q, running, snap(), cfg, NOON)) == [1, 2]
+
+
+def test_telescope_lock_restores_one_pipeline_job_per_telescope(cfg):
+    cfg = dict(cfg, telescope_lock=True)
     q = [job(1, telescope='Europa', locks=['tel:Europa', 'night:Europa:20261001']),
          job(2, telescope='Europa', locks=['tel:Europa', 'night:Europa:20261002'], disk_heavy=False)]
     d = plan(q, [], snap(), cfg, NOON)
     assert started(d) == [1]
     assert waiting(d, 2) == ['tel:Europa']
+    running = [dict(q[0], state='running')]
+    assert waiting(plan(q[1:], running, snap(), cfg, NOON), 2) == ['tel:Europa']
 
 
 def test_telescope_night_is_exclusive(cfg):
@@ -177,7 +192,11 @@ def test_target_is_exclusive_across_telescopes(cfg):
 
 def test_processes_the_queue_did_not_start_hold_locks(cfg):
     q = [job(1, cls='P0', telescope='Europa', locks=['tel:Europa', 'night:Europa:20261008'])]
-    d = plan(q, [], snap(), cfg, NOON, external={'tel:Europa': 'pid 4 ZLP_pipeline.sh ... Europa'})
+    ext = {'tel:Europa': 'pid 4 ZLP_pipeline.sh ... Europa', 'night:Europa:20261008': 'pid 4 ZLP_pipeline.sh ...'}
+    assert waiting(plan(q, [], snap(), cfg, NOON, external=ext), 1) == ['night:Europa:20261008']
+    ext = {'tel:Europa': 'pid 4 ZLP_pipeline.sh ... Europa', 'night:Europa:20261007': 'pid 4 ZLP_pipeline.sh ...'}
+    assert started(plan(q, [], snap(), cfg, NOON, external=ext)) == [1]     # another night of the telescope
+    d = plan(q, [], snap(), dict(cfg, telescope_lock=True), NOON, external=ext)
     assert waiting(d, 1) == ['tel:Europa']
 
 
@@ -205,12 +224,8 @@ def test_retry_backoff_pause_and_drain(cfg):
     assert plan(q, [], snap(), cfg, NOON + dt.timedelta(hours=1), draining=True) == []
 
 
-def test_p0_guard_keeps_backlog_off_a_telescope_due_tonight(cfg):
-    cfg = dict(cfg, p0_guard={'enabled': True, 'windows_utc': {'Callisto': ['13:00', '17:00']}})
-    j = job(1, telescope='Callisto', locks=['tel:Callisto'], est=60, disk_heavy=False)
-    t = dt.datetime(2026, 10, 9, 12, 30)
-    assert waiting(plan([j], [], snap(), cfg, t), 1) == ['p0-guard:Callisto']
-    assert started(plan([j], [], snap(), cfg, t, p0_settled={'Callisto'})) == [1]
-    short = dict(j, est_minutes=20)
-    assert started(plan([short], [], snap(), cfg, t)) == [1]
-    assert started(plan([j], [], snap(), cfg, dt.datetime(2026, 10, 9, 17, 30))) == [1]
+def test_nothing_held_back_for_a_nightly_job_not_yet_queued(cfg):
+    # a long backlog job on Callisto starts in the afternoon, when Callisto's data is due; the nightly job
+    # goes to the front of the queue when it arrives and takes the next capacity that frees up
+    j = job(1, cls='P3', telescope='Callisto', locks=['tel:Callisto', 'night:Callisto:20250301'], est=400)
+    assert started(plan([j], [], snap(), cfg, dt.datetime(2026, 10, 9, 14, 0))) == [1]

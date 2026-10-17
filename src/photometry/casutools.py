@@ -1,5 +1,7 @@
 import subprocess as sp
 import os
+import shutil
+import tempfile
 from threading import Lock
 from calibration.pipeutils import open_fits_file, detect_instrument
 
@@ -71,7 +73,7 @@ def construct_filelist_argument(filelist):
 lock = Lock()
 
 
-def run_command(cmd, verbose=False):
+def run_command(cmd, verbose=False, cwd=None):
     '''
     Wraps subprocess to run the command
     '''
@@ -82,7 +84,7 @@ def run_command(cmd, verbose=False):
 
     # run command
     try:
-        sp.check_call(str_cmd)  # , shell=True)
+        sp.check_call(str_cmd, cwd=cwd)  # , shell=True)
     except sp.CalledProcessError as casuexc:
         print("error code", casuexc.returncode, casuexc.output)
         with lock:
@@ -174,11 +176,24 @@ def wcsfit(infile, incat, catsrc, verbose=True, site='cds', wcsref=None):
     Runs the casu task `wcsfit`.
     If wcsref is provided, catsrc is overridden to 'localfits' and
     --wcsref <wcsref> is appended to the command.
+
+    wcsfit caches the reference stars it is given in ./catcache and, for the
+    same reference path, reuses that copy instead of reading the file: a
+    reference table changed in place was ignored while its cache entry existed
+    (measured 2026-10-17). It also leaves match_* files in the working
+    directory. So each call runs in a temporary directory of its own, removed
+    afterwards: a rerun always solves against the reference it is given, and
+    nothing is shared between frames, nights or concurrent runs.
     '''
+    infile, incat = os.path.abspath(infile), os.path.abspath(incat)
     if wcsref is not None:
         catsrc = 'localfits'
         cmd = ['wcsfit', infile, incat, '--site', site, '--catsrc', catsrc,
-               '--catpath', wcsref]
+               '--catpath', os.path.abspath(wcsref)]
     else:
         cmd = ['wcsfit', infile, incat, '--site', site, '--catsrc', catsrc]
-    run_command(cmd, verbose=verbose)
+    workdir = tempfile.mkdtemp(prefix='wcsfit_')
+    try:
+        run_command(cmd, verbose=verbose, cwd=workdir)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)

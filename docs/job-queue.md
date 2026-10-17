@@ -3,8 +3,8 @@
 A priority queue for the orchard pipeline on appct (`src/jobqueue/`), an ESO watcher that queues each night as
 soon as its frames are at ESO, and a daily look-back over the last 30 nights. It is decision Q1 of the portal
 completeness plan, with Q3 and Q4 (nightly processing through the queue, download separate from processing) as
-the first use. Backlog reruns (class P2) come later, once the 16-bit frames, a per-run catcache and the K8 fixes
-have landed.
+the first use. Backlog reruns (class P2) come later, once the 16-bit frames, a per-run catcache (done, K7) and the
+K8 fixes have landed.
 
 Everything is standard-library Python 3.9 that runs inside `orchard-server` on appct. The ESO side reuses
 `download.request_eso.ESODownloader` and, for the nightly download, `download/SSO_download.py` itself.
@@ -38,33 +38,36 @@ The completeness audit of 8–9 October 2026 found three things this addresses:
 Each job declares its cores and whether it is disk-heavy. Every poll (45 s) the dispatcher starts a queued job
 only if all of these hold:
 
-- declared cores of running jobs plus its own fit in **112** of the 128 threads; from 11:00 to 01:00 UTC,
-  **40** of those are kept for P0, so P1–P3 get at most 72;
+- declared cores of running jobs plus its own fit in **112** of the 128 threads (`p0_reserve_cores` can keep
+  some of them for P0 from 11:00 to 01:00 UTC; it is 0, so nothing is held back);
 - the 5-minute load average, plus the cores started earlier in the same poll, is under **100**;
 - `MemAvailable` is over **64 GB**;
 - both arrays (`sda` = PipelineOutput, `sdb` = data/raw) are under **70 %** utilisation, measured from
   `/proc/diskstats` over the last poll interval. P0 skips this check. At most one disk-heavy job starts per
   poll, because `%util` only shows a new job's I/O at the next poll;
-- its locks are free (below);
-- a P1–P3 job on a telescope stays off it if that telescope's nightly job is due (13:00–17:00 UTC for SSO,
-  10:00–13:00 UTC for Artemis) before the job would finish (`p0_guard`).
+- its locks are free (below).
+
+Several nights of one telescope may run at once. Nothing is kept free for a nightly job that has not arrived:
+when last night's data is ready it goes to the front of the queue and takes the next capacity that frees up,
+which may mean waiting for a running backlog job to finish. (Until 2026-10-17 a `p0_guard` kept backlog jobs
+off a telescope from 13:00 to 17:00 UTC, and 40 cores were kept for P0.)
 
 ### Strict priority, never preemption
 
 Jobs are considered by class, then priority within the class, then age. When a job cannot start, the resources
 it is waiting for are reserved for its class: no lower-class job may take them. A lower-class job may still use
-something else (a P1 job on Europa runs while a P0 job waits for the Callisto lock), and a same-class job may use
+something else (a P1 job runs while a P0 job waits for a target another job holds), and a same-class job may use
 what is left (a P0 download is not held up by a P0 pipeline job waiting for cores).
 
 A running job is never killed or paused to make room: the plate solver relies on a 60 s `SIGALRM`, and the
-pipeline holds files open. The P0 reserve and the P0 guard keep the wait short instead. The only kills are a job
+pipeline holds files open. A P0 job that finds the machine full waits for the next job to finish. The only kills are a job
 past three times its estimate (floor 120 min) and an explicit `q cancel --kill`.
 
 ### Locks
 
 | Lock | Held by | Why |
 |---|---|---|
-| `tel:<TEL>` | pipeline jobs | T8 and T9 run `rm -rf ${DATDIR}/catcache`, one directory per telescope. Off (`telescope_lock: false`) once a per-run catcache lands (K7). |
+| `tel:<TEL>` | pipeline jobs | Enforced only with `telescope_lock: true` (one pipeline job per telescope). Off since K7, which removed what two nights of one telescope shared: each wcsfit call has its own catcache; `reports/Pipeline_Report`, `reports/QC`, `output/StackImages/already_run.txt` and each star's `output/<gaia_id>_<filter>_output.fits` are updated under a file lock (`utils/shared_files.py`); the PDF report (T11) works in `reports/temp/<night>`. |
 | `night:<TEL>:<NIGHT>` | every job on that night | raw and output directories of one night |
 | `target:<NAME>` | pipeline jobs, per target | `PipelineOutput/v2/StackImages` is shared across telescopes and nights |
 | `sem:eso` | download and fetch jobs | at most `semaphores.eso` (2) at once |
@@ -422,8 +425,8 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `mode` | `live` | `shadow` records and simulates only |
 | `queue_root` | `/data/SPECULOOSPipeline/queue` | database, logs, staging, fetch lists, reports |
 | `max_cores`, `load_max`, `mem_min_gb`, `disk_util_max` | 112, 100, 64, 70 | admission |
-| `p0_reserve_cores`, `p0_reserve_window_utc` | 40, 11:00–01:00 | |
-| `telescope_lock` | true | false once the per-run catcache lands |
+| `p0_reserve_cores`, `p0_reserve_window_utc` | 0, 11:00–01:00 | cores kept for P0 in that window |
+| `telescope_lock` | false | true: one pipeline job per telescope, including runs started outside the queue |
 | `semaphores.eso`, `semaphores.eso_bulk` | 2, 1 | concurrent download/fetch jobs; P2/P3 fetches at once |
 | `fetch.workers`, `fetch.attempts`, `fetch.backoff_seconds`, `fetch.breaker` | 3, 4, 30, 8 | downloads in flight per job, tries per file, first backoff, network failures before a job gives up for now |
 | `fetch.batch`, `fetch.mb_per_s` | 25, 4 | rows per staging batch; download rate assumed for estimates |
@@ -436,7 +439,6 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `minutes_per_1000_frames` | ANDOR 69, SPIRIT 22 | estimates (2026 production medians) |
 | `watcher.*` | see file | stability, deadlines, `recent_days` = 5 |
 | `lookback.*` | 30 nights, 2 reruns/night | |
-| `p0_guard.windows_utc` | SSO 13:00–17:00, Artemis 10:00–13:00 | |
 
 ## Files
 
@@ -460,7 +462,8 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 
 ## Limits and next steps
 
-- **One pipeline job per telescope** until the per-run catcache (K7). Then set `telescope_lock: false`.
+- **Same-target nights stay one at a time**: the `target:` lock, because each target's `<gaia_id>_<filter>_output.fits`
+  in `output/` gathers every night of that target on that telescope.
 - **Emails.** P0 jobs send what the cron sends today. P1 reruns send the normal pipeline emails until a quiet
   switch exists (K7).
 - **No product check for P2 yet.** The plan's verify-then-promote step (run with `--no_T12`, check the ledger,

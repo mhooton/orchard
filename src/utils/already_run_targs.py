@@ -7,8 +7,10 @@ import sys
 
 try:                        # imported as part of the utils package
     from utils import target_list
+    from utils.shared_files import locked
 except ImportError:         # run as a bare script, so utils/ is sys.path[0]
     import target_list
+    from shared_files import locked
 
 
 def import_gaia_ids_40pc(fname):
@@ -193,22 +195,27 @@ def already_run_targs(fname_tlist, outdir, targ, gaia, add_targ=True):
     alreadyrun = False
     newtarg = targ
 
-    if os.path.exists(runtarglist):
+    # one list per telescope, read and rewritten by every run on it, and two runs that interleave leave it
+    # corrupt (measured: a doubled header and another target's row), so hold its lock. StackImages may not
+    # exist yet: T8 creates it, after this.
+    os.makedirs(stackdir, exist_ok=True)
+    with locked(runtarglist):
+        if os.path.exists(runtarglist):
 
-        # import already run targets
-        runtargs = get_runtargetlist(runtarglist)
+            # import already run targets
+            runtargs = get_runtargetlist(runtarglist)
 
-        # check if the current target is in that list
-        inlist, newtarg = find_target_in_list(runtargs, targ.upper(), gaia)
-        if add_targ == True and inlist == False:
-            add_target_to_list(runtargs, targ.upper(), gaia, runtarglist)
+            # check if the current target is in that list
+            inlist, newtarg = find_target_in_list(runtargs, targ.upper(), gaia)
+            if add_targ == True and inlist == False:
+                add_target_to_list(runtargs, targ.upper(), gaia, runtarglist)
 
-        if inlist:
-            alreadyrun = True
+            if inlist:
+                alreadyrun = True
 
-    else:
-        # if the targetlist doesn't exist then create it
-        create_targetlist(runtarglist, stackdir, outdir, fname_tlist)
+        else:
+            # if the targetlist doesn't exist then create it
+            create_targetlist(runtarglist, stackdir, outdir, fname_tlist)
 
     print(newtarg.replace(' ', '--'))
 

@@ -4,6 +4,8 @@ from astropy.io import ascii
 from astropy.table import Table,Column
 from tabulate import tabulate
 
+from utils.shared_files import locked, write_table
+
 def update_file(fname,date,target,tel,run,t):
     update = False
     # read in the existing report file
@@ -24,7 +26,7 @@ def update_file(fname,date,target,tel,run,t):
             for j in range(1,int(t)+1):
                 report[i]['T'+str(j)] = '[x]'
 
-            ascii.write(report, fname, format='fixed_width',overwrite=True)
+            write_table(report, fname)
 
     # if this is a new date/target/run then write a new line to the report file
     if update==False:
@@ -34,7 +36,7 @@ def update_file(fname,date,target,tel,run,t):
         for k in range(int(t)):
             row[k + 4] = '[x]'
         report.add_row(row)
-        ascii.write(report, fname, format='fixed_width', overwrite=True)
+        write_table(report, fname)
 
 def create_file(fname,date,target,tel,run,t):
     # if the report file does not exist then initialise it
@@ -53,7 +55,7 @@ def create_file(fname,date,target,tel,run,t):
     report = Table(names=hdr,dtype=dtypes)
     report.add_row(test_row)
     report.add_row(row)
-    ascii.write(report,fname,format='fixed_width')
+    write_table(report, fname)
 
 
 def main(args):
@@ -64,11 +66,13 @@ def main(args):
     run = args[5]
     t = args[6]
 
-    # if the report file does not exist then create it, otherwise update the file
-    if os.path.exists(fname):
-        update_file(fname,date,target,tel,run,t)
-    else:
-        create_file(fname,date,target,tel,run,t)
+    # if the report file does not exist then create it, otherwise update the file. One table per telescope,
+    # shared by every run on it, so the read-change-write holds a lock
+    with locked(fname):
+        if os.path.exists(fname):
+            update_file(fname,date,target,tel,run,t)
+        else:
+            create_file(fname,date,target,tel,run,t)
 
 if __name__ == '__main__':
     main(sys.argv)
