@@ -526,3 +526,19 @@ def test_night_busy_names_queue_jobs_and_outside_processes_apart(env, tmp_path):
     assert promote.night_busy(conn, TEL, NIGHT, proc=proc) == 'queue job {} (pipeline) is running on it'.format(jid)
     assert promote.night_busy(conn, TEL, NIGHT, own_job=jid, proc=proc) == ''
     assert promote.night_busy(conn, TEL, '20010105', proc=proc).startswith('a process outside the queue holds it: pid 800')
+
+
+def test_holds_can_be_listed_by_reason_and_decided_in_bulk(env, capsys):
+    for night in ('20010106', '20010107', '20010108'):
+        env.toy.night(TEL, night, [A], now() + dt.timedelta(minutes=5))         # S1: the run wrote none of it
+        assert apply_night(env, night) == 0
+    ids = [v['id'] for v in verdicts(env)]
+    capsys.readouterr()
+    assert run(env, 'list', '--grep', 's1 the run') == 0
+    assert '3 verdict(s)' in capsys.readouterr().out
+    assert run(env, 'reject', str(ids[0]), '--reason', 'old run', '--by', 'mh') == 0
+    assert run(env, 'accept', '{}-{}'.format(ids[1], ids[2]), '--reason', 'checked', '--apply', '--by', 'mh') == 0
+    states = {v['night']: v['state'] for v in verdicts(env)}
+    assert states == {'20010106': 'rejected', '20010107': 'accepted', '20010108': 'accepted'}
+    assert os.path.isdir(env.v2('output', '20010107', A)) and os.path.isdir(env.v2('output', '20010108', A))
+    assert os.path.isdir(env.v3('output', '20010106', A))

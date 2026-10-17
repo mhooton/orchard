@@ -118,6 +118,8 @@ q promote show 12                  # one verdict: reasons, notes, measurements, 
 q promote accept 12 --reason "short night, fine"            # shows what it would do
 q promote accept 12 --reason "short night, fine" --apply    # does it (the PROMOTE steps)
 q promote reject 12 --reason "keep v2's aperture-5 curve"   # closes it; nothing moves
+q promote list --grep S1                                     # only the holds for stale files
+q promote accept 12-20,25 --reason "stale plots only" --apply   # several at once (one process per verdict)
 ```
 
 `accept` refuses if the candidate or v2 changed after the verdict; run the night again to judge it anew. A

@@ -52,9 +52,9 @@ night as locked (jobqueue.resources.parse_promote_argv); commands that span nigh
 
 Usage (inside orchard-server; `q promote ...` is the same)
     python utils/promote.py run [--telescope T] [--night N] [--target X] [--job ID] [--apply]
-    python utils/promote.py list [--all] | show ID
-    python utils/promote.py accept ID --reason TEXT [--apply]
-    python utils/promote.py reject ID --reason TEXT
+    python utils/promote.py list [--all] [--grep TEXT] | show ID
+    python utils/promote.py accept ID[-ID][,ID...] --reason TEXT [--apply]
+    python utils/promote.py reject ID[-ID][,ID...] --reason TEXT
     python utils/promote.py resume [--promotion ID] [--apply]
     python utils/promote.py abandon PROMOTION_ID --reason TEXT
 """
@@ -1218,6 +1218,28 @@ def _child(a, tel, night, extra=()):
     return subprocess.call(argv)
 
 
+def _ids(specs):
+    """Verdict ids from '12', '12-20' and '12,15' (any mix)."""
+    out = set()
+    for spec in specs:
+        for part in str(spec).split(','):
+            part = part.strip()
+            if '-' in part:
+                first, last = part.split('-', 1)
+                out.update(range(int(first), int(last) + 1))
+            elif part:
+                out.add(int(part))
+    return sorted(out)
+
+
+def _spawn(a, argv, tel, night):
+    """This script for one verdict or night, with the same paths, the night on its command line."""
+    paths = ['--base', a.base, '--db', a.db, '--queue-db', a.queue_db] + (['--config', a.config] if a.config else []) + \
+        (['--by', a.by] if a.by else [])
+    return subprocess.call([sys.executable, os.path.abspath(__file__)] + list(argv) + paths +
+                           ['--telescope', tel, '--night', night])
+
+
 def make_promoter(a, cfg, paths, apply, journal, queue=None):
     th = dict(promote_check.THRESHOLDS)
     th.update(cfg.get('promote', {}).get('thresholds') or {})
@@ -1328,6 +1350,8 @@ def cmd_list(a, cfg, paths):
         return 0
     rows = j.verdicts(states=None if a.all else ['pending', 'promoting'], telescope=a.telescope,
                       night=a.night)
+    if a.grep:
+        rows = [v for v in rows if a.grep.lower() in (v['reasons'] or '').lower()]
     for v in rows:
         print('{:>6} {:9} {:8} {} {:16} {:7} {:9} {}'.format(v['id'], v['state'], v['telescope'], v['night'],
                                                             v['target'], v['verdict'], v['created_at'][:10],
@@ -1371,6 +1395,24 @@ def cmd_show(a, cfg, paths):
 
 
 def cmd_accept(a, cfg, paths):
+    ids = _ids(a.ids)
+    if len(ids) > 1 or (a.apply and not (a.telescope and a.night)):
+        # one process per verdict, its night on the command line (where the dispatcher sees the lock)
+        j = _journal_or_none(a, False)
+        if j is None:
+            return 1
+        rc = 0
+        for vid in ids:
+            v = j.verdict(vid)
+            if v is None:
+                print('no verdict {}'.format(vid))
+                rc = max(rc, 2)
+                continue
+            argv = ['accept', str(vid), '--reason', a.reason] + (['--apply'] if a.apply else [])
+            rc = max(rc, _spawn(a, argv, v['telescope'], v['night']))
+        j.close()
+        return rc
+    a.id = ids[0]
     j = _journal_or_none(a, a.apply)
     if j is None:
         return 1
@@ -1381,7 +1423,7 @@ def cmd_accept(a, cfg, paths):
         return 2
     if a.apply and (a.telescope, a.night) != (v['telescope'], v['night']):
         j.close()
-        return _child(a, v['telescope'], v['night'])
+        return _spawn(a, ['accept', str(v['id']), '--reason', a.reason, '--apply'], v['telescope'], v['night'])
     p = make_promoter(a, cfg, paths, a.apply, j)
     busy = night_busy(p.queue, v['telescope'], v['night'], p.own_job, p.proc)
     if busy:
@@ -1415,17 +1457,22 @@ def cmd_accept(a, cfg, paths):
 
 def cmd_reject(a, cfg, paths):
     j = _journal_or_none(a, True)
-    v = j.verdict(a.id)
-    if v is None or v['state'] != 'pending':
-        print('verdict {} is {}: only a pending HOLD or REJECT can be rejected'.format(
-            a.id, v['state'] if v else 'absent'))
-        return 2
     inv = j.invocation_start('reject', sys.argv[1:], _code())
-    j.set_verdict_state(v['id'], 'rejected', expect=('pending',), decided_by=_by(a), decided_at=iso(utcnow()),
-                        decision_reason=a.reason)
-    j.invocation_end(inv, {'verdict': v['id']})
-    print('verdict {} ({} {} {}) rejected; nothing moved'.format(v['id'], v['telescope'], v['night'], v['target']))
-    return 0
+    rc, done = 0, []
+    for vid in _ids(a.ids):
+        v = j.verdict(vid)
+        if v is None or v['state'] != 'pending':
+            print('verdict {} is {}: only a pending HOLD or REJECT can be rejected'.format(
+                vid, v['state'] if v else 'absent'))
+            rc = 2
+            continue
+        j.set_verdict_state(v['id'], 'rejected', expect=('pending',), decided_by=_by(a), decided_at=iso(utcnow()),
+                            decision_reason=a.reason)
+        done.append(v['id'])
+        print('verdict {} ({} {} {}) rejected; nothing moved'.format(v['id'], v['telescope'], v['night'], v['target']))
+    j.invocation_end(inv, {'verdicts': done})
+    j.close()
+    return rc
 
 
 def cmd_resume(a, cfg, paths):
@@ -1517,6 +1564,7 @@ def build_parser():
     s = sub.add_parser('list', help='verdicts waiting for a person, and promotions that did not finish')
     common(s)
     s.add_argument('--all', action='store_true', help='every verdict, decided ones included')
+    s.add_argument('--grep', help='only verdicts whose reasons contain this text, e.g. S1')
     s.set_defaults(fn=cmd_list)
 
     s = sub.add_parser('show', help='one verdict, its reasons, and its promotion step by step')
@@ -1529,7 +1577,7 @@ def build_parser():
         s = sub.add_parser(name, help=text)
         common(s)
         judging(s)
-        s.add_argument('id', type=int, help='verdict id (promote.py list)')
+        s.add_argument('ids', nargs='+', help='verdict ids (promote.py list): 12, 12-20 or 12,15')
         s.add_argument('--reason', required=True)
         if name == 'accept':
             s.add_argument('--apply', action='store_true')
