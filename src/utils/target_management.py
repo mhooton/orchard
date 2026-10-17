@@ -673,6 +673,16 @@ def identify_targets(obsdir, date, targname, catalogue_dr2_ids,
 # Catalogue validation
 # ---------------------------------------------------------------------------
 
+# Gaia_Crossmatch columns that the stages after T8 read with no fallback
+# (condense_photometry and zlp_condense; proper_motion reads the astrometry).
+# Stack catalogues written by Pipeline_v2 have no GAIA_DR3_ID, and their
+# DR2 IDs come from the v2 crossmatch, so they cannot stand in for a night's
+# own catalogue: restoring one as a backup crashed condense
+# (Callisto 20240126, Sp0643+1631).
+REQUIRED_CROSSMATCH_COLUMNS = ('GAIA_DR2_ID', 'GAIA_DR3_ID', 'PMRA', 'PMDEC',
+                               'PARALLAX', 'GMAG', 'G_RP', 'BP_RP', 'TEFF')
+
+
 def catalogue_is_valid(catalogue_path, target_dr2_id, require_pm=False):
     """
     Check whether a stack catalogue contains a valid Gaia crossmatch
@@ -680,6 +690,7 @@ def catalogue_is_valid(catalogue_path, target_dr2_id, require_pm=False):
 
     A catalogue is considered valid for a target if:
         - The Gaia_Crossmatch FITS extension exists
+        - It has every column in REQUIRED_CROSSMATCH_COLUMNS
         - The target's ID appears in the GAIA_DR2_ID or GAIA_DR3_ID column
         - If require_pm: that row has finite PMRA and PMDEC, so the
           catalogue can be propagated to another night's epoch.  A
@@ -705,6 +716,14 @@ def catalogue_is_valid(catalogue_path, target_dr2_id, require_pm=False):
                 return False
             g = hdul['GAIA_CROSSMATCH'].data
             cols = [c.upper() for c in g.columns.names]
+            missing = [c for c in REQUIRED_CROSSMATCH_COLUMNS if c not in cols]
+            if missing:
+                logger.warning(
+                    "Catalogue '%s' has no %s column in Gaia_Crossmatch "
+                    "(a Pipeline_v2 catalogue?) — condense cannot use it",
+                    catalogue_path, '/'.join(missing)
+                )
+                return False
             rows = set()
             for col in ('GAIA_DR2_ID', 'GAIA_DR3_ID'):
                 if col in cols:
@@ -772,7 +791,9 @@ def find_backup(backup_dir, primary_gaia_id, instrument, obs_date,
     are ignored for matching.  A candidate more than max_age_without_pm_days
     from obs_date is accepted only if the target has a proper motion in
     it, because the catalogue positions are propagated to the night and a
-    row without proper motion stays where it was.
+    row without proper motion stays where it was.  Candidates without the
+    columns later stages need (REQUIRED_CROSSMATCH_COLUMNS; Pipeline_v2
+    catalogues lack GAIA_DR3_ID) are skipped, however close in date.
 
     Inputs:
         backup_dir       : str  Path to shared StackImages backup directory
@@ -832,8 +853,8 @@ def find_backup(backup_dir, primary_gaia_id, instrument, obs_date,
         )
 
     logger.warning(
-        "No usable backup pair (stack + catalogue containing the target) "
-        "found for primary target '%s', instrument '%s'",
+        "No usable backup pair (stack + current-format catalogue containing "
+        "the target) found for primary target '%s', instrument '%s'",
         primary_gaia_id, instrument
     )
     return None, None

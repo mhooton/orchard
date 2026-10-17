@@ -8,6 +8,7 @@ local database, or from Gaia altogether:
   - DR3-only ID matching
   - coordinate fallback with proper-motion propagation and ID injection
   - refusal of stale backup catalogues for targets without proper motion
+  - refusal of backup catalogues condense cannot read (Pipeline_v2 format)
   - supplementary (hand-added) sources
 
 Run:  pytest src/tests/test_target_identification.py -q
@@ -45,7 +46,7 @@ def make_plan(obsdir, date, targname, gaia_id, ra="10 56 28.99", dec="+07 00 52.
     return p
 
 
-def make_catalogue(path, ra, dec, flux, dr2, dr3, pmra=None, pmdec=None):
+def make_catalogue(path, ra, dec, flux, dr2, dr3, pmra=None, pmdec=None, drop=()):
     n = len(ra)
     apm = fits.BinTableHDU.from_columns([
         fits.Column(name="Sequence_number", format="J", array=np.arange(n)),
@@ -67,6 +68,9 @@ def make_catalogue(path, ra, dec, flux, dr2, dr3, pmra=None, pmdec=None):
         fits.Column(name="PMRA", format="D", array=pmra),
         fits.Column(name="PMDEC", format="D", array=pmdec),
     ], name="GAIA_CROSSMATCH")
+    if drop:
+        xm = fits.BinTableHDU.from_columns(
+            [c for c in xm.columns if c.name not in drop], name="GAIA_CROSSMATCH")
     fits.HDUList([fits.PrimaryHDU(), apm, xm]).writeto(path, overwrite=True)
     return path
 
@@ -234,6 +238,55 @@ def test_find_backup_prefers_valid_and_rejects_stale_without_pm(tmp_path):
     add("20240410", False)                       # 12 days, no PM: still fine
     stack, cat = tm.find_backup(str(bdir), WOLF, "andor", "20240422")
     assert cat.endswith("20240410_stack_catalogue_r.fits")
+
+
+SP0643 = "3357958852543597056"      # Sp0643+1631, absent from the local Gaia DB
+
+
+def test_catalogue_is_valid_rejects_v2_format(tmp_path):
+    # Pipeline_v2 stack catalogues have every crossmatch column but GAIA_DR3_ID.
+    v2 = make_catalogue(str(tmp_path / "v2.fits"), [100.9], [16.5], [1e5], [SP0643], ["nan"],
+                        pmra=[112.9], pmdec=[62.3], drop=("GAIA_DR3_ID",))
+    assert tm.catalogue_is_valid(v2, SP0643) is False
+    full = make_catalogue(str(tmp_path / "v3.fits"), [100.9], [16.5], [1e5], [SP0643], [SP0643],
+                          pmra=[109.2], pmdec=[65.1])
+    assert tm.catalogue_is_valid(full, SP0643, require_pm=True) is True
+
+
+def test_find_backup_skips_v2_format_catalogues(tmp_path):
+    # Callisto 20240126 (job 950): the nearest backup was a v2 catalogue from
+    # the next night; condense then crashed on the missing gaia_dr3_id column.
+    bdir = tmp_path / "StackImages"
+    bdir.mkdir()
+
+    def add(tel, date, v2_format):
+        make_catalogue(str(bdir / ("%s_%s_andor_%s_stack_catalogue_I+z.fits" % (SP0643, tel, date))),
+                       [100.9], [16.5], [1e5], [SP0643], ["nan" if v2_format else SP0643],
+                       pmra=[112.9], pmdec=[62.3],
+                       drop=("GAIA_DR3_ID",) if v2_format else ())
+        (bdir / ("%s_%s_andor_%s_outstack_I+z.fits" % (SP0643, tel, date))).write_bytes(b"")
+
+    add("Callisto", "20240127", True)
+    add("Io", "20240131", True)
+    stack, cat = tm.find_backup(str(bdir), SP0643, "andor", "20240126")
+    assert stack is None and cat is None        # T8 aborts cleanly instead
+    add("Io", "20251117", False)                # 661 days, has PM
+    stack, cat = tm.find_backup(str(bdir), SP0643, "andor", "20240126")
+    assert cat.endswith("_Io_andor_20251117_stack_catalogue_I+z.fits")
+    assert stack.endswith("_Io_andor_20251117_outstack_I+z.fits")
+
+
+def test_required_columns_cover_what_later_stages_read():
+    # Every Gaia_Crossmatch column read unconditionally after T8 must be
+    # checked before a backup catalogue is accepted.
+    import re
+    read = set()
+    for rel in ("condense/condense_photometry.py", "condense/zlp_condense.py",
+                "astrom/proper_motion.py"):
+        with open(os.path.join(SRC, rel)) as f:
+            read |= {c.upper() for c in re.findall(r"\bgaia\['(\w+)'\]\.read\(\)", f.read())}
+    assert "GAIA_DR3_ID" in read
+    assert read <= set(tm.REQUIRED_CROSSMATCH_COLUMNS)
 
 
 def test_supplementary_sources_roundtrip(tmp_path):
