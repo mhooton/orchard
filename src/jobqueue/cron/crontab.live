@@ -12,6 +12,10 @@ SHELL=/bin/bash
 15 21 * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh lookback
 # daily report: /export/data/SPECULOOSPipeline/queue/reports/report_<date>.md
 30 7 * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh report
+# notifier: incident alerts every 30 min, and the morning digest after the report. Both only write to
+# queue/notify/outbox until notify.transport is 'smtp' in queue/config.json (docs/job-queue.md, Notifications)
+10,40 * * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh alerts
+45 7 * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh digest
 #
 # --- replaced by the queue (rollback: uncomment) ---
 #00 19 * * * source /home/speculoos/.bashrc; ulimit -u 2061801; docker-compose -f /appct/data/speculoos/orchard/docker/docker-compose.server.yml up -d; docker exec orchard-server bash -c "python download/SSO_download.py --dir /data/SPECULOOSPipeline --telescope Io --sdate $(date -d '-1 day'  +\%Y\%m\%d) --edate $(date -d 'today'  +\%Y\%m\%d) --max-retries 25" > "/appct/data/SPECULOOSPipeline/ESO_logs/$(date -d '-1 day'  +\%Y\%m\%d)Io.log" 2>&1 && docker exec orchard-server bash -c "./main/ZLP_pipeline.sh --force-platesolve 1 /data/SPECULOOSPipeline $(date -d '-1 day'  +\%Y\%m\%d) 8 2 Io"

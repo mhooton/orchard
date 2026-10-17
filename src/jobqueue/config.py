@@ -115,6 +115,28 @@ DEFAULTS = {
         'max_reruns_per_night': 2,
         'max_fetches_per_night': 3,
     },
+
+    # the notifier (notify.py, digest.py): the morning digest and incident alerts, the pipeline's only email.
+    # 'outbox' writes each message as an .eml file under <queue_root>/notify/outbox and sends nothing; 'smtp'
+    # also sends it, to `to`, with EMAIL_ADDRESS, EMAIL_PASSWORD and SMTP_SERVER read from env_file
+    'notify': {
+        'transport': 'outbox',
+        'env_file': None,
+        'to': [],
+        'subject_prefix': '[orchard]',
+        'heartbeat_url': None,           # fetched after every digest: an outside check that alerts if it stops
+        'late_after_utc': '21:00',       # transfer-log frames still missing at ESO at this time the next day
+        'dark_min_nights': 3,            # nights a telescope sits dark while two others observe before an incident
+        'dark_lookback_nights': 120,
+        'dark_min_frames': 150,          # fewer frames on disk and no light curve: calibrations only, not observed
+        'chilean_min_fraction': 0.5,     # share of the planned night in SPOCK's ch_ blocks that makes it Chilean
+        'failed_lookback_nights': 3,     # P0 failures on nights this recent open incidents
+        'signature_alert_count': 10,     # failures with one signature in 24 h that open an incident
+        'stall_hours': 6.0,              # jobs due, none running and none started for this long
+        'dispatcher_stale_minutes': 30,
+        'disk_min_free_tb': 2.0,
+        'disk_min_free_pct': 5.0,
+    },
 }
 
 
@@ -159,6 +181,7 @@ def queue_paths(cfg):
         'quarantine': os.path.join(root, 'quarantine'),
         'manifest': os.path.join(root, 'fetch', 'manifest.csv'),
         'reports': os.path.join(root, 'reports'),
+        'outbox': os.path.join(root, 'notify', 'outbox'),
     }
 
 
