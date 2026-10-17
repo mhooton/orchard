@@ -520,7 +520,8 @@ def test_night_busy_names_queue_jobs_and_outside_processes_apart(env, tmp_path):
     runner = ['python', '-m', 'jobqueue.runner', '--log', 'x', '--', './main/ZLP_pipeline.sh', '1', '/data', NIGHT, '8',
               '2', TEL]
     manual = ['bash', './main/ZLP_pipeline.sh', '1', '/data', '20010105', '8', '2', TEL]
-    proc = fake_proc(tmp_path, [(700, 700, runner), (800, 800, manual)])
+    (tmp_path / 'fake').mkdir()                     # the env fixture's empty proc/ is already in tmp_path
+    proc = fake_proc(tmp_path / 'fake', [(700, 700, runner), (800, 800, manual)])
     conn = promote.open_queue(path)
     assert promote.night_busy(conn, TEL, NIGHT, proc=proc) == 'queue job {} (pipeline) is running on it'.format(jid)
     assert promote.night_busy(conn, TEL, NIGHT, own_job=jid, proc=proc) == ''
