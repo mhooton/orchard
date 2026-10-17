@@ -7,6 +7,9 @@ Each poll it
      processes the queue did not start;
   3. starts whatever scheduler.plan admits, each job in its own session with its own log.
 
+Each job is pinned to the current code release when it starts (releases.py): it runs that frozen copy of
+the tree to the end, whatever is deployed meanwhile. With no release it runs from the live tree.
+
 Running jobs are never paused or killed to make room: the plate solver's 60 s SIGALRM and the
 pipeline's open files make that unsafe. In shadow mode nothing is launched: an admitted job is
 recorded as started and finishes after its estimated run time, so the shadow queue holds cores and
@@ -26,6 +29,7 @@ import time
 import traceback
 
 from .config import camera, ensure_dirs, queue_paths
+from .releases import current_id, pin, queue_code_changed, read_release, sync_pending
 from .resources import ProcResources, external_locks, group_alive, pid_alive, proc_start_time, reap
 from .scheduler import plan
 from .signatures import extract, is_transient, read_tail
@@ -127,6 +131,8 @@ class Dispatcher:
         self._waiting = {}
         self._sha = (None, 0.0)
         self._drain_logged = False
+        self._bad_release = None
+        self._sync_note = None
 
     # ------------------------------------------------------------------ helpers
 
@@ -154,13 +160,16 @@ class Dispatcher:
             return float(job['est_minutes'])
         return pipeline_estimate(self.cfg, job['telescope'], job['night'], frames)
 
-    def _launch(self, job, log_path, status_path, sha):
+    def _launch(self, job, log_path, status_path, sha, release=None):
         env = os.environ.copy()
         env.update({k: str(v) for k, v in job['env'].items()})
         env['JOBQUEUE_JOB_ID'] = str(job['id'])
         if job['kind'] == 'pipeline':
             env['N_CORES'] = str(job['cores'])
-        cwd = job['cwd'] if job['cwd'] and os.path.isdir(job['cwd']) else None
+        cwd = job['cwd']
+        if release:
+            cwd, env, _ = pin(self.cfg, cwd, env, release)
+        cwd = cwd if cwd and os.path.isdir(cwd) else None
         cmd = [sys.executable, '-m', 'jobqueue.runner', '--log', log_path, '--status', status_path,
                '--job', str(job['id']), '--sha', sha or '']
         if cwd:
@@ -266,9 +275,22 @@ class Dispatcher:
 
     # ------------------------------------------------------------------ starting jobs
 
+    def release(self):
+        """The release new jobs are pinned to, or None to run them from the live tree as before releases."""
+        rid = current_id(self.cfg)
+        if not rid:
+            return None
+        rel = read_release(self.cfg, rid)
+        if rel is None and self._bad_release != rid:
+            self._bad_release = rid
+            self.log('current release {} is missing or unreadable; starting jobs from the live tree'.format(rid))
+            self.store.event('release-missing', source='dispatcher', message=rid)
+        return rel
+
     def start(self, job, now):
         attempt = job['attempts'] + 1
-        sha = self.code_sha()
+        release = None if self.shadow else self.release()
+        sha = release['id'] if release else self.code_sha()
         est = self._estimate(job)
         if self.shadow:
             if self.store.mark_running(job['id'], code_sha=sha, est_minutes=est, shadow=True,
@@ -281,7 +303,7 @@ class Dispatcher:
                                        est_minutes=est):
             return
         try:
-            pid = self.launcher(job, log_path, status_path, sha)
+            pid = self.launcher(job, log_path, status_path, sha, release)
         except Exception as e:
             self.store.finish(job['id'], 127, signature='launch failed: {}'.format(e), transient=True,
                               retry_delay_minutes=float(self.cfg['retry_delay_minutes']))
@@ -289,8 +311,8 @@ class Dispatcher:
             return
         self._children.add(pid)
         self.store.set_process(job['id'], pid, proc_start_time(pid, self.proc))
-        self.log('started job {} {} {} {} {} pid {} est {:.0f} min log {}'.format(
-            job['id'], job['class'], job['kind'], job['telescope'], job['night'], pid, est, log_path))
+        self.log('started job {} {} {} {} {} pid {} est {:.0f} min code {} log {}'.format(
+            job['id'], job['class'], job['kind'], job['telescope'], job['night'], pid, est, sha, log_path))
 
     def _note_waiting(self, job, waiting):
         key = tuple(sorted(waiting))
@@ -320,6 +342,32 @@ class Dispatcher:
                 'started_at': getattr(self, '_started_at', iso(now))}
         self.store.kv_set('dispatcher', json.dumps(info, sort_keys=True))
 
+    def sync_live_tree(self):
+        """Bring the live tree up to the current release once nothing runs from it (see releases.py)."""
+        try:
+            res = sync_pending(self.cfg, self.store, proc=self.proc, log=self.log)
+        except Exception as e:
+            msg = '{}: {}'.format(type(e).__name__, e)
+            if self._sync_note != msg:
+                self._sync_note = msg
+                self.log('live tree sync failed:\n' + traceback.format_exc())
+                self.store.event('release-sync-failed', source='dispatcher', message=msg)
+            return
+        if res is None:
+            self._sync_note = None
+            return
+        if 'blocked' in res:
+            note = sorted(res['blocked'])
+            if self._sync_note != note:
+                self._sync_note = note
+                self.log('live tree sync waits for {} process(es) still running from it: {}'.format(
+                    len(note), '; '.join('pid {} {}'.format(p, res['blocked'][p][:80]) for p in note)))
+            return
+        self._sync_note = None
+        if queue_code_changed(res):
+            self.log('the queue\'s own code changed in the live tree; exiting so the watchdog starts the new one')
+            self.stop = True
+
     def poll(self):
         now = self.now()
         self.heartbeat(now)
@@ -331,6 +379,10 @@ class Dispatcher:
                 self.check_running(job, now)
             except Exception:
                 self.log('job {}: check failed:\n{}'.format(job['id'], traceback.format_exc()))
+        if not self.shadow:
+            self.sync_live_tree()
+            if self.stop:
+                return []
 
         if self.store.draining():
             if not self._drain_logged:
