@@ -240,7 +240,10 @@ GB, the fetch will bring, and queues no fetch if nothing is missing. `--download
 A file of requests in the format of `manual_runs/backlog/v3_backlog.txt` (`TEL,DATE,DOWNLOAD,DELETE,PROCESS[,TARGETS]`)
 queues them all: `q add --class P2 --from-file backlog.csv`. Every line is checked first, and nothing is queued
 if any line is bad (an unknown telescope, a date that is not `YYYYMMDD`, flags other than 0/1, DELETE without
-DOWNLOAD, DOWNLOAD for Artemis). `DELETE=1` is taken as `--refetch`: nothing is deleted. Compared with
+DOWNLOAD, DOWNLOAD for Artemis). `DELETE=1` is taken as `--refetch`: nothing is deleted. A PROCESS line without TARGETS
+has its targets (for the locks) read from the night's frames when it is queued, which for an SSO night means the
+header of every raw frame. `--dry-run` skips that, but queueing a long file does not: about 1.5 million frame
+headers for a 1,156-night file. Give TARGETS for long files. Compared with
 `v3_manual_process.sh`, the same lines get the queue's priorities, locks, disk throttling, retries, per-job
 logs and exit codes, and a failed download no longer leads to a pipeline run on a half-empty night.
 
