@@ -41,7 +41,7 @@ Checks on the candidate alone
         2026 Callisto reruns have p2p ~4e-5 against errors of ~2e-2)
 
 Checks against the incumbent, when v2 holds a usable aperture-5 light curve
-    R1  no fewer finite target points
+    R1  no more than 2% fewer finite target points
     R2  p2p scatter no more than 20% worse
     R3  identity not moved away from the plan's ID
 R1 and R2 also cover every other star v2 serves from the directory (secondary
@@ -104,7 +104,8 @@ THRESHOLDS = {
     'min_frame_fraction': 0.8,      # A4: frames in the light curve / raw science frames below this holds
     'min_noise_ratio': 0.05,        # A5: p2p / median pipeline error below this rejects (degenerate)
     'max_p2p': 0.05,                # A5: p2p above this (relative flux) holds
-    'min_points_ratio': 1.0,        # R1: candidate / incumbent finite points below this holds
+    'min_points_ratio': 0.98,       # R1: candidate / incumbent finite points below this holds (fine
+                                    # sweeps lose at most 1.6%; all 13 regressions are still caught)
     'max_scatter_ratio': 1.2,       # R2: candidate / incumbent p2p above this holds
 }
 
