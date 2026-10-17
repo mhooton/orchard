@@ -110,9 +110,12 @@ def promote_job(cfg, cls, telescope, night, after=None, targets=(), source='cli'
     argv = [cfg['python'], 'utils/promote.py', 'run', '--apply', '--telescope', telescope, '--night', night]
     if after:
         argv += ['--job', str(after)]
+    # one BLAS/OpenMP thread, as ZLP_pipeline.sh does for its report: numpy otherwise starts a pool sized to the host
+    # (64 threads) in every promote job, and many processes at once can exhaust RLIMIT_NPROC
+    env = dict(job_env(cfg), OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1', NUMEXPR_NUM_THREADS='1')
     return dict(
         cls=cls, kind='promote', telescope=telescope, night=night, targets=' '.join(targets), argv=argv,
-        cwd=cfg['src_dir'], env=job_env(cfg), cores=int(pcfg['cores']), disk_heavy=False,
+        cwd=cfg['src_dir'], env=env, cores=int(pcfg['cores']), disk_heavy=False,
         est_minutes=float(pcfg['est_minutes']), locks=['night:{}:{}'.format(telescope, night)], depends_on=after,
         dep_requires_success=False, priority=float(pcfg['priority']),
         dedupe_key='promote:{}:{}:{}'.format(telescope, night, after or '*'), max_retries=cfg['max_retries'],

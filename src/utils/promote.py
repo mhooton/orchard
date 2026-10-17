@@ -1548,6 +1548,10 @@ def build_parser():
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        sys.stdout.reconfigure(line_buffering=True)     # a job log shows each target-night as it is judged
+    except (AttributeError, ValueError):
+        pass
     a = build_parser().parse_args(argv)
     # what a child gets: the command as given, without --telescope/--night (the child adds its own)
     keep, skip = [], False

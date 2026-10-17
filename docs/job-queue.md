@@ -74,7 +74,8 @@ past three times its estimate (floor 120 min) and an explicit `q cancel --kill`.
 | `sem:eso_bulk` | P2 and P3 fetch jobs as well | at most `semaphores.eso_bulk` (1), so bulk downloads never hold both ESO slots and the nightly download always finds one free |
 
 Pipeline and download processes the queue did not start (the cron, a person, a replay) hold the same locks: the
-dispatcher reads them from `/proc/*/cmdline` inside the container. Processes in other containers
+dispatcher reads them from `/proc/*/cmdline` inside the container. So does a promotion run that changes the tree
+(`utils/promote.py ... --apply --telescope T --night N`), which holds that night. Processes in other containers
 (`orchard-server-spirit`, `orchard-server-autosave`) are invisible to it.
 
 Targets for locking come from ESO's `object` column (SSO) or the raw file names (Artemis), upper-cased with
@@ -253,6 +254,22 @@ logs and exit codes, and a failed download no longer leads to a pipeline run on 
 The ESO backfill (decision D3) is the same thing with `--download-only` lines: what it adds is in the
 manifest, and the nights it fills can then be queued for processing with `PROCESS=1` lines.
 
+## Promotion after pipeline jobs
+
+T12 is being replaced by the promotion step, `utils/promote.py` ([promotion.md](promotion.md)). A pipeline job queued
+with `--promote` runs with `--no_T12`, and a **promote** job follows it:
+
+- It runs `python utils/promote.py run --apply --telescope T --night N --job <pipeline job>`. That judges the targets
+  the pipeline job ran, using `promote_check`. What passes is published into v2, and the rest is kept in the
+  promotion journal (`<queue_root>/promote.sqlite`) for a person.
+- It runs whether the pipeline job succeeded or failed, so the targets that finished are judged. A cancelled
+  pipeline job cancels it.
+- It holds `night:<TEL>:<NIGHT>`, takes 2 cores, is not disk-heavy, and runs ahead of the pipeline jobs of its class.
+- `q requeue` of the pipeline job requeues it as well.
+
+The daily report lists the holds and rejects waiting for a decision, and any promotion that did not finish. The
+nightly runs from the watcher and the look-back still use T12 until `promote.nightly` is turned on.
+
 ## The command line
 
 Inside the container it is `python -m jobqueue <command>`; on appct, `src/jobqueue/cron/q` does the
@@ -267,6 +284,12 @@ q add --class P2 --telescope Europa --night 20250101 --no-T12 --targets "Sp0246+
 q add --class P2 --telescope Europa --night 20250412 --download         # fetch what is missing, then run it
 q add --class P2 --telescope Europa --night 20251126 --download-only --repair   # also re-fetch truncated frames
 q add --class P2 --from-file backlog.csv --dry-run                         # TEL,DATE,DOWNLOAD,DELETE,PROCESS[,TARGETS]
+q add --class P2 --from-file backlog.csv --promote --campaign "ESO backfill reruns"   # --no_T12, then a promote job each
+q add --class P2 --telescope Europa --night 20251016 --promote             # one night the same way
+q add --class P2 --kind promote --after 1544-1670                          # promote jobs after pipeline jobs already queued
+q add --class P2 --kind promote --telescope Europa --night 20251016        # judge one night against its latest run
+q promote list                 # holds and rejects waiting for a decision (q promote = python utils/promote.py)
+q promote show 12              # q promote accept 12 --reason "..." [--apply]; q promote reject 12 --reason "..."
 q add --class P3 --kind sweep --cores 2 --no-disk-heavy --estimate 30 -- python tools/x.py
 q pause P2                     # resume P2 | pause all | resume all
 q drain                        # start nothing new, let running jobs finish (q undrain)
@@ -496,6 +519,11 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `lookback.*` | 30 nights, 2 reruns/night | |
 | `notify.transport`, `notify.env_file`, `notify.to` | `outbox`, none, none | `smtp` also sends each message (see Notifications) |
 | `notify.heartbeat_url` | none | fetched after each digest, for an outside dead-man's switch |
+| `promote.db`, `promote.raw_cache` | `<queue_root>/promote.sqlite`, `<queue_root>/promote_raw.sqlite` | the promotion journal; raw-frame counts for check A4 |
+| `promote.identity` | `plan` | A3 from plan files, or `table`: `<basedir>/ml_40pc_v2.csv` for Sp targets, holding where the plan disagrees |
+| `promote.thresholds` | `{}` | overrides of `promote_check.THRESHOLDS`, e.g. `{"max_scatter_ratio": 1.3}` |
+| `promote.cores`, `promote.est_minutes`, `promote.priority` | 2, 15, 1e9 | the promote job |
+| `promote.nightly` | false | true: the watcher's, look-back's and fetch reruns' pipeline jobs run with `--no_T12` and a promote job |
 | `notify.*` thresholds | see file | dark nights (3), late hour (21:00), stall (6 h), dispatcher (30 min), disk (2 TiB / 5%), signature (10/24 h) |
 
 ## Files
@@ -517,6 +545,7 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `src/jobqueue/digest.py` | what the notifier says: per-night status, queue, disks, incident conditions, the digest text |
 | `src/jobqueue/notify.py` | incidents, alerts and the digest; the outbox and SMTP delivery; the heartbeat |
 | `src/jobqueue/cli.py` | `q` |
+| `src/utils/promote.py`, `src/utils/promote_journal.py` | the promotion step and its journal ([promotion.md](promotion.md)) |
 | `src/jobqueue/cron/` | `queue-cron.sh`, `q`, `crontab.shadow`, `crontab.live` |
 | `src/jobqueue/tests/` | `pytest src/jobqueue/tests` |
 
@@ -526,8 +555,9 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
   in `output/` gathers every night of that target on that telescope.
 - **Emails.** Every pipeline job, nightly or not, still sends `email_eon.py`'s per-target email to
   speculoos.pipeline@gmail.com. It goes once the notifier's digest is sending (`notify.transport` = `smtp`).
-- **No product check for P2 yet.** The plan's verify-then-promote step (run with `--no_T12`, check the ledger,
-  then promote and touch) belongs with the P2 backlog work.
+- **Promotion is phase 1.** Pipeline jobs queued with `--promote` are judged and published by `utils/promote.py`;
+  the nightly runs still use T12 (`promote.nightly`), and per-run staging and provenance keywords come after the
+  backfill (see [promotion.md](promotion.md)).
 - **`SSO_download.py` with no transfer-log entry** reports "INCOMPLETE" in its summary even when the night is
   complete, because its success test needs the transfer log.
 - **Other containers** are invisible to the external-lock scan.

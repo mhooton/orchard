@@ -36,6 +36,7 @@ def test_the_promote_job_follows_its_pipeline_job_whatever_its_outcome(cfg, stor
     assert j['locks'] == ['night:Europa:20250101'] and not j['disk_heavy'] and j['cores'] == 2
     assert j['targets'] == 'Sp0001+0001' and j['class'] == 'P2' and j['priority'] >= 1e9
     assert j['env']['ORCHARD_QUEUE_ROOT'] == cfg['queue_root'] and j['cwd'] == cfg['src_dir']
+    assert j['env']['OPENBLAS_NUM_THREADS'] == '1'
     now = dt.datetime(2026, 10, 18, 12)
     assert eligible([j], now, set(), {pl: 'queued'}) == []
     store.mark_running(pl)
