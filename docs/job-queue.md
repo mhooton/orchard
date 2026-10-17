@@ -278,7 +278,50 @@ q probe                        # read-only: load, memory, disk %util, code versi
 q release                      # code releases; q release deploy --from <stage>/src --sha <sha> (see Deploying code)
 q lookback --dry-run           # what the look-back would do today, queueing nothing
 q report --days 3              # the daily report (live: jobs, results, delays; shadow: next to the cron)
+q notify digest --print        # what this morning's digest would say; changes and delivers nothing
+q notify incidents [--all]     # open incidents (and recently resolved ones)
+q notify ack 7 --until 2026-11-01 --note "dome repair booked"   # hold its alert; it stays in the digest
+q notify messages              # what was delivered, with the outbox file of each
 ```
+
+## Notifications
+
+`notify.py` is the pipeline's only sender of email; `digest.py` decides what it says. Pipeline stages should not
+email anyone (`email_eon.py` still does until the digest replaces it).
+
+- **Incidents.** Every run (`queue-cron.sh alerts` every 30 minutes, `queue-cron.sh digest` each morning) works out
+  the conditions that need a person and keeps one incident per condition in the queue database
+  (`notify_incidents`). An incident gets one email when it opens and one when it resolves, in the same thread;
+  in between it is listed in each digest. `q notify ack` holds the alert until a date. The conditions:
+
+  | Key | Opens when | Resolves when |
+  |---|---|---|
+  | `failed:<tel>:<night>:<kind>` | the newest download or pipeline job of a night that had a P0 job failed (last 3 nights) | a later job of the same kind succeeds |
+  | `late:<tel>:<night>` | the transfer log lists frames ESO still lacks at 21:00 UTC the next day, and the watcher is still waiting | the watcher queues the night |
+  | `dark:<tel>` | 3 nights with no survey data on which two other SSO telescopes observed (any 3 nights for Artemis) | the telescope observes again |
+  | `signature:<hash>` | 10 failures with one signature in 24 h, any class | fewer than 10 in the last 24 h |
+  | `dispatcher`, `queue-stalled` | no dispatcher heartbeat for 30 min; jobs due but none running or started for 6 h | heartbeat back; a job starts |
+  | `disk:<label>` | a disk under 2 TiB or 5% free | space is back |
+
+  A night with no frames is attributed, not explained: a night SPOCK planned mostly as Chilean time (`ch_` blocks
+  in `Archive_night_blocks`) has no survey frames by design and never counts; a telescope dark while two others
+  observe is down itself; when none observes it is the weather, which needs nobody.
+- **The digest** of last night (at 07:45 the night before last, processed yesterday) goes out every morning even
+  when all is well: one line per telescope (frames, hours, light curves, or what went wrong), open and newly
+  resolved incidents, what the queue did in the last 24 hours, failure signatures, look-back actions, free disk.
+  If it stops arriving, something upstream of it is broken; `notify.heartbeat_url` (fetched after each digest)
+  lets an outside service such as healthchecks.io say so when the whole server is down.
+- **Delivery.** Every message is written to `queue/notify/outbox/<time>_<kind>-<subject>.eml` and recorded in
+  `notify_messages`. Nothing is sent until `notify.transport` is `smtp` in `queue/config.json`; then each message
+  also goes to `notify.to`, with `EMAIL_ADDRESS`, `EMAIL_PASSWORD` and `SMTP_SERVER` read from `notify.env_file`
+  (a file of its own, readable only by speculoos). A message that cannot be sent still lands in the outbox; an
+  alert that failed is tried again on the next run. Incidents already alerted to the outbox before the switch are
+  not re-sent; the digest lists them.
+
+  ```json
+  {"notify": {"transport": "smtp", "env_file": "/data/SPECULOOSPipeline/queue/notify.env",
+              "to": ["speculoos.pipeline@gmail.com"], "heartbeat_url": null}}
+  ```
 
 ## Shadow mode
 
@@ -439,6 +482,9 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `minutes_per_1000_frames` | ANDOR 69, SPIRIT 22 | estimates (2026 production medians) |
 | `watcher.*` | see file | stability, deadlines, `recent_days` = 5 |
 | `lookback.*` | 30 nights, 2 reruns/night | |
+| `notify.transport`, `notify.env_file`, `notify.to` | `outbox`, none, none | `smtp` also sends each message (see Notifications) |
+| `notify.heartbeat_url` | none | fetched after each digest, for an outside dead-man's switch |
+| `notify.*` thresholds | see file | dark nights (3), late hour (21:00), stall (6 h), dispatcher (30 min), disk (2 TiB / 5%), signature (10/24 h) |
 
 ## Files
 
@@ -456,6 +502,8 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `src/jobqueue/watcher.py`, `lookback.py`, `jobs.py`, `jobspec.py` | nightly, look-back, job bodies and descriptions |
 | `src/jobqueue/fetch.py` | the add-only fetch: verified, paced downloads, placing, swaps, manifest |
 | `src/jobqueue/shadow_report.py` | the shadow report |
+| `src/jobqueue/digest.py` | what the notifier says: per-night status, queue, disks, incident conditions, the digest text |
+| `src/jobqueue/notify.py` | incidents, alerts and the digest; the outbox and SMTP delivery; the heartbeat |
 | `src/jobqueue/cli.py` | `q` |
 | `src/jobqueue/cron/` | `queue-cron.sh`, `q`, `crontab.shadow`, `crontab.live` |
 | `src/jobqueue/tests/` | `pytest src/jobqueue/tests` |
@@ -464,12 +512,13 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 
 - **Same-target nights stay one at a time**: the `target:` lock, because each target's `<gaia_id>_<filter>_output.fits`
   in `output/` gathers every night of that target on that telescope.
-- **Emails.** P0 jobs send what the cron sends today. P1 reruns send the normal pipeline emails until a quiet
-  switch exists (K7).
+- **Emails.** Every pipeline job, nightly or not, still sends `email_eon.py`'s per-target email to
+  speculoos.pipeline@gmail.com. It goes once the notifier's digest is sending (`notify.transport` = `smtp`).
 - **No product check for P2 yet.** The plan's verify-then-promote step (run with `--no_T12`, check the ledger,
   then promote and touch) belongs with the P2 backlog work.
-- **`SSO_download.py` with no transfer-log entry** reports "INCOMPLETE" in its email even when the night is
+- **`SSO_download.py` with no transfer-log entry** reports "INCOMPLETE" in its summary even when the night is
   complete, because its success test needs the transfer log.
 - **Other containers** are invisible to the external-lock scan.
-- Queue depth, throughput and failures in the nightly ledger report (R1) are not wired up yet; `q status` and
-  `q signatures` cover it meanwhile.
+- Queue depth, throughput and failures now reach the morning digest; the nightly ledger itself (R1) is still to
+  come, and so are notifier conditions that need it (images taken at the site but never archived, frames that
+  vanish from disk).

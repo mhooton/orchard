@@ -568,6 +568,35 @@ def cmd_shadow_report(cfg, store, a):
     return 0
 
 
+def cmd_notify(cfg, store, a):
+    from .notify import Notifier, NotifyError, format_incidents
+    try:
+        n = Notifier(cfg, store, outbox_only=getattr(a, 'outbox', False))
+        if a.action == 'digest':
+            print(n.digest(night=a.night, dry_run=a.print))
+        elif a.action == 'check':
+            print('\n'.join(n.check(dry_run=a.print)))
+        elif a.action == 'incidents':
+            rows = n.incidents()
+            if a.all:
+                rows += list(reversed(n.incidents(state='resolved', limit=30)))
+            print(format_incidents(rows, n.now))
+        elif a.action == 'ack':
+            r = n.ack(a.id, a.until, a.note)
+            print('incident {} ({}) acknowledged until {}'.format(r['id'], r['title'], a.until))
+        elif a.action == 'unack':
+            r = n.unack(a.id)
+            print('incident {} ({}) no longer acknowledged'.format(r['id'], r['title']))
+        elif a.action == 'messages':
+            for m in n.messages(a.last):
+                print('{}  {:<8} {:<7} {}  {}{}'.format(m['ts'], m['kind'], m['status'], m['subject'], m['path'] or '',
+                                                       '  ({})'.format(m['error']) if m['error'] else ''))
+    except (NotifyError, ValueError) as e:
+        print('notify: {}'.format(e), file=sys.stderr)
+        return 2
+    return 0
+
+
 def cmd_probe(cfg, store, a):
     from .dispatcher import deployed_sha
     from .resources import ProcResources, external_locks
@@ -710,6 +739,30 @@ def build_parser():
     r.add_argument('--dry-run', action='store_true', help='list the files that differ')
     r.add_argument('--force', action='store_true',
                    help='write even while pipeline processes run from the live tree (they may mix old and new code)')
+
+    s = sub.add_parser('notify', help='the notifier: morning digest and incident alerts, the only email the '
+                                      'pipeline sends (see docs/job-queue.md)')
+    ns = s.add_subparsers(dest='action')
+    s.set_defaults(fn=cmd_notify, action='incidents', all=False)
+    for name, text in (('digest', 'cron, each morning: bring incidents up to date, deliver their alerts, then the '
+                                  "digest of last night"),
+                       ('check', 'cron, every 30 minutes: bring incidents up to date and deliver their alerts')):
+        r = ns.add_parser(name, help=text)
+        if name == 'digest':
+            r.add_argument('--night', help='YYYYMMDD instead of last night')
+        r.add_argument('--print', action='store_true', help='show what it would say; change and deliver nothing')
+        r.add_argument('--outbox', action='store_true', help='only write to the outbox, even if notify.transport '
+                                                             'is smtp')
+    r = ns.add_parser('incidents', help='open incidents (--all: the last 30 resolved too)')
+    r.add_argument('--all', action='store_true')
+    r = ns.add_parser('ack', help="silence an incident's alert until a date; it stays in the digest")
+    r.add_argument('id', help='incident id, or the key of an open incident')
+    r.add_argument('--until', required=True, help='YYYY-MM-DD')
+    r.add_argument('--note', default='')
+    r = ns.add_parser('unack', help='undo ack')
+    r.add_argument('id')
+    r = ns.add_parser('messages', help='messages delivered, newest first, with their outbox files')
+    r.add_argument('--last', type=int, default=20)
 
     s = sub.add_parser('probe', help='read-only: load, memory, disk %%util, code version, external locks')
     s.set_defaults(fn=cmd_probe)

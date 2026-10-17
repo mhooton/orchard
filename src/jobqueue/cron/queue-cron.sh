@@ -1,7 +1,7 @@
 #!/bin/bash
 # Cron entry point for the orchard job queue on appct (user speculoos). See docs/job-queue.md.
 #
-#   queue-cron.sh [--shadow] watchdog | watch | lookback | report
+#   queue-cron.sh [--shadow] watchdog | watch | lookback | report | alerts | digest
 #
 # Runs one step inside orchard-server with docker exec, at most one copy at a time (flock), and
 # appends its output to <queue_root>/logs/<step>.log. --shadow uses the shadow snapshot and the
@@ -11,6 +11,8 @@
 #   watch     every 30 min through the afternoon: one ESO watcher poll
 #   lookback  daily: the 30-night look-back
 #   report    daily: write reports/report_<date>.md (live) or reports/shadow_<date>.md (shadow)
+#   alerts    every 30 min: the notifier opens and resolves incidents and delivers their alerts (live only)
+#   digest    each morning: the same, then the digest of last night (live only)
 
 CONTAINER=orchard-server
 COMPOSE=/appct/data/speculoos/orchard/docker/docker-compose.server.yml
@@ -30,7 +32,8 @@ fi
 STEP=$1
 case "$STEP" in
     watchdog|watch|lookback|report) ;;
-    *) echo "usage: $0 [--shadow] watchdog|watch|lookback|report" >&2; exit 2 ;;
+    alerts|digest) [ "$MODE" = "shadow" ] && exit 0 ;;
+    *) echo "usage: $0 [--shadow] watchdog|watch|lookback|report|alerts|digest" >&2; exit 2 ;;
 esac
 
 HOST_ROOT=$HOST_DATA${ROOT#/data/SPECULOOSPipeline}
@@ -71,5 +74,11 @@ case "$STEP" in
         NAME=report
         [ "$MODE" = "shadow" ] && NAME=shadow
         q report --days 3 --out "$ROOT/reports/${NAME}_$(date -u +%Y%m%d).md" > /dev/null
+        ;;
+    alerts)
+        q notify check
+        ;;
+    digest)
+        q notify digest
         ;;
 esac
