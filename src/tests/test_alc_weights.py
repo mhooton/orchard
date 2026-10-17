@@ -55,15 +55,17 @@ def make_lcurves(spl, flux, ra, dec, peak_max=None):
     n, nf = flux.shape
     jd = 2461095.5 + np.arange(nf) / 1440.
     nflux = [spl.normalise(f) for f in flux]
-    peak = [np.full(nf, 1e4) for _ in range(n)]
+    peak = np.full((n, nf), 1e4)
     if peak_max is not None:
         for i, p in peak_max.items():
-            peak[i] = np.full(nf, p)
+            peak[i] = p
+    # frames without a SATURATE level: the peak alone against the instrument config's level
+    saturated = spl.saturated_stars(peak, None, None, None, 62000.)
     nan = [np.nan] * n
     zeros = [np.zeros(nf)] * n
     return spl.init_all_lcurves(Tel(), ['SP%03d' % i for i in range(n)], nan, nan, nflux, [f.copy() for f in flux],
-                                peak, jd, jd, jd, list(ra), list(dec), nan, nan, nan, zeros, zeros, nan, nan, nan,
-                                nan, 5, 'I+z', '20260223', np.full(nf, 20.0), 62000)
+                                saturated, jd, jd, jd, list(ra), list(dec), nan, nan, nan, zeros, zeros, nan, nan, nan,
+                                nan, 5, 'I+z', '20260223', np.full(nf, 20.0))
 
 
 def stable(spl, flux, ra, dec, **kw):
