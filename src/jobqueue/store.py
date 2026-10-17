@@ -452,7 +452,8 @@ class Store:
             return 'already ' + job['state']
 
     def requeue(self, job_ids=None, signature=None, exact=False, dry_run=False, source='cli'):
-        """Put failed jobs back in the queue with fresh retries. Returns [(id, outcome)]."""
+        """Put failed jobs back in the queue with fresh retries. Returns [(id, outcome)]. A promote job that
+        already ran after a requeued job is queued again too, so the new run's output is judged as well."""
         q, args = "SELECT * FROM jobs WHERE state = 'failed'", []
         if job_ids:
             q += ' AND id IN ({})'.format(','.join('?' * len(job_ids)))
@@ -482,6 +483,20 @@ class Store:
                     self._event(c, 'requeued', job_id=job['id'], source=source, telescope=job['telescope'],
                                 night=job['night'], message='was: {}'.format(job['failure_signature']))
                 out.append((job['id'], 'would requeue' if dry_run else 'requeued'))
+                for dep in c.execute("SELECT id, dedupe_key FROM jobs WHERE depends_on = ? AND kind = 'promote' "
+                                     "AND state IN ('done', 'failed', 'cancelled') ORDER BY id DESC LIMIT 1",
+                                     (job['id'],)).fetchall():
+                    if dep['dedupe_key'] and c.execute("SELECT id FROM jobs WHERE dedupe_key = ? AND state IN "
+                                                       "('queued', 'running')", (dep['dedupe_key'],)).fetchone():
+                        continue
+                    if not dry_run:
+                        c.execute("UPDATE jobs SET state = 'queued', attempts = 0, vanished = 0, not_before = NULL, "
+                                  'exit_code = NULL, failure_kind = NULL, failure_signature = NULL, '
+                                  'finished_at = NULL, cancel_requested = 0 WHERE id = ?', (dep['id'],))
+                        self._event(c, 'requeued', job_id=dep['id'], source=source, telescope=job['telescope'],
+                                    night=job['night'], message='its pipeline job {} was requeued'.format(job['id']))
+                    out.append((dep['id'], '{} (promotes job {})'.format('would requeue' if dry_run else 'requeued',
+                                                                        job['id'])))
         return out
 
     # ---------------------------------------------------------------- watcher and look-back state

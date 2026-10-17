@@ -205,12 +205,26 @@ def parse_sso_download_argv(argv):
     return {'night:{}:{}'.format(t, n) for t in tels for n in nights}
 
 
+def parse_promote_argv(argv):
+    """Locks held by a promotion run outside the queue (utils/promote.py): one that changes the tree carries
+    --apply --telescope T --night N and holds that night; a dry run only reads, so it holds nothing."""
+    if not any(a.endswith('promote.py') for a in argv) or '--apply' not in argv:
+        return None
+    opts = {}
+    for k, a in enumerate(argv):
+        if a in ('--telescope', '--night') and k + 1 < len(argv):
+            opts[a] = argv[k + 1]
+    if not opts.get('--telescope') or not opts.get('--night'):
+        return None
+    return {'night:{}:{}'.format(opts['--telescope'], opts['--night'])}
+
+
 def target_lock(name):
     return 'target:' + name.replace(' ', '--').upper()
 
 
 def external_locks(own_sessions, proc='/proc'):
-    """Locks held by pipeline and download processes the queue did not start.
+    """Locks held by pipeline, download and promotion processes the queue did not start.
 
     Returns {lock: description}. Our own jobs run in their own sessions, so any matching process
     whose session is not one of own_sessions belongs to someone else (cron, a person, a replay).
@@ -229,7 +243,7 @@ def external_locks(own_sessions, proc='/proc'):
             continue
         if not argv:
             continue
-        locks = parse_zlp_argv(argv) or parse_sso_download_argv(argv)
+        locks = parse_zlp_argv(argv) or parse_sso_download_argv(argv) or parse_promote_argv(argv)
         if not locks:
             continue
         sid = session_id(int(name), proc)

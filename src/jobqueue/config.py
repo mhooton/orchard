@@ -108,6 +108,21 @@ DEFAULTS = {
     # download rate assumed for estimates (MB/s of ESO's compressed size)
     'fetch': {'workers': 3, 'attempts': 4, 'backoff_seconds': 30, 'breaker': 8, 'batch': 25, 'mb_per_s': 4.0},
 
+    # the promotion step (utils/promote.py) that replaces T12's sweep: a 'promote' job after a pipeline job run with
+    # --no_T12 (q add --promote) judges the night's v3 output with promote_check and publishes what passes into v2
+    'promote': {
+        'db': None,                    # the journal of verdicts and promotions; default <queue_root>/promote.sqlite
+        'raw_cache': None,             # raw-frame counts per night (check A4); default <queue_root>/promote_raw.sqlite
+        'identity': 'plan',            # A3: 'plan' (schedule plan files), or 'table': <basedir>/ml_40pc_v2.csv for Sp
+        'thresholds': {},              # overrides of promote_check.THRESHOLDS, e.g. {"max_scatter_ratio": 1.3}
+        'cores': 2,
+        'est_minutes': 15.0,
+        'priority': 1000000000.0,      # ahead of the pipeline jobs of its class: it is short and holds up their results
+        # also run the watcher's, the look-back's and fetch reruns' pipeline jobs with --no_T12 and a promote job
+        # after each; off until the nightly runs move from T12 to promotion
+        'nightly': False,
+    },
+
     'lookback': {
         'nights': 30,
         'max_fetch_rows_per_night': 3000,
@@ -182,6 +197,8 @@ def queue_paths(cfg):
         'manifest': os.path.join(root, 'fetch', 'manifest.csv'),
         'reports': os.path.join(root, 'reports'),
         'outbox': os.path.join(root, 'notify', 'outbox'),
+        'promote_db': (cfg.get('promote') or {}).get('db') or os.path.join(root, 'promote.sqlite'),
+        'promote_raw': (cfg.get('promote') or {}).get('raw_cache') or os.path.join(root, 'promote_raw.sqlite'),
     }
 
 

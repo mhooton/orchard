@@ -8,6 +8,8 @@
     docker exec orchard-server python -m jobqueue drain           # start nothing new; undrain to undo
     docker exec orchard-server python -m jobqueue cancel 42 [--kill]
     docker exec orchard-server python -m jobqueue requeue --signature "KeyError: 'gaia_dr3_id'"
+    docker exec orchard-server python -m jobqueue add --class P2 --telescope Europa --night 20250101 --promote
+    docker exec orchard-server python -m jobqueue promote list      # = python utils/promote.py list
 
 src/jobqueue/cron/q is a host-side wrapper that does the docker exec for you.
 """
@@ -193,9 +195,10 @@ def parse_backlog(path, cfg):
 
 
 def queue_night(cfg, store, eso_nights, req, cls, priority=0.0, note=None, no_t12=False, extra_flags=(), cores=None,
-                dry_run=False, log=print, campaign=None):
+                dry_run=False, log=print, campaign=None, promote=False):
     """Queue one night: an add-only fetch (if req['download']) and the pipeline run after it (if req['process']).
-    The pipeline job waits for the fetch and is cancelled if the fetch fails."""
+    The pipeline job waits for the fetch and is cancelled if the fetch fails. promote: the pipeline runs with
+    --no_T12 and a promote job follows it."""
     from .dispatcher import count_frames
     from .jobs import plan_fetch
     from .nights import night_dir, night_targets, normalise_target
@@ -227,19 +230,22 @@ def queue_night(cfg, store, eso_nights, req, cls, priority=0.0, note=None, no_t1
         if dry_run:
             # no target scan here: for SSO it reads the header of every raw frame of the night, and a dry run of a
             # long backlog file once read 20 GB that way and held the queue's disk gate for an hour
-            what.append('would run the pipeline{}{}{}'.format(
+            what.append('would run the pipeline{}{}{}{}'.format(
                 ' after the fetch' if req['download'] else '',
                 ' for ' + ' '.join(run_targets) if run_targets else '',
-                ' (targets read from its frames when queued)' if scan else ''))
+                ' (targets read from its frames when queued)' if scan else '',
+                ' with --no_T12, then a promote job' if promote else ''))
         else:
             if scan:
                 lock_targets = night_targets(cfg['basedir'], tel, night)
-            jid, created = jobspec.add(store, jobspec.pipeline_job(
+            jid, created, promote_id = jobspec.add_pipeline(store, cfg, jobspec.pipeline_job(
                 cfg, cls, tel, night, lock_targets=lock_targets, run_targets=run_targets, frames=count_frames(path),
                 source='cli', depends_on=fetch_id, dep_requires_success=fetch_id is not None, priority=priority,
-                no_t12=no_t12, extra_flags=extra_flags, note=note, cores=cores), campaign=campaign)
-            what.append('{} pipeline job {}{}'.format('queued' if created else 'already queued as', jid,
-                                                       ' after job {}'.format(fetch_id) if fetch_id else ''))
+                no_t12=no_t12 or promote, extra_flags=extra_flags, note=note, cores=cores), promote=promote,
+                campaign=campaign)
+            what.append('{} pipeline job {}{}{}'.format(
+                'queued' if created else 'already queued as', jid, ' after job {}'.format(fetch_id) if fetch_id else '',
+                ', then promote job {}'.format(promote_id) if promote_id else ''))
     log('{} {} {}: {}'.format(cls, tel, night, '; '.join(what)))
     return fetch_id
 
@@ -269,13 +275,48 @@ def cmd_add_nights(cfg, store, a):
     for r in reqs:
         try:
             queue_night(cfg, store, eso_nights, r, a.cls, priority=a.priority, note=a.note, no_t12=a.no_T12,
-                        extra_flags=a.flag or (), cores=a.cores, dry_run=a.dry_run, campaign=a.campaign)
+                        extra_flags=a.flag or (), cores=a.cores, dry_run=a.dry_run, campaign=a.campaign,
+                        promote=a.promote)
         except Exception as e:  # one bad night (ESO unreachable, say) must not stop the rest
             print('{} {} {}: not queued: {}: {}'.format(a.cls, r['telescope'], r['night'], type(e).__name__, e))
     return 0
 
 
+def cmd_add_promote(cfg, store, a):
+    """Promote jobs: one after each pipeline job of --after (finished ones included), or one for a night."""
+    if a.after:
+        for jid in sorted(_parse_ids(a.after)):
+            job = store.get_job(jid)
+            if job is None or job['kind'] != 'pipeline':
+                print('job {}: not a pipeline job; nothing queued for it'.format(jid))
+                continue
+            pid, created = jobspec.add(store, jobspec.promote_job(
+                cfg, a.cls, job['telescope'], job['night'], after=jid, targets=(job['targets'] or '').split(),
+                source='cli', note=a.note or 'after pipeline job {}'.format(jid)),
+                campaign=a.campaign or (job['meta'] or {}).get('campaign'))
+            print('{} promote job {} after pipeline job {} ({} {}, {}){}'.format(
+                'added' if created else 'already queued as', pid, jid, job['telescope'], job['night'], job['state'],
+                '' if '--no_T12' in job['argv'] else '; note: that job runs T12, which sweeps v3 into v2 first'))
+        return 0
+    if not (a.telescope and a.night):
+        print('a promote job needs --after JOB_IDS, or --telescope and --night')
+        return 2
+    pid, created = jobspec.add(store, jobspec.promote_job(cfg, a.cls, a.telescope, a.night, source='cli', note=a.note),
+                               campaign=a.campaign)
+    print('{} promote job {}: {} {} {} (every v3 target directory of the night, against its latest run)'.format(
+        'added' if created else 'already queued as', pid, a.cls, a.telescope, a.night))
+    return 0
+
+
 def cmd_add(cfg, store, a):
+    if a.kind == 'promote':
+        return cmd_add_promote(cfg, store, a)
+    if a.after:
+        print('--after goes with --kind promote')
+        return 2
+    if a.promote and a.kind != 'pipeline':
+        print('--promote goes with pipeline jobs')
+        return 2
     if a.from_file or a.download or a.download_only:
         return cmd_add_nights(cfg, store, a)
     if a.repair or a.refetch or a.dry_run:
@@ -295,8 +336,15 @@ def cmd_add(cfg, store, a):
         spec = jobspec.pipeline_job(
             cfg, a.cls, a.telescope, a.night, lock_targets=lock_targets, run_targets=run_targets,
             frames=count_frames(night_dir(cfg['basedir'], a.telescope, a.night)), est_minutes=a.estimate,
-            source='cli', depends_on=a.depends_on, priority=a.priority, no_t12=a.no_T12, note=a.note, cores=a.cores,
-            extra_flags=a.flag or ())
+            source='cli', depends_on=a.depends_on, priority=a.priority, no_t12=a.no_T12 or a.promote, note=a.note,
+            cores=a.cores, extra_flags=a.flag or ())
+        if a.promote:
+            if a.no_disk_heavy:
+                spec['disk_heavy'] = False
+            jid, created, pid = jobspec.add_pipeline(store, cfg, spec, promote=True, campaign=a.campaign)
+            print('{} job {}: {} pipeline {} {} with --no_T12, then promote job {}'.format(
+                'added' if created else 'already queued as', jid, spec['cls'], spec['telescope'], spec['night'], pid))
+            return 0
     else:
         cmd = a.cmd[1:] if a.cmd and a.cmd[0] == '--' else a.cmd
         if not cmd:
@@ -665,12 +713,17 @@ def build_parser():
 
     s = sub.add_parser('add', help='queue a job (a pipeline night by default)')
     s.add_argument('--class', dest='cls', required=True, choices=CLASSES)
-    s.add_argument('--kind', default='pipeline', help='pipeline (default) or a free-form label for a command job')
+    s.add_argument('--kind', default='pipeline', help='pipeline (default), promote (utils/promote.py for a night, or '
+                                                       'after --after jobs), or a free-form label for a command job')
     s.add_argument('--telescope')
     s.add_argument('--night')
     s.add_argument('--targets', help='targets to run, space separated (default: every target of the night)')
     s.add_argument('--lock-targets', help='targets to lock (default: read from the night\'s frames)')
     s.add_argument('--no-T12', dest='no_T12', action='store_true', help='keep products in v3')
+    s.add_argument('--promote', action='store_true',
+                   help='run the pipeline with --no_T12 and queue a promote job after it, which publishes into v2 '
+                        'what passes promote_check and keeps the rest for review (utils/promote.py)')
+    s.add_argument('--after', help='with --kind promote: pipeline job ids (1544-1670,1700) to promote after')
     s.add_argument('--flag', action='append', help='extra ZLP_pipeline.sh flag, e.g. --flag=--no_T7')
     s.add_argument('--cores', type=int)
     s.add_argument('--estimate', type=float, help='minutes (default: from the frame count)')
@@ -821,6 +874,9 @@ def main(argv=None):
     if argv and argv[0] == 'jobs':
         from .jobs import main as jobs_main
         return jobs_main(argv[1:])
+    if argv and argv[0] == 'promote':
+        from utils.promote import main as promote_main
+        return promote_main(argv[1:])
     a = build_parser().parse_args(argv)
     cfg = load_config(a.config)
     store = _store(cfg)

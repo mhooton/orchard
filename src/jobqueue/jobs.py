@@ -255,10 +255,12 @@ def fetch(cfg, store, telescope, night, rows_file=None, rerun_class='P1', dest=N
         if int(lb.get('reruns') or 0) < int(cfg['lookback']['max_reruns_per_night']):
             objects = sorted({r.get('object', '').strip() for r in rows
                               if (r.get('dp_type') or '').upper() == 'OBJECT' and (r.get('object') or '').strip()})
-            jid, created = jobspec.add(store, jobspec.pipeline_job(
+            promote = jobspec.nightly_promote(cfg)
+            jid, created, _ = jobspec.add_pipeline(store, cfg, jobspec.pipeline_job(
                 cfg, rerun_class, telescope, night, lock_targets=objects,
                 frames=len(list_frames(night_dir(cfg['basedir'], telescope, night))), source='fetch',
-                priority=float(night), note='{} science frames added by the look-back'.format(res['added_science'])))
+                priority=float(night), note='{} science frames added by the look-back'.format(res['added_science']),
+                no_t12=promote), promote=promote)
             if created:
                 lb['reruns'] = int(lb.get('reruns') or 0) + 1
             print('queued rerun job {} ({} science frames added)'.format(jid, res['added_science']))

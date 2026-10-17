@@ -224,9 +224,10 @@ class Watcher:
         # ESO rows are datacubes on SPIRIT nights, so they say nothing about frames; the dispatcher re-estimates
         # from the frames on disk when the job starts
         frames = None if download and camera(self.cfg, tel, night) == 'SPIRIT' else count
-        pl_id, _ = jobspec.add(self.store, jobspec.pipeline_job(
+        promote = jobspec.nightly_promote(self.cfg)
+        pl_id, _, _ = jobspec.add_pipeline(self.store, self.cfg, jobspec.pipeline_job(
             self.cfg, 'P0', tel, night, lock_targets=targets, frames=frames, source='watcher', depends_on=dl_id,
-            note=reason))
+            note=reason, no_t12=promote), promote=promote)
         w.update(state='enqueued', ready_at=iso(self.now), ready_reason=reason, enqueued_at=iso(self.now),
                  download_job=dl_id, pipeline_job=pl_id)
         w['data'] = dict(w.get('data') or {}, targets=targets)
