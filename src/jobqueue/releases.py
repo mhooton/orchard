@@ -25,6 +25,11 @@ A deploy is then:
               pending, and the dispatcher does it on the first poll the live tree is free.
 
 Without a `current` release the dispatcher launches from the live tree as it always did.
+
+Credentials are the exception to the copy (`release_link`, by default every `.env`, such as reporting/.env). A
+release holds a symlink to the live tree's file instead, so the file keeps its own mode, exists once, and a
+rotated password reaches every release at once; neither a sync nor a rollback to an older release ever writes one
+into the live tree. Copied files keep their own read bits, so anything only its owner may read stays that way.
 """
 import fnmatch
 import json
@@ -202,12 +207,19 @@ def same_bytes(a, b, chunk=1 << 20):
                 return True
 
 
-def _exec_bits(path):
-    return os.stat(path).st_mode & 0o111
+def _release_mode(path):
+    """A release copy's mode: the source's read and execute bits, readable by its owner, writable by nobody."""
+    return (stat.S_IMODE(os.stat(path).st_mode) | 0o400) & ~0o222
 
 
-def _same_file(a, b):
-    return same_bytes(a, b) and _exec_bits(a) == _exec_bits(b)
+def _same_file(source, copy):
+    """True if copy (in an earlier release) is what copying source makes now: same bytes and the same mode, so a
+    file whose mode has narrowed is copied afresh, not hard-linked to the wider inode."""
+    return same_bytes(source, copy) and _release_mode(source) == stat.S_IMODE(os.stat(copy).st_mode)
+
+
+def _linked(rel, patterns):
+    return _excluded(rel, os.path.basename(rel), patterns)
 
 
 def _readonly(path):
@@ -227,6 +239,7 @@ def build(cfg, stage=None, sha=None, now=None, log=print):
     now = now or utcnow()
     live = os.path.normpath(cfg['src_dir'])
     patterns = list(cfg.get('release_exclude') or ())
+    links = list(cfg.get('release_link') or ())
     if stage:
         stage = os.path.normpath(stage)
         for probe in ('main/ZLP_pipeline.sh', 'jobqueue/__init__.py'):
@@ -250,6 +263,10 @@ def build(cfg, stage=None, sha=None, now=None, log=print):
     sources = dict(live_files)
     sources.update(stage_files)
     sources.pop('VERSION', None)
+    # credentials: a symlink to the live file, not a copy (a staged one, if any, gives way to the live one)
+    live_links = sorted(rel for rel in live_files if _linked(rel, links))
+    for rel in live_links:
+        del sources[rel]
 
     tmp = os.path.join(root, '.building-' + rid)
     if os.path.exists(tmp):
@@ -264,29 +281,34 @@ def build(cfg, stage=None, sha=None, now=None, log=print):
             dst = os.path.join(src, rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             before = os.path.join(prev_src, rel) if prev_src else None
-            if before and os.path.isfile(before) and _same_file(source, before):
+            if before and os.path.isfile(before) and not os.path.islink(before) and _same_file(source, before):
                 os.link(before, dst)
                 linked += 1
                 continue
             shutil.copyfile(source, dst)
-            os.chmod(dst, stat.S_IMODE(os.stat(source).st_mode) | 0o444)
-            _readonly(dst)
+            os.chmod(dst, _release_mode(source))
             copied += 1
             new_bytes += os.path.getsize(dst)
             changed_since_prev.append(rel)
+        for rel in live_links:
+            dst = os.path.join(src, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            os.symlink(os.path.join(live, rel), dst)
         with open(os.path.join(src, 'VERSION'), 'w') as f:
             f.write('{} {}\n'.format(rid, sha or 'live-snapshot'))
         _readonly(os.path.join(src, 'VERSION'))
 
         # content only, as sync_live compares: the live tree's modes are its own (deploys never copied them)
-        differs_from_live = sorted(rel for rel in stage_files
-                                   if rel not in live_files or not same_bytes(stage_files[rel], live_files[rel]))
+        differs_from_live = sorted(rel for rel in stage_files if rel not in live_links and
+                                   (rel not in live_files or not same_bytes(stage_files[rel], live_files[rel])))
         removed_since_prev = []
         if prev_src:
-            removed_since_prev = sorted(set(tree_files(prev_src, patterns)) - set(sources) - {'VERSION'})
+            removed_since_prev = sorted(set(tree_files(prev_src, patterns)) - set(sources) - set(live_links) -
+                                        {'VERSION'})
         info = {'id': rid, 'sha': sha, 'built_at': iso(now), 'stage': stage, 'live_src': live,
                 'previous': prev['id'] if prev else None, 'files': len(sources),
                 'linked_from_previous': linked, 'copied': copied, 'new_bytes': new_bytes,
+                'live_links': live_links,
                 'differs_from_live': differs_from_live,
                 'changed_since_previous': changed_since_prev if prev_src else [],
                 'removed_since_previous': removed_since_prev}
@@ -297,9 +319,11 @@ def build(cfg, stage=None, sha=None, now=None, log=print):
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
-    log('built release {}: {} files ({} new or changed, {:.1f} MB; {} linked to {}); {} differ from the live tree'
+    log('built release {}: {} files ({} new or changed, {:.1f} MB; {} linked to {}); {} differ from the live tree{}'
         .format(rid, len(sources), copied, new_bytes / 1e6, linked, prev['id'] if prev else '-',
-                len(differs_from_live)))
+                len(differs_from_live),
+                '; {} point{} at the live tree'.format(', '.join(live_links), 's' if len(live_links) == 1 else '')
+                if live_links else ''))
     return read_release(cfg, rid)
 
 
@@ -408,13 +432,20 @@ def live_tree_users(cfg, proc='/proc', exclude=()):
 
 
 def live_diff(cfg, rid):
-    """Files of the release missing from, or different in, the live tree (the live tree's extra files don't count)."""
+    """Files of the release missing from, or different in, the live tree (the live tree's extra files don't count).
+
+    Credentials never count: the live tree's are the ones in use, and a release built before they were linked holds
+    a copy that may be a revoked password by now.
+    """
     rel = read_release(cfg, rid)
     if not rel:
         raise ReleaseError('no release {}'.format(rid))
     live = os.path.normpath(cfg['src_dir'])
+    links = cfg.get('release_link') or ()
     out = []
     for relpath, path in sorted(tree_files(rel['src'], cfg.get('release_exclude') or ()).items()):
+        if _linked(relpath, links):
+            continue
         if not same_bytes(path, os.path.join(live, relpath)):
             out.append(relpath)
     return out

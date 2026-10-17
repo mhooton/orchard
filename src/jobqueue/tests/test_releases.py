@@ -79,19 +79,73 @@ def test_build_copies_the_live_tree_lays_the_commit_over_it_and_freezes_it(cfg, 
     assert rel['id'].endswith('-70f3708') and rel['sha'] == '70f3708abcdef'
     assert read(os.path.join(src, 'photometry', 'x.py')) == 'VERSION = 2\n'        # the commit wins
     assert read(os.path.join(src, 'photometry', 'new.py')) == 'NEW = 1\n'
-    assert read(os.path.join(src, 'reporting', '.env')) == 'ESO_PASSWORD=x\n'      # deployed-only files come along
-    assert read(os.path.join(src, 'utils', 'ml_40pc_v2.csv')) == 'a,b\n'
+    assert read(os.path.join(src, 'reporting', '.env')) == 'ESO_PASSWORD=x\n'      # the credentials are there
+    assert read(os.path.join(src, 'utils', 'ml_40pc_v2.csv')) == 'a,b\n'           # deployed-only files come along
     assert read(os.path.join(src, 'utils', '1', 'keep.py')).startswith('kept')
     for clutter in ('catcache', 'core.113496', 'observation_summary.log', '1',
                     os.path.join('photometry', '__pycache__')):
         assert not os.path.exists(os.path.join(src, clutter)), clutter
     assert read(os.path.join(src, 'VERSION')).split()[0] == rel['id']
     assert sorted(rel['differs_from_live']) == ['photometry/new.py', 'photometry/x.py']   # a mode alone is no change
-    for rel_path in ('photometry/x.py', 'main/ZLP_pipeline.sh', 'reporting/.env'):
+    for rel_path in ('photometry/x.py', 'main/ZLP_pipeline.sh', 'utils/ml_40pc_v2.csv'):
         assert not os.stat(os.path.join(src, rel_path)).st_mode & 0o222, rel_path   # read-only
     assert os.stat(os.path.join(src, 'main', 'ZLP_pipeline.sh')).st_mode & 0o100     # still executable
     assert read(os.path.join(live, 'photometry', 'x.py')) == 'VERSION = 1\n'          # building changes nothing live
     assert current_id(cfg) is None                                                    # nor what jobs run
+
+
+def test_credentials_are_a_link_to_the_live_file_not_a_copy(cfg, live, tmp_path):
+    """Credentials are not copied: the release points at the live file, which keeps its own mode and is the only
+    copy, so a rotated password reaches every release at once."""
+    env = os.path.join(live, 'reporting', '.env')
+    stage = stage_tree(tmp_path, 's1', {'reporting/.env': 'ESO_PASSWORD=git\n'})
+    r1 = build(cfg, stage=stage, sha='aaaaaaa', log=lambda m: None)
+    link = os.path.join(r1['src'], 'reporting', '.env')
+    assert os.path.islink(link) and os.readlink(link) == env                     # absolute: the container's path
+    assert read(link) == 'ESO_PASSWORD=x\n'                                       # the live one, not a staged one
+    assert stat.S_IMODE(os.stat(env).st_mode) == 0o600                            # its mode is left alone
+    assert r1['live_links'] == ['reporting/.env'] and 'reporting/.env' not in r1['differs_from_live']
+
+    write(env, 'ESO_PASSWORD=rotated\n')                                          # a password is rotated
+    activate(cfg, r1['id'], log=lambda m: None)
+    r2 = build(cfg, log=lambda m: None)
+    for r in (r1, r2):
+        assert read(os.path.join(r['src'], 'reporting', '.env')) == 'ESO_PASSWORD=rotated\n'
+    assert r2['changed_since_previous'] == [] and r2['removed_since_previous'] == []
+    assert 'reporting/.env' not in live_diff(cfg, r2['id'])
+
+
+def test_a_release_holding_a_copy_never_writes_it_into_the_live_tree(cfg, live, tmp_path):
+    """The releases built before credentials were linked hold a copy of reporting/.env. Rolling back to one must not
+    put its password, revoked by then, back into the live tree."""
+    r1 = build(cfg, log=lambda m: None)
+    old = os.path.join(r1['src'], 'reporting', '.env')
+    os.unlink(old)
+    write(old, 'ESO_PASSWORD=x\n', 0o444)                                          # as those releases have it
+    write(os.path.join(live, 'reporting', '.env'), 'ESO_PASSWORD=rotated\n')
+    assert 'reporting/.env' not in live_diff(cfg, r1['id'])
+    res = sync_live(cfg, r1['id'], proc=fake_proc(tmp_path / 'p0', {}), log=lambda m: None)
+    assert 'reporting/.env' not in res['written']
+    assert read(os.path.join(live, 'reporting', '.env')) == 'ESO_PASSWORD=rotated\n'
+    assert stat.S_IMODE(os.stat(os.path.join(live, 'reporting', '.env')).st_mode) == 0o600
+
+
+def test_a_file_only_its_owner_may_read_stays_that_way_in_a_release(cfg, live):
+    """Copies keep their own read bits; one whose mode narrows is copied afresh, not hard-linked to the wider inode
+    (a hard link shares the mode, so the new release would still be world-readable)."""
+    token = os.path.join(live, 'download', 'token.txt')
+    write(token, 'abc\n', 0o644)
+    r1 = build(cfg, log=lambda m: None)
+    activate(cfg, r1['id'], log=lambda m: None)
+    os.chmod(token, 0o600)
+    r2 = build(cfg, log=lambda m: None)
+    activate(cfg, r2['id'], log=lambda m: None)
+    r3 = build(cfg, log=lambda m: None)
+    t1, t2, t3 = (os.stat(os.path.join(r['src'], 'download', 'token.txt')) for r in (r1, r2, r3))
+    assert stat.S_IMODE(t1.st_mode) == 0o444 and stat.S_IMODE(t2.st_mode) == 0o400
+    assert t2.st_ino != t1.st_ino and t3.st_ino == t2.st_ino                        # unchanged from then on: linked
+    assert r2['changed_since_previous'] == ['download/token.txt'] and r3['changed_since_previous'] == []
+    assert stat.S_IMODE(os.stat(os.path.join(r3['src'], 'main', 'ZLP_pipeline.sh')).st_mode) == 0o555
 
 
 def test_build_without_a_stage_snapshots_the_live_tree(cfg, live):

@@ -22,6 +22,9 @@ DEFAULTS = {
     # left out of a release: caches, logs and core dumps that live in the production tree; '/x' anchors at the root
     'release_exclude': ['__pycache__', '.pytest_cache', '.git', '.idea', 'catcache', 'core', 'core.[0-9]*', '._*',
                         '.DS_Store', '*.pyc', '*.log', '*.release-tmp', '/1'],
+    # not copied into a release but symlinked to the live tree's file: credentials (reporting/.env), so each keeps
+    # its owner-only mode, exists once, and no sync or rollback writes an old one back. Patterns as release_exclude
+    'release_link': ['.env'],
     'test_pylib': '/data/SPECULOOSPipeline/mh_scratch/k1-deploy-check/pylib',   # pytest for the container
     'test_paths': ['tests', 'jobqueue/tests'],
 
