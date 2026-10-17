@@ -354,11 +354,22 @@ def main(args):
         'fwhm', 'seeing', 'shift', 't', 'wcscompl', 'vi_plus', 'vi_minus',
     }
 
+    # Readout values T6 writes into each frame (calibration/readout.py).  They
+    # are absent from frames calibrated before it, and they stay the last
+    # columns: --update maps rows onto the global file's columns by position.
+    readout_dtype = [('rdnoise', np.float32),
+                     ('saturate', np.float32),
+                     ('osnoise', np.float32),
+                     ('readmode', 'a8'),
+                     ('gainsrc', 'a8')]
+    readout_defaults = {'rdnoise': np.nan, 'saturate': np.nan, 'osnoise': np.nan,
+                        'readmode': '', 'gainsrc': ''}
+
     # .upper changes string to uppercase
     # make new list of all headers/data types by combining current headers with extra headers
     full_imagelist_data_type = [
         (key.upper(), typ)
-        for (key, typ) in imagelist_from_header_data_dtype + imagelist_extra_dtype
+        for (key, typ) in imagelist_from_header_data_dtype + imagelist_extra_dtype + readout_dtype
     ]
 
     # create an nimages size array where each element contains full_imagelist_data_type
@@ -401,6 +412,9 @@ def main(args):
                     imagelist_data[key.upper()][i] = 0
                     print("Missing Keyword!: {}".format(str(err)),
                           file=sys.stderr)
+
+        for (key, typ) in readout_dtype:
+            imagelist_data[key.upper()][i] = source.header.get(key, readout_defaults[key])
 
         # WCS headers that have been renamed (now guaranteed to exist)
         imagelist_data['CTYPE1'][i] = source.header['TCTYP3']

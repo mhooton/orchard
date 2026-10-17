@@ -166,6 +166,35 @@ camera either side: the flat-field pixel response correlates at 0.92 across the 
 as it does between neighbouring nights. Without the alias, older frames fall back to
 generic defaults (no trim or overscan, no plate scale) and T8 stops at the WCS check.
 
+### Gain, Read Noise and Saturation per Night
+
+For the Andors, `gain` and `saturation_threshold` above are only the last fallback. No raw
+header records the readout mode, and the cameras have been read out in several (measured
+October 2026):
+
+| Mode | Gain (e⁻/ADU) | Bias noise (ADU) | Saturation used (raw ADU) | Nights |
+|------|---------------|------------------|---------------------------|--------|
+| `NORMAL` | 0.97–1.13, by telescope and date | 5.7–6.9 | 62,000 | most |
+| `GAIN3.8` | 3.6–3.9 | 2.4–2.6 | Europa 34,000; Artemis 37,300 | Europa 2019-07-25 to 10-26; Artemis 2020-08-06/07 and from 2025-10-29 |
+| `FAST` | 1.19 | 9.0 | 59,500 | Ganymede 2026-02-27 to 03-01 |
+| `PED7500` | 1.32 | 17.6, bias level 7,546 | 39,500 | Ganymede 2026-03-02/03 |
+| `PED2900` | ~6.5, estimated | 6.3, bias level ~2,900 | 22,800 | Artemis 2026-08-06/07 |
+
+`src/calibration/readout.py` gives each calibrated frame its own values:
+
+1. its mode, from the noise and level of its own overscan strip (the mode can change
+   during a night);
+2. that mode's read noise and gain, measured from the night's own bias pairs and
+   twilight-flat pairs (frames borrowed from other nights are not used);
+3. failing that, the dated table `REGIMES` in `readout.py`, and only then this configuration.
+
+T2 writes the night's measurements to `reduction/readout.json`.
+`python -m calibration.readout <reduction dir>` prints them for any night without writing
+anything. Instruments without an overscan (SPIRIT, MOANA) keep the configured values.
+
+To do: nothing yet collects these values over time or flags a change of mode
+([#31](https://github.com/mhooton/orchard/issues/31)).
+
 ### Instrument-Specific Features
 
 **ANDOR (Optical):**
@@ -512,12 +541,14 @@ Creates master bias frames through sigma-clipped median combination of bias expo
 1. Load all bias frames
 2. Apply overscan correction to each frame
 3. Sigma-clipped median combination (removes cosmic rays)
-4. Calculate readout noise: `RON = σ(B1-B2) × gain / √2`
+4. Measure the night's read noise and gain per readout mode from its own bias and flat pairs
+   (`readout.py`, see [Gain, Read Noise and Saturation per Night](#gain-read-noise-and-saturation-per-night))
 5. Write master bias and metrics
 
 **Output:**
 - `{run}_MasterBias.fits`
-- `readoutnoise.dat` (in electrons)
+- `readout.json` (the night's read noise and gain per readout mode, and how they were found)
+- `readoutnoise.dat` (in electrons, for the mode of the night's bias frames)
 - `overscan.dat` (median level in ADU)
 
 **Quality Metrics:** Typical readout noise: 5-15 e⁻ for ANDOR, 15-25 e⁻ for SPIRIT
@@ -545,7 +576,7 @@ Creates master dark frames to correct for thermal current. Supports two modes de
 2. Apply overscan and bias correction
 3. Normalise by exposure time (or group by exposure)
 4. Sigma-clipped median combination
-5. Calculate dark current: `DC = gain × median(dark)`
+5. Calculate dark current: `DC = gain × median(dark)`, with the night's gain
 
 **Output:**
 - `{run}_MasterDark.fits` (combined mode)
@@ -628,7 +659,12 @@ reduced = interpolate_bad_pixels(reduced, bad_pixel_map)
 **Output:**
 - `proc{image}.fits` for each science frame
 - `{filter}_processed.dat` lists of successfully reduced images
-- FITS headers updated with calibration history
+- FITS headers updated with calibration history, and with the frame's own readout values:
+  `GAIN` (e⁻/ADU), `RDNOISE` and `RON` (e⁻), `SATURATE` (ADU in the calibrated frame, i.e. raw
+  saturation minus the overscan and bias level), `READMODE`, `GAINSRC` (`night`, `table`,
+  `estimate` or `config`) and `OSNOISE` (overscan noise of the raw frame, ADU).
+  CASU reads `GAIN` for every flux error; condense copies the values into `output.fits`
+  and T10 uses them for the noise model, the I+z magnitudes and the saturation flags.
 
 **Parallel Processing:** Supports multiprocessing for faster execution on multi-core systems.
 
