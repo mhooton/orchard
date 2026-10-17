@@ -193,6 +193,8 @@ class Notifier:
         night = night or night_str(last_night(self.now))
         st = [D.night_status(ctx, t, night) for t in self.cfg['telescopes']] if statuses else []
         q = D.queue_summary(ctx)
+        if statuses:
+            q['work'] = D.work_summary(ctx, q)
         disk_list = D.disks(ctx, usage=self.usage)
         return night, st, q, disk_list, D.conditions(ctx, q, disk_list)
 

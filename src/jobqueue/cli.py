@@ -193,7 +193,7 @@ def parse_backlog(path, cfg):
 
 
 def queue_night(cfg, store, eso_nights, req, cls, priority=0.0, note=None, no_t12=False, extra_flags=(), cores=None,
-                dry_run=False, log=print):
+                dry_run=False, log=print, campaign=None):
     """Queue one night: an add-only fetch (if req['download']) and the pipeline run after it (if req['process']).
     The pipeline job waits for the fetch and is cancelled if the fetch fails."""
     from .dispatcher import count_frames
@@ -219,7 +219,7 @@ def queue_night(cfg, store, eso_nights, req, cls, priority=0.0, note=None, no_t1
             fetch_id, created = jobspec.add(store, jobspec.fetch_job(
                 cfg, cls, tel, night, n_rows=summary['todo'], n_science=summary['todo_science'], source='cli',
                 rerun=False, replace=req['replace'], nbytes=summary['todo_bytes'], priority=priority,
-                note=note or desc))
+                note=note or desc), campaign=campaign)
             what.append('{} fetch job {}: {}'.format('queued' if created else 'already queued as', fetch_id, desc))
     if req['process']:
         run_targets = list(req.get('run_targets') or [])
@@ -237,7 +237,7 @@ def queue_night(cfg, store, eso_nights, req, cls, priority=0.0, note=None, no_t1
             jid, created = jobspec.add(store, jobspec.pipeline_job(
                 cfg, cls, tel, night, lock_targets=lock_targets, run_targets=run_targets, frames=count_frames(path),
                 source='cli', depends_on=fetch_id, dep_requires_success=fetch_id is not None, priority=priority,
-                no_t12=no_t12, extra_flags=extra_flags, note=note, cores=cores))
+                no_t12=no_t12, extra_flags=extra_flags, note=note, cores=cores), campaign=campaign)
             what.append('{} pipeline job {}{}'.format('queued' if created else 'already queued as', jid,
                                                        ' after job {}'.format(fetch_id) if fetch_id else ''))
     log('{} {} {}: {}'.format(cls, tel, night, '; '.join(what)))
@@ -269,7 +269,7 @@ def cmd_add_nights(cfg, store, a):
     for r in reqs:
         try:
             queue_night(cfg, store, eso_nights, r, a.cls, priority=a.priority, note=a.note, no_t12=a.no_T12,
-                        extra_flags=a.flag or (), cores=a.cores, dry_run=a.dry_run)
+                        extra_flags=a.flag or (), cores=a.cores, dry_run=a.dry_run, campaign=a.campaign)
         except Exception as e:  # one bad night (ESO unreachable, say) must not stop the rest
             print('{} {} {}: not queued: {}: {}'.format(a.cls, r['telescope'], r['night'], type(e).__name__, e))
     return 0
@@ -311,7 +311,7 @@ def cmd_add(cfg, store, a):
                     source='cli', note=a.note, max_retries=cfg['max_retries'])
     if a.no_disk_heavy:
         spec['disk_heavy'] = False
-    jid, created = jobspec.add(store, spec)
+    jid, created = jobspec.add(store, spec, campaign=a.campaign)
     print('{} job {}: {} {} {} {} cores={} est={:.0f}m locks={}'.format(
         'added' if created else 'already queued as', jid, spec['cls'], spec['kind'], spec.get('telescope') or '-',
         spec.get('night') or '-', spec['cores'], spec['est_minutes'], ' '.join(spec['locks'])))
@@ -568,6 +568,44 @@ def cmd_shadow_report(cfg, store, a):
     return 0
 
 
+def _parse_ids(spec):
+    ids = set()
+    for part in (spec or '').split(','):
+        part = part.strip()
+        if '-' in part:
+            first, last = part.split('-', 1)
+            ids.update(range(int(first), int(last) + 1))
+        elif part:
+            ids.add(int(part))
+    return ids
+
+
+def cmd_campaign(cfg, store, a):
+    """Label jobs already queued (or finished) with a campaign, by id and/or by a note substring."""
+    if not (a.ids or a.note):
+        print('give --ids and/or --note to choose the jobs')
+        return 2
+    if not (a.label or a.clear):
+        print('give a label, or --clear')
+        return 2
+    ids = _parse_ids(a.ids)
+    text = (a.note or '').lower()
+    rows = [r for r in store.conn.execute('SELECT id, meta, note FROM jobs ORDER BY id')
+            if (not ids or r['id'] in ids) and (not text or text in (r['note'] or '').lower())]
+    for r in rows:
+        meta = json.loads(r['meta'] or '{}')
+        if a.clear:
+            meta.pop('campaign', None)
+        else:
+            meta['campaign'] = a.label
+        if not a.dry_run:
+            store.update_job(r['id'], meta=meta)
+    print('{} {} job(s){}{}'.format('would update' if a.dry_run else 'updated', len(rows),
+                                    ': campaign cleared' if a.clear else ': campaign "{}"'.format(a.label),
+                                    ' ({}-{})'.format(rows[0]['id'], rows[-1]['id']) if rows else ''))
+    return 0
+
+
 def cmd_notify(cfg, store, a):
     from .notify import Notifier, NotifyError, format_incidents
     try:
@@ -642,6 +680,7 @@ def build_parser():
     s.add_argument('--lock', action='append', help='extra lock for a command job')
     s.add_argument('--cwd')
     s.add_argument('--note')
+    s.add_argument('--campaign', help='short label the morning digest groups this work under, e.g. "WCS audit reruns"')
     s.add_argument('--download', action='store_true',
                    help='fetch what ESO holds for the night and the disk lacks (add-only), then run the pipeline')
     s.add_argument('--download-only', action='store_true', help='as --download, without the pipeline run')
@@ -739,6 +778,14 @@ def build_parser():
     r.add_argument('--dry-run', action='store_true', help='list the files that differ')
     r.add_argument('--force', action='store_true',
                    help='write even while pipeline processes run from the live tree (they may mix old and new code)')
+
+    s = sub.add_parser('campaign', help='label jobs already in the queue with a campaign, for the morning digest')
+    s.add_argument('label', nargs='?', help='e.g. "WCS audit reruns"')
+    s.add_argument('--ids', help='job ids: 1200-1350,1400')
+    s.add_argument('--note', help='jobs whose note contains this text (case-insensitive)')
+    s.add_argument('--clear', action='store_true', help='remove the label instead')
+    s.add_argument('--dry-run', action='store_true', help='only count the jobs it would change')
+    s.set_defaults(fn=cmd_campaign)
 
     s = sub.add_parser('notify', help='the notifier: morning digest and incident alerts, the only email the '
                                       'pipeline sends (see docs/job-queue.md)')

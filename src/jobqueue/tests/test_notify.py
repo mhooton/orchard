@@ -56,14 +56,16 @@ def watch(store, tel, night, state, rows=0, transfer=None, targets=(), last_poll
                      'data': {'targets': list(targets), 'by_type': {'OBJECT': rows} if rows else {}}})
 
 
-def job(store, tel, night, kind='pipeline', cls='P0', state='done', signature=None):
-    jid, _ = store.add_job(cls, kind, ['true'], telescope=tel, night=night)
-    if state in ('done', 'failed'):
+def job(store, tel, night, kind='pipeline', cls='P0', state='done', signature=None, note=None, campaign=None,
+        est=60.0, not_before=None):
+    jid, _ = store.add_job(cls, kind, ['true'], telescope=tel, night=night, note=note, est_minutes=est,
+                           meta={'campaign': campaign} if campaign else None, not_before=not_before)
+    if state in ('running', 'done', 'failed'):
         store.mark_running(jid)
-        if state == 'done':
-            store.finish(jid, 0)
-        else:
-            store.finish(jid, 1, failure_kind='deterministic', signature=signature)
+    if state == 'done':
+        store.finish(jid, 0)
+    elif state == 'failed':
+        store.finish(jid, 1, failure_kind='deterministic', signature=signature)
     return jid
 
 
@@ -437,3 +439,72 @@ def test_calibrations_alone_are_not_observing(clean, store):
     assert ctx.observed('Io', '20260902') is True
     lightcurve(cfg, 'Io', '20260901', '7')
     assert D.Context(cfg, store, NOW).observed('Io', '20260901') is True
+
+
+# ---------------------------------------------------------------------------------------------- the queue's work
+
+def test_campaign_labels():
+    def label(cls, kind='pipeline', campaign=None, note=None):
+        return D.campaign_label({'class': cls, 'kind': kind, 'meta': {'campaign': campaign} if campaign else {},
+                                 'note': note})
+    assert label('P3', campaign='WCS audit reruns', note='anything') == 'WCS audit reruns'
+    assert label('P0') == 'nightly' and label('P1', 'fetch', note='late frames') == 'look-back'
+    assert label('P3', 'framepack', note='16-bit archive sweep: v2 510 frames in 2 folders') == '16-bit archive sweep'
+    assert label('P3', note='never reduced; raw frames lack WCS (WCS audit 2026-10-16)') == \
+        'never reduced; raw frames lack WCS'
+    assert label('P2') == 'reruns' and label('P2', 'framepack') == 'frame packing'
+    assert len(label('P3', note='x' * 80)) == 40
+
+
+def test_digest_summarises_processed_and_remaining_work(clean, store):
+    cfg = clean
+    for night in ('20240118', '20240119', '20240120'):
+        job(store, 'Callisto', night, cls='P2', campaign='WCS audit reruns')
+    lightcurve(cfg, 'Callisto', '20240118', '9')
+    lightcurve(cfg, 'Callisto', '20240119', '9')
+    job(store, 'Ganymede', '20240121', cls='P2', state='failed', signature='boom')
+    job(store, 'Callisto', '20240122', cls='P2', state='running', campaign='WCS audit reruns')
+    for night in ('20240123', '20240124'):
+        job(store, 'Callisto', night, cls='P2', state='queued', campaign='WCS audit reruns', est=120.0)
+    job(store, 'Artemis', '20190506', kind='framepack', cls='P3', state='queued', est=6.0,
+        note='16-bit archive sweep: v2 510 frames in 2 folders', not_before=NOW + dt.timedelta(hours=1))
+    store.pause('P3')
+    text = notifier(cfg, store).digest(dry_run=True)
+    lines = text.splitlines()
+    i = lines.index('Processed in the last 24 h: 4 jobs')
+    processed = lines[i + 1:i + 3]                   # by class, then the bigger group first
+    assert processed[0].startswith('  P2  WCS audit reruns') and \
+        processed[0].endswith('3 done · Callisto · Jan 2024 · light curves on 2 of 3 nights')
+    assert processed[1].startswith('  P2  reruns') and processed[1].endswith('0 done, 1 failed · Ganymede · 21 Jan 2024')
+    j = lines.index("Remaining: 4 jobs, ≈5 h of estimated work, ≈1.7 days at the last 24 h's pace; paused P3")
+    remaining = lines[j + 1:j + 3]
+    assert remaining[0].startswith('  P2  WCS audit reruns') and \
+        remaining[0].endswith('1 running, 2 queued · ≈5 h · Callisto · Jan 2024')
+    assert remaining[1].startswith('  P3  16-bit archive sweep') and \
+        remaining[1].endswith('1 queued · ≈0 h · Artemis 6 May 2019 · paused · 1 waiting to retry')
+
+
+def test_empty_queue_says_so(clean, store):
+    text = notifier(clean, store).digest(dry_run=True)
+    assert 'Processed in the last 24 h: nothing' in text and 'Remaining: nothing queued' in text
+
+
+def test_q_add_campaign_and_q_campaign(tmp_path, monkeypatch, capsys):
+    from jobqueue import cli
+    from jobqueue.store import Store
+    monkeypatch.setenv('ORCHARD_QUEUE_ROOT', str(tmp_path / 'q'))
+    monkeypatch.delenv('ORCHARD_QUEUE_CONFIG', raising=False)
+    assert cli.main(['add', '--class', 'P3', '--kind', 'sweep', '--campaign', '16-bit sweep', '--', 'true']) == 0
+    assert cli.main(['add', '--class', 'P3', '--kind', 'sweep', '--note',
+                     'never reduced; raw frames lack WCS (WCS audit 2026-10-16)', '--', 'true']) == 0
+    assert cli.main(['campaign', 'WCS audit reruns', '--note', 'wcs audit', '--dry-run']) == 0
+    assert 'would update 1 job(s): campaign "WCS audit reruns" (2-2)' in capsys.readouterr().out
+    assert cli.main(['campaign', 'WCS audit reruns', '--note', 'wcs audit']) == 0
+    assert cli.main(['campaign', '--clear', '--ids', '1']) == 0
+    assert cli.main(['campaign', 'x']) == 2
+    s = Store(str(tmp_path / 'q' / 'queue.sqlite'))
+    try:
+        assert 'campaign' not in s.get_job(1)['meta']
+        assert s.get_job(2)['meta']['campaign'] == 'WCS audit reruns'
+    finally:
+        s.close()

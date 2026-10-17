@@ -278,6 +278,8 @@ q probe                        # read-only: load, memory, disk %util, code versi
 q release                      # code releases; q release deploy --from <stage>/src --sha <sha> (see Deploying code)
 q lookback --dry-run           # what the look-back would do today, queueing nothing
 q report --days 3              # the daily report (live: jobs, results, delays; shadow: next to the cron)
+q add --class P3 --telescope Callisto --night 20250301 --campaign "WCS audit reruns"   # grouped so in the digest
+q campaign "WCS audit reruns" --note "WCS audit" --dry-run    # label jobs already queued (or --ids 1200-1350)
 q notify digest --print        # what this morning's digest would say; changes and delivers nothing
 q notify incidents [--all]     # open incidents (and recently resolved ones)
 q notify ack 7 --until 2026-11-01 --note "dome repair booked"   # hold its alert; it stays in the digest
@@ -308,7 +310,11 @@ email anyone (`email_eon.py` still does until the digest replaces it).
   observe is down itself; when none observes it is the weather, which needs nobody.
 - **The digest** of last night (at 07:45 the night before last, processed yesterday) goes out every morning even
   when all is well: one line per telescope (frames, hours, light curves, or what went wrong), open and newly
-  resolved incidents, what the queue did in the last 24 hours, failure signatures, look-back actions, free disk.
+  resolved incidents, failure signatures, look-back actions, free disk, and the queue's work in two sections.
+  *Processed in the last 24 h* and *Remaining* group jobs by class and campaign: done, failed and cancelled
+  counts, telescopes, the nights covered, light curves made (for pipeline work), estimated hours left, and an
+  ETA at the last 24 hours' pace. A job's campaign is its `q add --campaign` label (`q campaign` labels jobs
+  already queued); without one, P0 is "nightly", P1 "look-back", and anything else is grouped by its note.
   If it stops arriving, something upstream of it is broken; `notify.heartbeat_url` (fetched after each digest)
   lets an outside service such as healthchecks.io say so when the whole server is down.
 - **Delivery.** Every message is written to `queue/notify/outbox/<time>_<kind>-<subject>.eml` and recorded in

@@ -229,9 +229,12 @@ def night_status(ctx, tel, night):
 def queue_summary(ctx, hours=24):
     store, now = ctx.store, ctx.now
     since = iso(now - dt.timedelta(hours=hours))
-    finished = [dict(r) for r in store.conn.execute(
-        "SELECT id, class, kind, telescope, night, state, failure_kind, failure_signature FROM jobs "
-        "WHERE finished_at >= ? AND state IN ('done', 'failed', 'cancelled') ORDER BY id", (since,))]
+    finished = []
+    for r in store.conn.execute("SELECT * FROM jobs WHERE finished_at >= ? AND state IN ('done', 'failed', "
+                                "'cancelled') ORDER BY id", (since,)):
+        d = dict(r)
+        d['meta'] = json.loads(d['meta'] or '{}')
+        finished.append(d)
     failures = Counter((r['failure_signature'] or r['failure_kind'] or 'unknown') for r in finished
                        if r['state'] == 'failed')
     new = set()
@@ -245,7 +248,7 @@ def queue_summary(ctx, hours=24):
     actions = [r for r in store.lookback_rows()
                if (r.get('checked_at') or '') >= since and r.get('last_action') not in (None, 'ok')]
     return {
-        'since': since, 'hours': hours,
+        'since': since, 'hours': hours, 'finished_jobs': finished,
         'finished': Counter(r['state'] for r in finished),
         'by_class': Counter((r['class'], r['state']) for r in finished),
         'failures': failures, 'new_signatures': new,
@@ -255,6 +258,73 @@ def queue_summary(ctx, hours=24):
         'lookback_actions': actions,
         'eso_errors': store.events(since=since, kinds=['eso-error']),
     }
+
+
+DEFAULT_LABELS = {'pipeline': 'reruns', 'download': 'downloads', 'fetch': 'downloads', 'framepack': 'frame packing'}
+
+
+def tidy_note(note, limit=40):
+    """A note as a group label: without parenthesised detail or what follows a colon ('16-bit archive sweep: v2 510
+    frames in 2 folders' -> '16-bit archive sweep')."""
+    s = re.sub(r'\([^)]*\)', '', note or '')
+    s = ' '.join(s.split(':')[0].split()).strip(' ;,.-')
+    return s if len(s) <= limit else s[:limit - 1].rstrip() + '…'
+
+
+def campaign_label(job):
+    """What the digest groups a job under: its campaign (`q add --campaign`, `q campaign`), else nightly (P0) or
+    look-back (P1), else its tidied note, else its kind."""
+    label = str((job.get('meta') or {}).get('campaign') or '').strip()
+    if label:
+        return label
+    if job['class'] == 'P0':
+        return 'nightly'
+    if job['class'] == 'P1':
+        return 'look-back'
+    return tidy_note(job.get('note')) or DEFAULT_LABELS.get(job['kind'], job['kind'])
+
+
+def night_span(nights):
+    nights = sorted({n for n in nights if n})
+    if not nights:
+        return ''
+    if nights[0] == nights[-1]:
+        return fmt_night(nights[0])
+    a, b = (parse_night(n).strftime('%b %Y') for n in (nights[0], nights[-1]))
+    return a if a == b else '{} – {}'.format(a, b)
+
+
+def work_summary(ctx, q):
+    """The queue's work over the window and what is left, grouped by (class, campaign_label). Light curves are
+    counted per telescope-night of the finished pipeline jobs."""
+    now = ctx.now
+    done, left = {}, {}
+    for j in q['finished_jobs']:
+        g = done.setdefault((j['class'], campaign_label(j)), {
+            'done': 0, 'failed': 0, 'cancelled': 0, 'telescopes': set(), 'nights': [], 'runs': set()})
+        g[j['state']] += 1
+        if j['telescope']:
+            g['telescopes'].add(j['telescope'])
+        g['nights'].append(j['night'])
+        if j['kind'] == 'pipeline' and j['state'] == 'done' and j['telescope'] and j['night']:
+            g['runs'].add((j['telescope'], j['night']))
+    for g in done.values():
+        g['lc_runs'] = sum(1 for tel, night in g['runs'] if ctx.lcs(tel, night))
+    for j in q['running'] + q['queued']:
+        g = left.setdefault((j['class'], campaign_label(j)), {
+            'running': 0, 'queued': 0, 'minutes': 0.0, 'telescopes': set(), 'nights': [], 'retry': 0, 'jobs': []})
+        g[j['state']] += 1
+        g['minutes'] += float(j['est_minutes'] or 0)
+        if j['telescope']:
+            g['telescopes'].add(j['telescope'])
+        g['nights'].append(j['night'])
+        g['jobs'].append(j)
+        if j['state'] == 'queued' and not job_is_due(j, now):
+            g['retry'] += 1
+    done_h = sum(float(j['est_minutes'] or 0) for j in q['finished_jobs'] if j['state'] == 'done') / 60.0
+    left_h = sum(g['minutes'] for g in left.values()) / 60.0
+    return {'done': done, 'left': left, 'done_h': done_h, 'left_h': left_h,
+            'days': left_h / done_h if done_h > 0 else None}
 
 
 def disks(ctx, usage=disk_usage):
@@ -418,6 +488,85 @@ def _incident_line(i, now):
     return line
 
 
+def _fit(label, width):
+    if len(label) <= width:
+        return label
+    cut = label[:width - 1]
+    return (cut[:cut.rfind(' ')] if ' ' in cut else cut).rstrip(' ;,.-') + '…'
+
+
+def _top(groups, size, top):
+    """The `top` biggest groups, in class order then size, and a line for the rest."""
+    keys = sorted(groups, key=lambda k: -size(groups[k]))
+    shown = sorted(keys[:top], key=lambda k: (k[0], -size(groups[k])))
+    rest = keys[top:]
+    more = '  … and {} smaller group{} ({} jobs)'.format(len(rest), '' if len(rest) == 1 else 's',
+                                                        sum(size(groups[k]) for k in rest)) if rest else None
+    return shown, more
+
+
+def render_work(q, now, top=8):
+    """'Processed in the last 24 h' and 'Remaining': the queue's work grouped by class and campaign."""
+    w = q['work']
+    out = []
+    labels = [k[1] for k in list(w['done']) + list(w['left'])]
+    width = min(max([len(l) for l in labels] + [8]), 32)
+    row = '  {:<3} {:<' + str(width) + '}  {}'
+
+    n_done = len(q['finished_jobs'])
+    out.append('Processed in the last {} h: {}'.format(q['hours'], '{} job{}'.format(n_done, '' if n_done == 1 else 's')
+                                                       if n_done else 'nothing'))
+    shown, more = _top(w['done'], lambda g: g['done'] + g['failed'] + g['cancelled'], top)
+    for cls, label in shown:
+        g = w['done'][(cls, label)]
+        parts = ['{} done'.format(g['done'])]
+        parts += ['{} {}'.format(g[s], s) for s in ('failed', 'cancelled') if g[s]]
+        text = ', '.join(parts)
+        if g['telescopes']:
+            text += ' · ' + ', '.join(sorted(g['telescopes']))
+        if night_span(g['nights']):
+            text += ' · ' + night_span(g['nights'])
+        if g['runs']:
+            text += ' · light curves on {} of {} night{}'.format(g['lc_runs'], len(g['runs']),
+                                                                 '' if len(g['runs']) == 1 else 's')
+        out.append(row.format(cls, _fit(label, width), text))
+    if more:
+        out.append(more)
+
+    n_left = len(q['running']) + len(q['queued'])
+    if not n_left:
+        out.append('Remaining: nothing queued')
+        return out
+    head = 'Remaining: {} job{}, ≈{:.0f} h of estimated work'.format(n_left, '' if n_left == 1 else 's', w['left_h'])
+    head += (', ≈{:.1f} days at the last {} h\'s pace'.format(w['days'], q['hours']) if w['days'] is not None
+             else ', and nothing finished in the last {} h'.format(q['hours']))
+    if q['paused']:
+        head += '; paused {}'.format(', '.join(sorted(q['paused'])))
+    if q['draining']:
+        head += '; draining'
+    out.append(head)
+    shown, more = _top(w['left'], lambda g: g['running'] + g['queued'], top)
+    for cls, label in shown:
+        g = w['left'][(cls, label)]
+        text = ', '.join(['{} running'.format(g['running'])] * bool(g['running']) +
+                         ['{} queued'.format(g['queued'])] * bool(g['queued']))
+        text += ' · ≈{:.0f} h'.format(g['minutes'] / 60.0)
+        if len(g['jobs']) <= 2:
+            text += ' · ' + ', '.join('{} {}'.format(j['telescope'] or '-', fmt_night(j['night']) if j['night']
+                                                     else '') .strip() for j in g['jobs'])
+        else:
+            text += ' · {}{}'.format(', '.join(sorted(g['telescopes'])) + ' · ' if g['telescopes'] else '',
+                                     night_span(g['nights']))
+        if cls in q['paused']:
+            text += ' · paused'
+        if g['retry']:
+            text += ' · {} waiting to retry'.format(g['retry'])
+        out.append(row.format(cls, _fit(label, width), text.rstrip(' ·')))
+    if more:
+        out.append(more)
+    return out
+
+
 def render_digest(cfg, night, statuses, q, disk_list, open_incidents, resolved, now, report_path=None):
     """Subject and plain-text body of the morning digest."""
     incident_tels = {i['telescope'] for i in open_incidents if i.get('telescope')}
@@ -445,23 +594,7 @@ def render_digest(cfg, night, statuses, q, disk_list, open_incidents, resolved, 
         body += ['  • {} (resolved {})'.format(i['title'], fmt_time(i['resolved_at'])) for i in resolved]
         body.append('')
 
-    fin = q['finished']
-    classes = []
-    for cls in sorted({c for c, _ in q['by_class']}):
-        done, failed = q['by_class'].get((cls, 'done'), 0), q['by_class'].get((cls, 'failed'), 0)
-        classes.append('{} {} done{}'.format(cls, done, ', {} failed'.format(failed) if failed else ''))
-    body.append('Queue, last {} h: {} done, {} failed, {} cancelled{}'.format(
-        q['hours'], fin.get('done', 0), fin.get('failed', 0), fin.get('cancelled', 0),
-        ' ({})'.format('; '.join(classes)) if classes else ''))
-    queued = Counter(j['class'] for j in q['queued'])
-    now_line = 'Now: {} running, {} queued'.format(len(q['running']), len(q['queued']))
-    if queued:
-        now_line += ' ({})'.format(', '.join('{} {}'.format(c, k) for c, k in sorted(queued.items())))
-    if q['paused']:
-        now_line += '; paused {}'.format(', '.join(sorted(q['paused'])))
-    if q['draining']:
-        now_line += '; draining'
-    body.append(now_line)
+    body += render_work(q, now)
     if q['failures']:
         body.append('Failures by signature:')
         for sig, count in q['failures'].most_common(8):

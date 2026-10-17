@@ -101,6 +101,10 @@ def fetch_job(cfg, cls, telescope, night, rows_file=None, n_rows=0, n_science=0,
               'bytes': nbytes, 'replace': replace, 'rerun': rerun})
 
 
-def add(store, spec):
+def add(store, spec, campaign=None):
+    """Queue a described job. campaign: a short label (`q add --campaign`) the morning digest groups work by; it is
+    kept in the job's meta."""
     spec = dict(spec)
+    if campaign:
+        spec['meta'] = dict(spec.get('meta') or {}, campaign=campaign)
     return store.add_job(spec.pop('cls'), spec.pop('kind'), spec.pop('argv'), **spec)
