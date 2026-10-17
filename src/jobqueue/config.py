@@ -33,9 +33,13 @@ DEFAULTS = {
     'disk_util_max': 70.0,
     'disk_devices': ['sda', 'sdb'],           # sda = PipelineOutput, sdb = data/raw on appct
     'max_disk_heavy_starts_per_poll': 1,      # %util needs a poll to show a new job's I/O
-    'p0_reserve_cores': 40,
+    # cores kept free for P0 in the nightly window; 0: a backlog job at the head of the queue runs whenever the
+    # capacity is there, and a P0 job that finds it full waits for the next job to finish
+    'p0_reserve_cores': 0,
     'p0_reserve_window_utc': ['11:00', '01:00'],
-    'telescope_lock': True,                   # until a per-run catcache lands (decision K7)
+    # one pipeline job per telescope at a time. Off since each wcsfit call got its own catcache and the report
+    # tables a lock (K7); set it to go back to one at a time (pipeline jobs and external ZLP runs keep tel: locks)
+    'telescope_lock': False,
     # concurrent ESO download/fetch jobs; P2/P3 fetches (backfill, q add --download) also take eso_bulk, so they
     # never hold both eso slots and the nightly downloads always find one free
     'semaphores': {'eso': 2, 'eso_bulk': 1},
@@ -107,14 +111,6 @@ DEFAULTS = {
         'max_fetch_rows_per_run': 10000,
         'max_reruns_per_night': 2,
         'max_fetches_per_night': 3,
-    },
-
-    # Keep a lower-class job off a telescope whose nightly job is due before it would finish.
-    'p0_guard': {
-        'enabled': True,
-        'windows_utc': {'Io': ['13:00', '17:00'], 'Europa': ['13:00', '17:00'],
-                        'Ganymede': ['13:00', '17:00'], 'Callisto': ['13:00', '17:00'],
-                        'Artemis': ['10:00', '13:00']},
     },
 }
 

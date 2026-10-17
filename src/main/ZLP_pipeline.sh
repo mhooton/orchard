@@ -590,9 +590,7 @@ create_stack_image() {
     printf "\n**Create Stack Image**\n"
     ensure_directory "${OUTPUTDIR}/StackImages"
 
-    if [ -d "${DATDIR}/catcache" ]; then
-        rm -rf ${DATDIR}/catcache
-    fi
+    # wcsfit runs in its own temporary directory (photometry/casutools.py): no ${DATDIR}/catcache to clear
     IMAGELISTS=${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}/*_processed.dat
 
     if $(any_filelists ${IMAGELISTS}); then
@@ -683,9 +681,6 @@ single_perform_aperture_photometry() {
     if $(any_filelists ${filelists}); then
         for filelist in ${filelists}
         do
-            if [ -d "${DATDIR}/catcache" ]; then
-                rm -rf ${DATDIR}/catcache
-            fi
             SUBLIST=${filelist#${OUTPUTDIR}/${DATE}/${1}/${RUNNAME}/}
             FILTER=${SUBLIST%_processed.dat}
             echo "For filter = ${FILTER}"
@@ -1265,7 +1260,6 @@ main() {
     setup_directory_structure
 
     cd ${DATDIR}
-    rm -f match_proc*.fits
     rm -f core.*
     date
     echo "Using ${CORES} cores"

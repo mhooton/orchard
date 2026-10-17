@@ -33,7 +33,7 @@ from .releases import current_id, pin, queue_code_changed, read_release, sync_pe
 from .resources import ProcResources, external_locks, group_alive, pid_alive, proc_start_time, reap
 from .scheduler import plan
 from .signatures import extract, is_transient, read_tail
-from .util import iso, last_night, night_str, parse_iso, read_json, utcnow
+from .util import iso, parse_iso, read_json, utcnow
 
 FITS_SUFFIXES = ('.fits', '.fts', '.fit', '.fits.fz', '.fits.gz')
 
@@ -322,18 +322,6 @@ class Dispatcher:
         self.store.event('waiting', job_id=job['id'], source='dispatcher', telescope=job['telescope'],
                          night=job['night'], message=', '.join(key), data={'waiting': list(key)})
 
-    def p0_settled(self, now):
-        night = night_str(last_night(now))
-        settled = set()
-        for tel in self.cfg['telescopes']:
-            if self.store.jobs(classes=['P0'], kind='pipeline', telescope=tel, night=night, limit=1):
-                settled.add(tel)
-                continue
-            w = self.store.watch_get(tel, night)
-            if w and w['state'] == 'no_data' and w['noted']:
-                settled.add(tel)
-        return settled
-
     # ------------------------------------------------------------------ the poll
 
     def heartbeat(self, now):
@@ -402,7 +390,7 @@ class Dispatcher:
         external = external_locks([j['pid'] for j in running if j['pid']], self.proc)
         snapshot = self.resources.snapshot()
         decisions = plan(queued, running, snapshot, self.cfg, now, paused=self.store.paused(),
-                         external=external, dep_states=dep_states, p0_settled=self.p0_settled(now))
+                         external=external, dep_states=dep_states)
         for d in decisions:
             if d.start:
                 self.start(d.job, now)

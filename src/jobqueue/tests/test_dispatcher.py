@@ -176,8 +176,8 @@ def test_shadow_mode_launches_nothing_and_simulates_the_run(cfg, store, clock, t
     marker = tmp_path / 'ran'
     cfg = dict(cfg, mode='shadow')
     jid = add(store, [PY, '-c', 'open({!r}, "w")'.format(str(marker))], est=30.0)
-    other = add(store, [PY, '-c', 'pass'], est=30.0, locks=['tel:Europa'])
-    blocked = add(store, [PY, '-c', 'pass'], est=30.0, locks=['tel:Europa'])
+    other = add(store, [PY, '-c', 'pass'], est=30.0, locks=['night:Europa:20261008'])
+    blocked = add(store, [PY, '-c', 'pass'], est=30.0, locks=['night:Europa:20261008'])
     d = make(cfg, store, clock)
     d.poll()
     j = store.get_job(jid)

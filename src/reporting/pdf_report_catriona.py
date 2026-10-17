@@ -46,6 +46,13 @@ except Exception:
     READOUT_MODES = {}
 
 
+def temp_dir(args):
+    """This night's folder for the report's figures and aligned frames, reports/temp/<date>. Their names
+    (masterbias.png, asm.png, ...) are fixed, so one folder per telescope let two nights reported at the
+    same time overwrite and delete each other's."""
+    return os.path.join(args.datdir, 'reports', 'temp', args.date)
+
+
 def readout_flags(ron, gain, modes):
     """(readout cell OK?, RON cell OK?) for the calibration table.
 
@@ -102,8 +109,8 @@ def import_masterframes_img(args, filt):
     masterbias_im = glob.glob("%s/*_Master%s.*" % (reductdir, "Bias"))
     masterdark_im = glob.glob("%s/*_Master%s.*" % (reductdir, "Dark"))
 
-    masterbias = args.datdir + "/reports/temp/masterbias.png"
-    masterdark = args.datdir + "/reports/temp/masterdark.png"
+    masterbias = temp_dir(args) + "/masterbias.png"
+    masterdark = temp_dir(args) + "/masterdark.png"
     # masterbias = args.datdir + "/reports/temp_test/masterbias.png"
     # masterdark = args.datdir + "/reports/temp_test/masterdark.png"
 
@@ -131,7 +138,7 @@ def import_masterframes_img(args, filt):
 
     for f in filt:
         if f != f_old:
-            masterflat_name = args.datdir + "/reports/temp/masterflat_" + f + ".png"
+            masterflat_name = temp_dir(args) + "/masterflat_" + f + ".png"
             # masterflat_name = args.datdir + "/reports/temp_test/masterflat_" + f + ".png"
             masterflat.append(masterflat_name)
             f_old = f
@@ -198,7 +205,7 @@ def import_night_img(args):
                 targs.append(i)
 
                 for a in range(len(names)):
-                    outfig = args.datdir + "/reports/temp/" + names[a] + "_" + gaia_id + ".png"
+                    outfig = temp_dir(args) + "/" + names[a] + "_" + gaia_id + ".png"
                     # outfig = args.datdir + "/reports/temp_test/" + names[a] + "_" + i + ".png"
                     if (a == 0):
                         fwhm.append(outfig)
@@ -279,7 +286,7 @@ def import_night_img(args):
                             plt.ylim(-2, 2)
                             plt.xlabel('JD')
                             plt.ylabel(label_names[a])
-                            outfig = args.datdir + "/reports/temp/" + names[a] + "_" + gaia_id + ".png"
+                            outfig = temp_dir(args) + "/" + names[a] + "_" + gaia_id + ".png"
                             # outfig = args.datdir + "/reports/temp_test/" + names[a] + "_" + i + ".png"
                             plt.savefig(outfig, bbox_inches='tight')
                             plt.close()
@@ -289,7 +296,7 @@ def import_night_img(args):
                             plt.plot(jd[0], inputs[a], 'r.')
                             plt.xlabel('JD')
                             plt.ylabel(label_names[a])
-                            outfig = args.datdir + "/reports/temp/" + names[a] + "_" + gaia_id + ".png"
+                            outfig = temp_dir(args) + "/" + names[a] + "_" + gaia_id + ".png"
                             # outfig = args.datdir + "/reports/temp_test/" + names[a] + "_" + i + ".png"
                             plt.savefig(outfig, bbox_inches='tight')
                             plt.close()
@@ -299,7 +306,7 @@ def import_night_img(args):
                         plt.plot(jd[0], inputs[a], 'r.')
                         plt.xlabel('JD')
                         plt.ylabel(label_names[a])
-                        outfig = args.datdir + "/reports/temp/" + names[a] + "_" + gaia_id + ".png"
+                        outfig = temp_dir(args) + "/" + names[a] + "_" + gaia_id + ".png"
                         # outfig = args.datdir + "/reports/temp_test/" + names[a] + "_" + i + ".png"
                         plt.savefig(outfig, bbox_inches='tight')
                         plt.close()
@@ -482,7 +489,7 @@ def import_weather(args):
     mydate = args.date[0:4] + '-' + args.date[4:6] + '-' + args.date[6:8]
     bolt = args.obsdir + "/technical_logs/" + mydate + "/" + args.telescope + "_Boltwood.png"
     wea.append(bolt)
-    esoplot = args.datdir + "/reports/temp/asm.png"
+    esoplot = temp_dir(args) + "/asm.png"
     # esoplot = args.datdir + "/reports/temp_test/asm.png"
     start = (mydate + " 12:00:00")
     starttime = datetime.datetime.strptime(start, "%Y-%m-%d %H:%M:%S")
@@ -506,8 +513,8 @@ def import_donuts(args, jdstart, jdend,gaia):
     DECoff = []
     # s = (args.target).split(" ")
     for i in gaia:
-        HAoff_targ = args.datdir + "/reports/temp/HAoff_" + i + ".png"
-        DECoff_targ = args.datdir + "/reports/temp/DECoff_" + i + ".png"
+        HAoff_targ = temp_dir(args) + "/HAoff_" + i + ".png"
+        DECoff_targ = temp_dir(args) + "/DECoff_" + i + ".png"
         # HAoff_targ = args.datdir + "/reports/temp_test/HAoff_" + i + ".png"
         # DECoff_targ = args.datdir + "/reports/temp_test/DECoff_" + i + ".png"
         HAoff.append(HAoff_targ)
@@ -573,7 +580,7 @@ def import_water_vapor(args, jdstart, jdend, gaia):
     water_vapor = []
     # s = (args.target).split(" ")
     for i in gaia:
-        water_vapor_targ = args.datdir + "/reports/temp/Water_vapor_" + i + ".png"
+        water_vapor_targ = temp_dir(args) + "/Water_vapor_" + i + ".png"
         # water_vapor_targ = args.datdir + "/reports/temp_test/Water_vapor_" + i + ".png"
         water_vapor.append(water_vapor_targ)
 
@@ -752,7 +759,7 @@ def align_image(image_args):
     """
     Fixed version that takes a tuple of arguments for multiprocessing compatibility
     """
-    image2, image1, datdir = image_args
+    image2, image1, tempdir = image_args
 
     # alignment of image2 over image1
     im1 = fits.open(image1)[0].data
@@ -775,7 +782,7 @@ def align_image(image_args):
     # Rest of the function
     shifted_im2 = shift(im2, result)
     path, filename = os.path.split(image2)
-    outname = datdir + "/reports/temp/" + filename[:-5] + '_aligned.fits'
+    outname = os.path.join(tempdir, filename[:-5] + '_aligned.fits')
 
     if os.path.exists(outname):
         os.remove(outname)
@@ -785,9 +792,9 @@ def align_image(image_args):
     fits.writeto(outname, shifted_im2, im2head)
 
 
-def align(liste, datdir, nproc=DEFAULT_NPROC, timeout=DEFAULT_ALIGN_TIMEOUT):
+def align(liste, tempdir, nproc=DEFAULT_NPROC, timeout=DEFAULT_ALIGN_TIMEOUT):
     """
-    Updated align function to pass datdir to align_image
+    Align every image on the last one, writing the aligned frames to tempdir (temp_dir(args))
 
     nproc is the pool size, and should follow the core budget the pipeline was
     given rather than the size of the host: several nights reprocessed at once
@@ -801,8 +808,8 @@ def align(liste, datdir, nproc=DEFAULT_NPROC, timeout=DEFAULT_ALIGN_TIMEOUT):
     nproc = max(1, min(int(nproc), mp.cpu_count(), len(liste)))
     print("Number of processors: ", mp.cpu_count(), ". Using ", str(nproc), " cores")
 
-    # Create argument tuples for each image (image2, image1, datdir)
-    image_args = [(img, liste[-1], datdir) for img in liste]
+    # Create argument tuples for each image (image2, image1, tempdir)
+    image_args = [(img, liste[-1], tempdir) for img in liste]
 
     pool = mp.Pool(nproc)
     try:
@@ -821,7 +828,7 @@ def align(liste, datdir, nproc=DEFAULT_NPROC, timeout=DEFAULT_ALIGN_TIMEOUT):
     liste2 = []
     for i in liste:
         path, filename = os.path.split(i)
-        outname = datdir + "/reports/temp/" + filename[:-5] + '_aligned.fits'
+        outname = os.path.join(tempdir, filename[:-5] + '_aligned.fits')
         liste2.append(outname)
     liste2.sort()
 
@@ -840,19 +847,18 @@ def import_stack_and_vals(args, target_x_pos, target_y_pos, gaia, targs):
     for i in targs:
         print(i)
         procdir = args.datdir + "/output/" + args.date + "/" + i + "/1/"
-        outstack = args.datdir + "/reports/temp/" + i + "_stack.fits"
+        outstack = temp_dir(args) + "/" + i + "_stack.fits"
         outstack_save = args.datdir + "/output/StackImages_nightly/" + args.date + "/" + i + "_stack.fits"
         outstack_save_dir = args.datdir + "/output/StackImages_nightly/" + args.date
-        outfig_dx = args.datdir + "/reports/temp/" + "DX_" + i + ".png"
-        outfig_dy = args.datdir + "/reports/temp/" + "DY_" + i + ".png"
+        outfig_dx = temp_dir(args) + "/" + "DX_" + i + ".png"
+        outfig_dy = temp_dir(args) + "/" + "DY_" + i + ".png"
         dx.append(outfig_dx)
         dy.append(outfig_dy)
         liste = glob.glob(procdir + 'proc*fits')
         if (len(liste) != 0):
             liste.sort()
             try:
-                # Pass args.datdir to align function
-                liste2 = align(liste, args.datdir, nproc=getattr(args, 'nproc', DEFAULT_NPROC),
+                liste2 = align(liste, temp_dir(args), nproc=getattr(args, 'nproc', DEFAULT_NPROC),
                                timeout=getattr(args, 'align_timeout', DEFAULT_ALIGN_TIMEOUT))
                 stackim, values = stack_and_vals(args, liste2, outstack, outstack_save, outstack_save_dir, outfig_dx,
                                                  outfig_dy, target_x_pos, target_y_pos, target_count)
@@ -1637,8 +1643,7 @@ def create_pdf(args):
     outname = args.datdir + "/reports/" + args.telescope + "_" + args.date + ".pdf"  # to be replaced with the next line for tests
     # outname = args.datdir + "/reports/" + args.telescope + "_" + args.date + "_test.pdf" #for tests
     # fname = args.datdir + "/target_list_ids.txt"
-    if not os.path.exists(args.datdir + "/reports/temp"):
-        os.mkdir(args.datdir + "/reports/temp")
+    os.makedirs(temp_dir(args), exist_ok=True)
     # target_ids = import_spids(fname, args)
     schedule = import_schedule(args)
     flags = check_logs(args)
@@ -1646,6 +1651,10 @@ def create_pdf(args):
     order = get_chronological_order(jdstart)
     make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap, flags, ellip, order, targs, gaia)
     clean(imgs, args,targs)
+    try:
+        os.rmdir(temp_dir(args))
+    except OSError:
+        pass                        # not empty: leave whatever clean() did not remove where it can be seen
 
 
 if __name__ == '__main__':

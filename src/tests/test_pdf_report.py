@@ -320,5 +320,19 @@ def test_make_pdf_with_readout_values(tmp_path):
     assert _page_count(outname) == 3 + 3 * 2
 
 
+# ----------------------------------------- two nights of a telescope at once
+
+def test_report_temp_files_are_per_night():
+    """masterbias.png, asm.png, ... have fixed names: a shared reports/temp let two nights reported at once
+    overwrite and delete each other's figures."""
+    import inspect
+    a, b = _Args('/d'), _Args('/d')
+    b.date = '20260925'
+    assert rep.temp_dir(a) == os.path.join('/d', 'reports', 'temp', '20260924')
+    assert rep.temp_dir(a) != rep.temp_dir(b)
+    code = [l for l in inspect.getsource(rep).splitlines() if not l.strip().startswith('#')]
+    assert not [l for l in code if '/reports/temp' in l]
+
+
 if __name__ == '__main__':
     sys.exit(pytest.main([__file__, '-v']))

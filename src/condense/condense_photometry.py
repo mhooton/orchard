@@ -37,6 +37,7 @@ try:                        # imported as part of the package
 except ImportError:         # run as a bare script: put the source root on the path
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from utils import target_list
+from utils.shared_files import acquire
 
 logging.basicConfig(level='INFO', format='%(levelname)7s %(message)s')
 logger = logging.getLogger(__name__)
@@ -617,6 +618,9 @@ def main(args):
 
         output = args.outputdir + '/' + dr2_id + "_" + args.filter + "_" + args.outname
 
+        # one file per star and telescope, gathering every night, so another night of this telescope may be
+        # updating it at the same time (the star can be in more than one target's field): hold its lock
+        output_lock = acquire(output)
         if os.path.exists(output):
             exists = True
             print("Global output file already exists!")
@@ -750,6 +754,8 @@ def main(args):
                 copyfile(output_date, output)
         except Exception as e:
             print("Global LC FAILED, " + str(e))
+        finally:
+            os.close(output_lock)
 
 
 def find_dups(prev_arr,new_arr):

@@ -321,13 +321,10 @@ def reference_from_localfits(localfits_path):
     Returns (cat, ra_lims, dec_lims), or (None, None, None) if the table is
     unusable.
 
-    Preferred over reading `catcache/index`, which wcsfit writes but which
-    other pipeline stages delete (ZLP_pipeline.sh removes the whole catcache
-    at the start of T8 and again per filter during photometry) while up to
-    nproc casu_solve workers are still running against it. The index in
-    localfits mode points straight back at this same localfits table, so
-    reading the table directly is both equivalent and not dependent on a
-    shared directory outside this function's control.
+    Preferred over reading `catcache/index`: wcsfit now writes its catcache
+    in a temporary directory that is removed when it returns (see
+    casutools.wcsfit), and in localfits mode the index only pointed straight
+    back at this same localfits table anyway.
     """
     if not localfits_path or not os.path.exists(localfits_path):
         return None, None, None
