@@ -358,9 +358,15 @@ days away, and on 16 October a Callisto night was killed to make one.
 
 - A release is `<queue_root>/releases/<id>/src` (on appct `/export/data/SPECULOOSPipeline/queue/releases`), with
   `<id>` = `<UTC time>-<sha7>`. It is the live tree (`/opt/orchard/src`) as it was when the release was built,
-  with the staged commit laid over it, so deployed-only files (`reporting/.env`, the target tables) come along.
-  Caches, logs and core dumps in the live tree stay out (`release_exclude`). Its files are read-only. Files
-  unchanged since the previous release are hard links to it, so a release costs only what changed.
+  with the staged commit laid over it, so deployed-only files (the target tables) come along.
+  Caches, logs and core dumps in the live tree stay out (`release_exclude`). Its files are read-only and keep
+  their own read bits. Files unchanged since the previous release, mode included, are hard links to it, so a
+  release costs only what changed.
+- Credentials are not copied (`release_link`, by default every `.env`): for `reporting/.env` a release holds a
+  symlink to `/opt/orchard/src/reporting/.env` instead. The file keeps its own mode and exists only once, and a
+  rotated password reaches every release at once. Neither a live-tree sync nor a rollback writes one: releases built before this change hold a
+  copy, and activating one of those leaves the live file alone (its jobs still read its own copy). The symlink
+  resolves only inside the container.
 - `releases/current` is a relative symlink to the release new jobs get. When the dispatcher starts a job it
   points the job's working directory, `ORCHARD_PATH` and the live-tree entries of `PYTHONPATH` at that release,
   so `ZLP_pipeline.sh` (`SCRIPTDIR=$ORCHARD_PATH`), every script it runs and `python -m jobqueue jobs …` read the
