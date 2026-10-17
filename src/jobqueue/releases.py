@@ -278,8 +278,9 @@ def build(cfg, stage=None, sha=None, now=None, log=print):
             f.write('{} {}\n'.format(rid, sha or 'live-snapshot'))
         _readonly(os.path.join(src, 'VERSION'))
 
+        # content only, as sync_live compares: the live tree's modes are its own (deploys never copied them)
         differs_from_live = sorted(rel for rel in stage_files
-                                   if rel not in live_files or not _same_file(stage_files[rel], live_files[rel]))
+                                   if rel not in live_files or not same_bytes(stage_files[rel], live_files[rel]))
         removed_since_prev = []
         if prev_src:
             removed_since_prev = sorted(set(tree_files(prev_src, patterns)) - set(sources) - {'VERSION'})

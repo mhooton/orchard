@@ -39,9 +39,12 @@ def read(path):
 
 
 @pytest.fixture
-def live(cfg):
-    """A small production tree: code, a deployed-only secret and data file, and the clutter that lives there."""
+def live(cfg, monkeypatch):
+    """A small production tree: code, a deployed-only secret and data file, and the clutter that lives there.
+    As in orchard-server, ORCHARD_PATH and PYTHONPATH name it."""
     src = cfg['src_dir']
+    monkeypatch.setenv('ORCHARD_PATH', src)
+    monkeypatch.setenv('PYTHONPATH', os.pathsep.join([src, os.environ.get('PYTHONPATH', '')]))
     write(os.path.join(src, 'main', 'ZLP_pipeline.sh'), '#!/bin/bash\necho live\n', 0o755)
     put_jobqueue(src)
     write(os.path.join(src, 'photometry', 'x.py'), 'VERSION = 1\n')
@@ -68,7 +71,9 @@ def stage_tree(tmp_path, name, files):
 
 
 def test_build_copies_the_live_tree_lays_the_commit_over_it_and_freezes_it(cfg, live, tmp_path):
-    stage = stage_tree(tmp_path, 'stage1', {'photometry/x.py': 'VERSION = 2\n', 'photometry/new.py': 'NEW = 1\n'})
+    stage = stage_tree(tmp_path, 'stage1', {'photometry/x.py': 'VERSION = 2\n', 'photometry/new.py': 'NEW = 1\n',
+                                             'utils/ml_40pc_v2.csv': 'a,b\n'})
+    os.chmod(os.path.join(stage, 'utils', 'ml_40pc_v2.csv'), 0o755)       # git's mode, not the live tree's
     rel = build(cfg, stage=stage, sha='70f3708abcdef', log=lambda m: None)
     src = rel['src']
     assert rel['id'].endswith('-70f3708') and rel['sha'] == '70f3708abcdef'
@@ -81,7 +86,7 @@ def test_build_copies_the_live_tree_lays_the_commit_over_it_and_freezes_it(cfg, 
                     os.path.join('photometry', '__pycache__')):
         assert not os.path.exists(os.path.join(src, clutter)), clutter
     assert read(os.path.join(src, 'VERSION')).split()[0] == rel['id']
-    assert sorted(rel['differs_from_live']) == ['photometry/new.py', 'photometry/x.py']
+    assert sorted(rel['differs_from_live']) == ['photometry/new.py', 'photometry/x.py']   # a mode alone is no change
     for rel_path in ('photometry/x.py', 'main/ZLP_pipeline.sh', 'reporting/.env'):
         assert not os.stat(os.path.join(src, rel_path)).st_mode & 0o222, rel_path   # read-only
     assert os.stat(os.path.join(src, 'main', 'ZLP_pipeline.sh')).st_mode & 0o100     # still executable
