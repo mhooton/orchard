@@ -6,7 +6,6 @@ Python 3 version using modern ESO APIs
 import sys
 print(sys.path)
 print(sys.version)
-import smtplib
 import time
 import datetime as dt
 import os
@@ -28,35 +27,12 @@ load_dotenv(dotenv_path=env_path)
 ESO_username = os.getenv('ESO_USERNAME')
 ESO_password = os.getenv('ESO_PASSWORD')
 
-def get_email_config():
-    """Load email configuration from environment variables (same as email_eon.py)."""
-    config = {
-        'from_addr': os.getenv('EMAIL_ADDRESS'),
-        'password': os.getenv('EMAIL_PASSWORD'),
-        'smtp_server': os.getenv('SMTP_SERVER', 'smtp.gmail.com:587'),
-        'to_addr_list': os.getenv('TO_EMAIL_LIST', '').split(',') if os.getenv('TO_EMAIL_LIST') else [],
-        'cc_addr_list': os.getenv('CC_EMAIL_LIST', '').split(',') if os.getenv('CC_EMAIL_LIST') else []
-    }
-
-    # Clean up email lists (remove empty strings and whitespace)
-    config['to_addr_list'] = [email.strip() for email in config['to_addr_list'] if email.strip()]
-    config['cc_addr_list'] = [email.strip() for email in config['cc_addr_list'] if email.strip()]
-
-    return config
-
 # Debug: Check if variables are loaded
 if ESO_username and ESO_password:
     print(f"✓ ESO credentials loaded for user: {ESO_username}")
 else:
     print("✗ ESO credentials not found in environment variables")
     sys.exit(1)
-
-# Test email config
-try:
-    config = get_email_config()
-    print(f"✓ Email config loaded - sending from: {config['from_addr']}")
-except:
-    print("✗ Email configuration incomplete")
 
 
 # AFTER:
@@ -493,9 +469,9 @@ def clean_cache():
                 print(e)
 
 
-def send_final_email_summary(telescope_states, date, telnames, test_mode, is_recent,
-                            grace_days, total_attempts):
-    """Send comprehensive email summary after all retry attempts complete"""
+def print_final_summary(telescope_states, date, telnames, test_mode, is_recent,
+                        grace_days, total_attempts):
+    """Print the download summary after all retry attempts complete (it ends up in the download log)"""
 
     # Build summary for each telescope
     telescope_summaries = []
@@ -585,25 +561,7 @@ RECOMMENDED ACTIONS:
 - Check transfer_log.txt for expected image counts
         """
 
-    # Send email
-    try:
-        config = get_email_config()
-        if config['to_addr_list']:
-            sendemail(
-                from_addr=config['from_addr'],
-                to_addr_list=config['to_addr_list'],
-                cc_addr_list=config['cc_addr_list'],
-                subject=subject,
-                message=message,
-                login=config['from_addr'],
-                password=config['password'],
-                smtpserver=config['smtp_server']
-            )
-            print("Email notification sent")
-        else:
-            print("No email recipients configured, skipping email notification")
-    except Exception as e:
-        print(f"Email sending failed: {e}")
+    print(f"{subject}\n{message}")
 
 
 def eso_download(dir, telname, sdate, edate, wait, test_mode=False, query_only=False, verbose=False,
@@ -834,56 +792,10 @@ def eso_download(dir, telname, sdate, edate, wait, test_mode=False, query_only=F
                 print(f"{'='*80}\n")
                 time.sleep(wait_minutes * 60)
 
-        # After all attempts, send email summary (skip in query-only mode)
+        # After all attempts, print the summary (skip in query-only mode)
         if not query_only:
-            send_final_email_summary(telescope_states, date, telname, test_mode, is_recent,
-                                    transfer_log_grace_days, max_attempts)
-
-
-def sendemail(from_addr, to_addr_list, cc_addr_list, subject, message, login, password, smtpserver):
-    """Send email using SMTP with proper error handling (same as email_eon.py)."""
-    import logging
-    logger = logging.getLogger(__name__)
-
-    try:
-        # Build email header
-        header = f'From: {from_addr}\n'
-        header += f'To: {",".join(to_addr_list)}\n'
-        if cc_addr_list:
-            header += f'Cc: {",".join(cc_addr_list)}\n'
-        header += f'Subject: {subject}\n'
-
-        full_message = header + "\n" + str(message)
-
-        # Combine to and cc lists for actual sending
-        all_recipients = to_addr_list + cc_addr_list
-
-        # Connect and send
-        server = smtplib.SMTP(smtpserver)
-        server.starttls()
-        server.login(login, password)
-
-        problems = server.sendmail(from_addr, all_recipients, full_message)
-        server.quit()
-
-        if problems:
-            print(f"Some email recipients failed: {problems}")
-        else:
-            print("Email sent successfully")
-
-    except smtplib.SMTPAuthenticationError:
-        print("SMTP Authentication failed. Check your email address and password.")
-        print("For Gmail, you may need to use an App Password instead of your regular password.")
-        raise
-    except smtplib.SMTPRecipientsRefused as e:
-        print(f"All recipients were refused: {e}")
-        raise
-    except smtplib.SMTPException as e:
-        print(f"SMTP error occurred: {e}")
-        raise
-    except Exception as e:
-        print(f"Unexpected error sending email: {e}")
-        raise
+            print_final_summary(telescope_states, date, telname, test_mode, is_recent,
+                                transfer_log_grace_days, max_attempts)
 
 
 if __name__ == '__main__':
