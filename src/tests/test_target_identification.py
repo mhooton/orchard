@@ -33,6 +33,8 @@ WOLF = "3864972938605115520"        # Wolf 359, Gaia DR3 only
 NEIGH = "3864972728150826368"       # G=16 neighbour SPOCK wrote into 2021-22 plans
 WOLF_RA, WOLF_DEC = 164.10319030755974, 7.002726940984864   # J2016.0
 WOLF_PMRA, WOLF_PMDEC = -3866.338, -2699.215
+SP1444_SCHED = "6281432379554902656"   # G=20.7 background star in Sp1444-2019's plan files
+SP1444_DR3 = "6281432246412503424"     # SSSPM J1444-2019, Gaia DR3
 
 
 def make_plan(obsdir, date, targname, gaia_id, ra="10 56 28.99", dec="+07 00 52.00"):
@@ -106,6 +108,15 @@ def test_alias_table_from_repo_and_matching():
     assert tm.apply_id_alias(NEIGH, "Sp1056+0700", "20230114", aliases)[0] == NEIGH
     assert tm.apply_id_alias(NEIGH, "Sp0000+0000", "20220104", aliases)[0] == NEIGH
     assert tm.apply_id_alias(None, "x", "20220104", aliases) == (None, None)
+
+
+def test_alias_sp1444_2019_background_star():
+    aliases = tm.load_id_aliases()
+    # no date bounds: every plan file that names the background star
+    assert tm.apply_id_alias(SP1444_SCHED, "Sp1444-2019", "20250401", aliases)[0] == SP1444_DR3
+    assert tm.apply_id_alias(SP1444_SCHED, "SP1444-2019", "20180601", aliases)[0] == SP1444_DR3
+    # another target that happens to carry the ID is untouched
+    assert tm.apply_id_alias(SP1444_SCHED, "Sp1056+0700", "20250401", aliases)[0] == SP1444_SCHED
 
 
 def test_schedule_id_matches_dr3_only_row(tmp_path):
