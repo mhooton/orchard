@@ -2,7 +2,8 @@ import os
 import sys
 import argparse
 import numpy as np
-from calibration.pipeutils import get_instrument_parameters, open_fits_file, create_dark_dict, create_flat_dict
+from calibration.pipeutils import (get_instrument_parameters, open_fits_file, create_dark_dict, create_flat_dict,
+                                   frame_telescope)
 from calibration import readout
 from astropy.io import fits
 from matplotlib import pyplot as pl
@@ -81,7 +82,7 @@ def bad_pixel_maps(inlist, caldir, darknames, flatnames, bpmname, biasname):
     with open_fits_file(first_filename) as hdul:
         params = get_instrument_parameters(hdul)
         gain = params['gain']
-        telescope = hdul[0].header.get('TELESCOP', '')
+        telescope = frame_telescope(hdul)
         # exposure = hdul[0].header['exptime']
         # filter = hdul[0].header['filter']
         # filter = filter.replace("'", "")

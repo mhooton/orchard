@@ -43,6 +43,16 @@ warnings.filterwarnings("ignore", message=".*Input data contains invalid values.
 TWIRL_ASTERISM = 4
 
 
+def ra_is_sexagesimal(ra) -> bool:
+    """True for an RA card written as hours, minutes and seconds ('15 00 26.00' or '15:00:26.00').
+
+    ACP wrote RA that way. Artemis frames still do, and SSO and SAINT-EX frames did until the
+    transfer began rewriting RA in degrees in autumn 2018, so the frames whose TELESCOP is ''
+    or 'ACP->...' carry hours under an instrument config that says degrees.
+    """
+    return isinstance(ra, str) and len(ra.replace(':', ' ').split()) == 3
+
+
 def find_stars_dao(
         data: np.ndarray, threshold: float = 5.0, fwhm: float = 3.0
 ) -> np.ndarray:
@@ -848,6 +858,9 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                         dec_unit = u.deg
                     else:
                         raise ValueError(f"Unsupported DEC unit '{dec_unit_str}' in config. Supported units: 'deg'")
+
+                if ra_is_sexagesimal(ra):
+                    ra_unit = u.hourangle
 
                 center = SkyCoord(ra, dec, unit=[ra_unit, dec_unit])
 

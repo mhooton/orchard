@@ -5,7 +5,7 @@ import os
 import numpy as np
 from astropy.io import fits as pyfits
 from calibration.pipeutils import (get_instrument_parameters, apply_image_slice, clean_bad_pixels, open_fits_file,
-                                   create_dark_dict, create_flat_dict)
+                                   create_dark_dict, create_flat_dict, frame_telescope)
 from calibration import readout
 from functools import partial
 from multiprocessing.dummy import Pool as ThreadPool
@@ -40,7 +40,7 @@ def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, 
         # this frame's readout mode, gain, read noise and saturation level,
         # from its own overscan strip and the night's measurements
         if readout_record is None:
-            readout_record = readout.measure_night([], [], '', hdulist[0].header.get('TELESCOP', ''), params)
+            readout_record = readout.measure_night([], [], '', frame_telescope(hdulist), params)
         os_level, os_noise = readout.overscan_signature(hdulist[0].data, params)
         legacy_ron = float(ron) if np.size(bias) > 0 else None
         values = readout.frame_values(readout_record, os_level, os_noise, legacy_ron_e=legacy_ron)
@@ -148,7 +148,7 @@ def reducer(inlist, outdir, biasname, darknames, flatnames, bpmname, reddir, ver
 
     with open_fits_file(first_filename) as hdul:
         params = get_instrument_parameters(hdul)
-        telescope = hdul[0].header.get('TELESCOP', '')
+        telescope = frame_telescope(hdul)
 
     # the night's read noise and gain per readout mode (measured at T2)
     runname = os.path.basename(biasname).split('_MasterBias')[0]

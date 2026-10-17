@@ -3,7 +3,7 @@ import sys
 import os
 import numpy as np
 import glob
-from calibration.pipeutils import get_instrument_parameters, apply_image_slice, open_fits_file
+from calibration.pipeutils import get_instrument_parameters, apply_image_slice, open_fits_file, frame_telescope
 from calibration import readout
 from astropy.io import fits
 from astropy.stats import sigma_clip
@@ -20,7 +20,7 @@ def biasmaker(inlist, biasname, outdir, reportdir, run, targ):
     with open_fits_file(first_filename) as hdul:
         params = get_instrument_parameters(hdul)
         gain = params['gain']
-        telescope = hdul[0].header.get('TELESCOP', '')
+        telescope = frame_telescope(hdul)
 
     """Create master bias from list of bias images."""
     os.system('mkdir ' + outdir)
