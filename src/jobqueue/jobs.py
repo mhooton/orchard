@@ -1,7 +1,7 @@
 """Job bodies that are not the pipeline itself: the nightly download and the add-only fetch.
 
 download  SSO_download.py for one recent night, exactly as the nightly cron runs it (log to
-          ESO_logs/<NIGHT><TEL>.log, its usual summary email), with --max-retries 1 because the watcher
+          ESO_logs/<NIGHT><TEL>.log, ending with its download summary), with --max-retries 1 because the watcher
           only queues a night once ESO has it. Refuses nights older than watcher.recent_days, and refuses
           (falling back to the add-only fetch) if transformation_check() would delete frames already on
           disk. Exits 0 whenever frames are on disk, so the pipeline job behind it runs even if a few are
