@@ -799,6 +799,12 @@ either the neighbour's light curve or no photometry at all. Three cases are hand
   `calibration/supplementary_sources.csv` with a synthetic numeric ID above 9e18 and load it
   with `python -m utils.supplementary_sources load`. Estimate G and colours from the spectral
   type; Teff feeds the PWV correction.
+- *In Gaia DR2 and DR3 but left out by the database build* (no DR2 2MASS match, or a DR2/DR3
+  strip boundary; T8 logs `PRIMARY_NOT_IN_DB`): add the row the build would have written to
+  `calibration/gaia_db_manual_rows.csv` and run `python -m utils.gaia_db_manual_rows apply`
+  (see [Local Gaia Database](#local-gaia-database)). The CSV's header defines a code for each
+  non-standard choice (proper motion from DR2 for a 2-parameter DR3 solution, from 2MASS when
+  Gaia has none, and so on), and every row lists its codes and sources.
 
 For a coordinate fallback to work on a fast-moving star the proper motion must be known, so
 put the star in the database or the supplementary table rather than relying on plan-file
@@ -1184,9 +1190,26 @@ The pipeline uses a local copy of Gaia DR3 cross-matched with 2MASS for fast ast
 
 **Database Structure:**
 - Sharded by declination (1° bins: -90_-89, -89_-88, ..., 89_90)
-- Contains: RA, Dec, pmra, pmdec, parallax, G-mag, J-mag
-- Size: ~50 GB
-- Location: `/gaia_database/gaia_tmass_16_jm_cut.db`
+- Contains: RA, Dec (J2016), pmra, pmdec, parallax, G, G-RP, BP-RP, Teff, DR3 and DR2 IDs, J
+- Size: ~41 GB
+- Location: `$GAIADATABASEPATH`, in production `/gaia_database/gaia_dr3_unified_16jcut.db`
+  (`orchard-server-spirit` still reads the older `gaia_tmass_16_jm_cut.db`)
+
+**How it is built, and what it leaves out.** `gaia-tmass-sqlite/db_maker.py` keeps a DR3 source only
+if its closest DR2 counterpart has 2MASS J < 16 through Gaia DR2's 2MASS cross-match, looked up in the
+same 0.01° declination strip. That drops real stars DR2 never matched to 2MASS (mostly poor astrometry:
+binaries) and some fast movers whose DR2 and DR3 positions fall in different strips: 470 targets of
+`ml_40pc` on 2026-10-17. A star missing from the database cannot be identified as primary or secondary
+on any night. Two hand-curated additions fill the gaps, each from a CSV in this repo:
+
+- `custom_sources` table, from `calibration/supplementary_sources.csv`: objects in no Gaia release
+  (synthetic IDs above 9e18); `python -m utils.supplementary_sources load`.
+- rows in the band tables themselves, from `calibration/gaia_db_manual_rows.csv`: real Gaia stars
+  the build left out, each with codes saying how every value was chosen;
+  `python -m utils.gaia_db_manual_rows check` (read-only) and `apply`. `apply` records each row in the
+  database's `manual_rows` table, so the database says which of its rows were made by hand and how
+  (`python -m utils.gaia_db_manual_rows list`). It is idempotent: re-run it after any rebuild. It writes
+  in place with a short lock, safe while jobs read the database; run it on appct inside orchard-server.
 
 **Query Performance:**
 - Local: 0.1-0.5s per field
