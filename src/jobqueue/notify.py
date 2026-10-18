@@ -191,6 +191,8 @@ class Delivery:
             return path, 'written', None
         if self.problem:
             return path, 'failed', self.problem
+        if self.factory is smtplib.SMTP and os.environ.get('PYTEST_CURRENT_TEST'):
+            return path, 'failed', 'refused: a test tried to send real email'
         s = self.settings
         try:
             with self.factory(s['host'], s['port'], timeout=60) as conn:

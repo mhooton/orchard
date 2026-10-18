@@ -41,7 +41,9 @@ def clock():
 @pytest.fixture
 def cfg(tmp_path, monkeypatch):
     monkeypatch.delenv('ORCHARD_QUEUE_CONFIG', raising=False)
-    monkeypatch.delenv('ORCHARD_QUEUE_ROOT', raising=False)
+    # load_config looks for <queue_root>/config.json before overrides apply: point it at this test's root, or
+    # production's /data/SPECULOOSPipeline/queue/config.json (notify.transport smtp) leaks into every test
+    monkeypatch.setenv('ORCHARD_QUEUE_ROOT', str(tmp_path / 'queue'))
     monkeypatch.setenv('PYTHONPATH', SRC + os.pathsep + os.environ.get('PYTHONPATH', ''))
     base = tmp_path / 'data'
     src = tmp_path / 'src'
