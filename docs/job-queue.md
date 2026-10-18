@@ -284,6 +284,7 @@ q notify digest --print        # what this morning's digest would say; changes a
 q notify incidents [--all]     # open incidents (and recently resolved ones)
 q notify ack 7 --until 2026-11-01 --note "dome repair booked"   # hold its alert; it stays in the digest
 q notify messages              # what was delivered, with the outbox file of each
+q notify recipients --add cj467@cam.ac.uk     # the recipient list (notify.to in queue/config.json); --remove
 ```
 
 ## Notifications
@@ -319,14 +320,15 @@ email anyone (`email_eon.py` still does until the digest replaces it).
   lets an outside service such as healthchecks.io say so when the whole server is down.
 - **Delivery.** Every message is written to `queue/notify/outbox/<time>_<kind>-<subject>.eml` and recorded in
   `notify_messages`. Nothing is sent until `notify.transport` is `smtp` in `queue/config.json`; then each message
-  also goes to `notify.to`, with `EMAIL_ADDRESS`, `EMAIL_PASSWORD` and `SMTP_SERVER` read from `notify.env_file`
-  (a file of its own, readable only by speculoos). A message that cannot be sent still lands in the outbox; an
+  also goes to the recipient list, `notify.to` (`q notify recipients` shows it, `--add` / `--remove` edit it in
+  place), with `EMAIL_ADDRESS`, `EMAIL_PASSWORD` and `SMTP_SERVER` read from `notify.env_file`, a file readable
+  only by speculoos (the live `reporting/.env`, so a new Gmail app password reaches the notifier too). A message that cannot be sent still lands in the outbox; an
   alert that failed is tried again on the next run. Incidents already alerted to the outbox before the switch are
   not re-sent; the digest lists them.
 
   ```json
-  {"notify": {"transport": "smtp", "env_file": "/data/SPECULOOSPipeline/queue/notify.env",
-              "to": ["speculoos.pipeline@gmail.com"], "heartbeat_url": null}}
+  {"notify": {"transport": "smtp", "env_file": "/opt/orchard/src/reporting/.env",
+              "to": ["mh2143@cam.ac.uk"], "heartbeat_url": null}}
   ```
 
 ## Shadow mode

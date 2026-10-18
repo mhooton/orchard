@@ -508,3 +508,37 @@ def test_q_add_campaign_and_q_campaign(tmp_path, monkeypatch, capsys):
         assert s.get_job(2)['meta']['campaign'] == 'WCS audit reruns'
     finally:
         s.close()
+
+
+# ---------------------------------------------------------------------------------------------- recipients
+
+def test_recipient_list_lives_in_the_queue_config(tmp_path, monkeypatch, capsys):
+    from jobqueue import cli
+    root = tmp_path / 'q'
+    root.mkdir()
+    monkeypatch.setenv('ORCHARD_QUEUE_ROOT', str(root))
+    monkeypatch.delenv('ORCHARD_QUEUE_CONFIG', raising=False)
+    conf = root / 'config.json'
+    conf.write_text('{"notify": {"transport": "outbox", "to": ["mh2143@cam.ac.uk"]}, "max_cores": 100}')
+    assert cli.main(['notify', 'recipients', '--add', 'cj467@cam.ac.uk']) == 0
+    out = capsys.readouterr().out
+    assert 'mh2143@cam.ac.uk, cj467@cam.ac.uk' in out and 'nothing is sent until it is smtp' in out
+    data = json.loads(conf.read_text())
+    assert data['notify']['to'] == ['mh2143@cam.ac.uk', 'cj467@cam.ac.uk'] and data['max_cores'] == 100
+    assert data['notify']['transport'] == 'outbox'
+    assert cli.main(['notify', 'recipients', '--add', 'CJ467@cam.ac.uk']) == 0          # already there
+    assert cli.main(['notify', 'recipients', '--remove', 'mh2143@cam.ac.uk']) == 0
+    assert cli.main(['notify', 'recipients', '--add', 'not-an-address']) == 2
+    assert cli.main(['notify', 'recipients', '--remove', 'nobody@example.org']) == 2
+    assert json.loads(conf.read_text())['notify']['to'] == ['cj467@cam.ac.uk']
+    capsys.readouterr()
+    assert cli.main(['notify', 'recipients']) == 0
+    assert 'recipients ({}): cj467@cam.ac.uk'.format(conf) in capsys.readouterr().out
+
+
+def test_recipients_without_a_config_file(tmp_path, monkeypatch):
+    from jobqueue import cli
+    monkeypatch.setenv('ORCHARD_QUEUE_ROOT', str(tmp_path / 'q'))
+    monkeypatch.delenv('ORCHARD_QUEUE_CONFIG', raising=False)
+    assert cli.main(['notify', 'recipients', '--add', 'mh2143@cam.ac.uk']) == 0
+    assert json.loads((tmp_path / 'q' / 'config.json').read_text()) == {'notify': {'to': ['mh2143@cam.ac.uk']}}
