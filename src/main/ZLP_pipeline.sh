@@ -1358,16 +1358,7 @@ main() {
                 fi
                 [ "$T9" = "1" ] && perform_aperture_photometry
                 [ "$T10" = "1" ] && perform_differential_photometry
-
-                CMD="python ${SCRIPTDIR}/reporting/email_eon.py \
-                ${DATE} \
-                -r ${RUNNAME} \
-                -rep ${report} \
-                -t ${i} \
-                -tel ${TEL} \
-                -e 1"
-                echo ${CMD}
-                ${CMD}
+                # no per-target email: the queue's notifier (jobqueue/notify.py) reports runs in its morning digest
             done
 
             [ "$T11" = "1" ] && pdf_report
