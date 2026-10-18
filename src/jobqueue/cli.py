@@ -677,6 +677,16 @@ def cmd_notify(cfg, store, a):
             for m in n.messages(a.last):
                 print('{}  {:<8} {:<7} {}  {}{}'.format(m['ts'], m['kind'], m['status'], m['subject'], m['path'] or '',
                                                        '  ({})'.format(m['error']) if m['error'] else ''))
+        elif a.action == 'recipients':
+            from .notify import config_path, edit_recipients
+            if a.add or a.remove:
+                to, path = edit_recipients(cfg, add=a.add or (), remove=a.remove or ())
+            else:
+                to, path = list(n.delivery.to or cfg['notify'].get('to') or []), config_path(cfg)
+            print('recipients ({}): {}'.format(path, ', '.join(to) or 'none'))
+            print('from: {}; transport: {}{}'.format(
+                n.delivery.sender, cfg['notify']['transport'],
+                '' if cfg['notify']['transport'] == 'smtp' else ' (nothing is sent until it is smtp)'))
     except (NotifyError, ValueError) as e:
         print('notify: {}'.format(e), file=sys.stderr)
         return 2
@@ -863,6 +873,9 @@ def build_parser():
     r.add_argument('id')
     r = ns.add_parser('messages', help='messages delivered, newest first, with their outbox files')
     r.add_argument('--last', type=int, default=20)
+    r = ns.add_parser('recipients', help='the recipient list (notify.to in the queue config): show, --add, --remove')
+    r.add_argument('--add', action='append', metavar='ADDRESS')
+    r.add_argument('--remove', action='append', metavar='ADDRESS')
 
     s = sub.add_parser('probe', help='read-only: load, memory, disk %%util, code version, external locks')
     s.set_defaults(fn=cmd_probe)

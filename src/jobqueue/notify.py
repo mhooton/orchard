@@ -7,20 +7,22 @@ digest. `q notify ack` silences one until a date. The digest goes out every morn
 its absence is a signal too, and `notify.heartbeat_url` lets an outside service raise the alarm if it stops.
 
 Delivery: every message is written to <queue_root>/notify/outbox as an .eml file. Only with notify.transport =
-'smtp' is it also sent, to notify.to, with EMAIL_ADDRESS / EMAIL_PASSWORD / SMTP_SERVER read from
-notify.env_file. If the SMTP settings are missing or sending fails, the message still lands in the outbox and the
-failure is recorded; an alert that failed is tried again on the next run.
+'smtp' is it also sent, to the recipient list (notify.to, kept in the queue's config.json by
+`q notify recipients`), with EMAIL_ADDRESS / EMAIL_PASSWORD / SMTP_SERVER read from notify.env_file. If the SMTP
+settings are missing or sending fails, the message still lands in the outbox and the failure is recorded; an alert
+that failed is tried again on the next run.
 """
 import datetime as dt
 import email.utils
 import os
+import re
 import smtplib
 import urllib.request
 from email.message import EmailMessage
 
 from . import digest as D
 from .config import queue_paths
-from .util import iso, last_night, night_str, parse_iso, utcnow
+from .util import iso, last_night, night_str, parse_iso, read_json, utcnow, write_json_atomic
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS notify_incidents (
@@ -62,6 +64,38 @@ DELIVERED = ('written', 'sent')
 
 class NotifyError(RuntimeError):
     pass
+
+
+ADDRESS = re.compile(r'^[^@\s,;<>"]+@[^@\s,;<>"]+\.[^@\s,;<>"]+$')
+
+
+def config_path(cfg):
+    """The JSON file the queue's settings come from: --config / $ORCHARD_QUEUE_CONFIG, else <queue_root>/config.json."""
+    return cfg.get('_config_path') or os.path.join(cfg['queue_root'], 'config.json')
+
+
+def edit_recipients(cfg, add=(), remove=()):
+    """Add or remove addresses on the recipient list (notify.to in the queue's config file, created if missing;
+    every other setting in it is kept). Returns (the new list, the file)."""
+    path = config_path(cfg)
+    data = read_json(path, default=None) if os.path.exists(path) else {}
+    if not isinstance(data, dict):
+        raise NotifyError('{} is not a JSON object; fix it by hand first'.format(path))
+    section = data.setdefault('notify', {})
+    current = list(section.get('to', cfg['notify'].get('to') or []))
+    for address in add:
+        if not ADDRESS.match(address):
+            raise NotifyError('not an email address: {!r}'.format(address))
+        if address.lower() not in [a.lower() for a in current]:
+            current.append(address)
+    for address in remove:
+        kept = [a for a in current if a.lower() != address.lower()]
+        if len(kept) == len(current):
+            raise NotifyError('{} is not on the recipient list'.format(address))
+        current = kept
+    section['to'] = current
+    write_json_atomic(path, data)
+    return current, path
 
 
 def read_smtp_settings(env_path):
