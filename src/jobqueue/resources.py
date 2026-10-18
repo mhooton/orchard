@@ -153,7 +153,9 @@ def session_id(pid, proc='/proc'):
         return None
 
 
-ZLP_FLAGS_WITH_VALUE = {'--cores'}
+# Options of ZLP_pipeline.sh that take a value (`shift 2` in its argument loop). One missing here makes its value
+# the first positional, and the run is read as holding the wrong telescope and night.
+ZLP_FLAGS_WITH_VALUE = {'--cores', '--frame-format'}
 
 
 def parse_zlp_argv(argv):
