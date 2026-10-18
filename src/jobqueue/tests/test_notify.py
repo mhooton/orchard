@@ -79,6 +79,7 @@ def observed_night(cfg, store, tel, night, n=400):
 
 def notifier(cfg, store, now=NOW, **kw):
     kw.setdefault('usage', usage_ok)
+    kw.setdefault('smtp_factory', NoSmtp)
     kw.setdefault('log', lambda m: None)
     return Notifier(cfg, store, now=now, **kw)
 
@@ -542,3 +543,21 @@ def test_recipients_without_a_config_file(tmp_path, monkeypatch):
     monkeypatch.delenv('ORCHARD_QUEUE_CONFIG', raising=False)
     assert cli.main(['notify', 'recipients', '--add', 'mh2143@cam.ac.uk']) == 0
     assert json.loads((tmp_path / 'q' / 'config.json').read_text()) == {'notify': {'to': ['mh2143@cam.ac.uk']}}
+
+
+# ---------------------------------------------------------------------------------------------- never real email
+
+def test_tests_read_no_production_config(cfg):
+    """The cfg fixture must not merge /data/SPECULOOSPipeline/queue/config.json (on 2026-10-18 it did, inside the
+    container, and a release's test run emailed fake digests through the real account)."""
+    assert '_config_path' not in cfg and cfg['notify']['transport'] == 'outbox'
+
+
+def test_real_smtp_is_refused_inside_a_test(clean, store, tmp_path):
+    cfg = smtp_cfg(clean, tmp_path)
+    watch(store, 'Ganymede', NIGHT, 'enqueued', rows=10)
+    job(store, 'Ganymede', NIGHT, state='failed', signature='boom')
+    n = Notifier(cfg, store, now=NOW, usage=usage_ok, log=lambda m: None)     # the real smtplib.SMTP
+    n.digest()
+    assert {(m['status'], m['error']) for m in n.messages()} == {('failed', 'refused: a test tried to send real email')}
+    assert len(outbox(cfg)) == 2
