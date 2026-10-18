@@ -161,9 +161,10 @@ class Lookback:
     def _queue_rerun(self, lb, tel, night, targets, frames, why):
         if self.dry_run:
             return 'would rerun ({}), targets {}'.format(why, ' '.join(targets) or '-')
-        jid, created = jobspec.add(self.store, jobspec.pipeline_job(
+        promote = jobspec.nightly_promote(self.cfg)
+        jid, created, _ = jobspec.add_pipeline(self.store, self.cfg, jobspec.pipeline_job(
             self.cfg, 'P1', tel, night, lock_targets=targets, frames=frames, source='lookback',
-            priority=float(night), note=why))
+            priority=float(night), note=why, no_t12=promote), promote=promote)
         if created:
             lb['reruns'] = int(lb['reruns']) + 1
         return 'rerun ({}): job {}{}'.format(why, jid, '' if created else ' (existing)')

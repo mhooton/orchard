@@ -1,7 +1,7 @@
 """Daily report. Live mode: per telescope-night, when the night was ready at ESO, when its download and
 pipeline jobs ran, how they ended, whether light curves reached v2, and the delay from ready to done; then failed
-jobs, look-back actions and watcher notes. Shadow mode: what the queue would have done, next to what the cron
-actually did.
+jobs, the promotion step's holds and rejects waiting for a person (utils/promote.py), look-back actions and
+watcher notes. Shadow mode: what the queue would have done, next to what the cron actually did.
 
 Shadow side (the shadow database): when the watcher found each night ready, when the shadow dispatcher
 would have started its download and pipeline jobs and when they would have finished (simulated from
@@ -17,6 +17,7 @@ import os
 import re
 import statistics
 
+from .config import queue_paths
 from .nights import products_state
 from .util import iso, last_night, night_str, parse_iso, utc_from_ts, utcnow
 
@@ -147,6 +148,50 @@ def _live_nights(cfg, store, nights, out):
     return delays
 
 
+def _promotion(cfg, days, now, out):
+    """The promotion section: verdicts waiting for a person, promotions that did not finish, and what was promoted
+    or rejected lately. Returns the number waiting, or None without a journal."""
+    from utils.promote_journal import review_summary
+    try:
+        r = review_summary(queue_paths(cfg)['promote_db'], days=days, now=now)
+    except Exception as e:      # the report must not die on the journal
+        out += ['## Promotion', '', 'could not read the promotion journal: {}: {}'.format(type(e).__name__, e), '']
+        return None
+    if r is None:
+        return None
+    out += ['## Promotion: holds and rejects', '']
+    pending = r['pending']
+    if pending:
+        out.append('{} candidate(s) wait for a decision. `q promote show <id>`, then `q promote accept <id> '
+                   '--reason "..." --apply` to promote, or `q promote reject <id> --reason "..."` to close '
+                   'it.'.format(len(pending)))
+        out.append('')
+        out.append('| Id | Verdict | Telescope | Night | Target | Since | Reasons |')
+        out.append('|---|---|---|---|---|---|---|')
+        for v in sorted(pending, key=lambda v: (v['verdict'] != 'HOLD', v['night'], v['telescope'], v['target'])):
+            out.append('| {} | {} | {} | {} | {} | {} | {} |'.format(
+                v['id'], v['verdict'], v['telescope'], v['night'], v['target'], v['created_at'][:10],
+                (v['reasons'] or '').replace('|', '/')))
+    else:
+        out.append('Nothing waits for a decision.')
+    out.append('')
+    for p in r['stuck']:
+        out.append('- **Promotion {} did not finish** ({} {} {}, verdict {}, {}): {}. `q promote show {}`, then '
+                   '`q promote resume --promotion {} --apply`, or `q promote abandon {} --reason "..."` once sorted '
+                   'out by hand.'.format(p['id'], p['telescope'], p['night'], p['target'], p['verdict_id'], p['state'],
+                                  p['error'] or 'interrupted', p['verdict_id'], p['id'], p['id']))
+    if r['stuck']:
+        out.append('')
+    auto = sum(1 for v in r['promoted'] if v['state'] == 'promoted')
+    out.append('In the last {} days: {} promoted automatically, {} accepted, {} rejected.'.format(
+        days, auto, len(r['promoted']) - auto, len(r['rejected'])))
+    for v in r['rejected']:
+        out.append('- rejected {} {} {} (verdict {}) by {}: {}'.format(v['telescope'], v['night'], v['target'], v['id'],
+                                                                   v['decided_by'], v['decision_reason']))
+    out.append('')
+    return len(pending) + len(r['stuck'])
+
+
 def build_report(cfg, store, days=3, now=None):
     now = now or utcnow()
     basedir = cfg['basedir']
@@ -168,6 +213,7 @@ def build_report(cfg, store, days=3, now=None):
                     j['id'], j['class'], j['kind'], j['telescope'] or '', j['night'] or '', j['failure_kind'],
                     j['failure_signature'] or '', j['log_path'] or '-'))
             out.append('')
+        waiting = _promotion(cfg, days, now, out)
         p1 = store.conn.execute("SELECT * FROM jobs WHERE class = 'P1' AND created_at >= ? ORDER BY id",
                                 (since,)).fetchall()
         if p1:
@@ -180,6 +226,8 @@ def build_report(cfg, store, days=3, now=None):
             out.append('')
         _trailer(store, since, out, waits_title='Jobs that had to wait')
         summary = '{} failed job(s) in the last {} days.'.format(len(failed), days)
+        if waiting:
+            summary += ' {} promotion item(s) wait for a person (see Promotion).'.format(waiting)
         if delays:
             summary = ('Ready to done: median {:.1f} h over {} telescope-nights (range {:.1f} to {:.1f} h). '
                        .format(statistics.median(delays), len(delays), min(delays), max(delays)) + summary)

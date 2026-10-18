@@ -1,4 +1,4 @@
-"""How the watcher, the look-back and `q add` describe pipeline, download and fetch jobs.
+"""How the watcher, the look-back and `q add` describe pipeline, download, fetch and promote jobs.
 
 Locks:
   night:<TEL>:<NIGHT>   every job that reads or writes that night's raw or output directories
@@ -99,6 +99,47 @@ def fetch_job(cfg, cls, telescope, night, rows_file=None, n_rows=0, n_science=0,
         priority=priority, note=note,
         meta={'rows': n_rows, 'science': n_science, 'rows_file': os.path.basename(rows_file) if rows_file else None,
               'bytes': nbytes, 'replace': replace, 'rerun': rerun})
+
+
+def promote_job(cfg, cls, telescope, night, after=None, targets=(), source='cli', note=None, meta=None):
+    """utils/promote.py for one night (see its docstring): it judges what the run left in v3 with promote_check and
+    publishes what passes into v2, keeping holds and rejects for a person. after: the pipeline job it follows,
+    whether that job succeeds or fails (a cancelled one cancels it); it then judges that job's targets. Without
+    `after` it judges every v3 target directory of the night against the night's latest run."""
+    pcfg = cfg['promote']
+    argv = [cfg['python'], 'utils/promote.py', 'run', '--apply', '--telescope', telescope, '--night', night]
+    if after:
+        argv += ['--job', str(after)]
+    # one BLAS/OpenMP thread, as ZLP_pipeline.sh does for its report: numpy otherwise starts a pool sized to the host
+    # (64 threads) in every promote job, and many processes at once can exhaust RLIMIT_NPROC
+    env = dict(job_env(cfg), OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1', NUMEXPR_NUM_THREADS='1')
+    return dict(
+        cls=cls, kind='promote', telescope=telescope, night=night, targets=' '.join(targets), argv=argv,
+        cwd=cfg['src_dir'], env=env, cores=int(pcfg['cores']), disk_heavy=False,
+        est_minutes=float(pcfg['est_minutes']), locks=['night:{}:{}'.format(telescope, night)], depends_on=after,
+        dep_requires_success=False, priority=float(pcfg['priority']),
+        dedupe_key='promote:{}:{}:{}'.format(telescope, night, after or '*'), max_retries=cfg['max_retries'],
+        source=source, meta=dict(meta or {}, after=after), note=note)
+
+
+def nightly_promote(cfg):
+    """Whether the watcher's, the look-back's and fetch reruns' pipeline jobs run with --no_T12 and a promote job."""
+    return bool((cfg.get('promote') or {}).get('nightly'))
+
+
+def add_pipeline(store, cfg, spec, promote=False, campaign=None):
+    """Queue a pipeline job described by pipeline_job() and, with promote, a promote job after it. Returns
+    (pipeline job id, created, promote job id or None). A promoted run must not run T12, which would sweep v3 into
+    v2 before anything is judged."""
+    if promote and '--no_T12' not in spec['argv']:
+        raise ValueError('a pipeline job followed by a promote job must run with --no_T12')
+    jid, created = add(store, spec, campaign=campaign)
+    pid = None
+    if promote:
+        pid, _ = add(store, promote_job(cfg, spec['cls'], spec['telescope'], spec['night'], after=jid,
+                                        targets=(spec.get('targets') or '').split(), source=spec.get('source') or 'cli',
+                                        note='after pipeline job {}'.format(jid)), campaign=campaign)
+    return jid, created, pid
 
 
 def add(store, spec, campaign=None):
