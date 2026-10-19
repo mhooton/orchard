@@ -334,8 +334,16 @@ class Store:
         cols = ', '.join('{} = ?'.format(k) for k in fields)
         self.conn.execute('UPDATE jobs SET {} WHERE id = ?'.format(cols), list(fields.values()) + [job_id])
 
+    def next_attempt(self, job_id):
+        """The number of the job's next run, counting every run it has had. requeue resets attempts (the count
+        retries are judged by) to 0, but a run's number names its log and status files, so it must not repeat."""
+        n = self.conn.execute("SELECT COUNT(*) FROM events WHERE job_id = ? AND kind = 'started'",
+                              (job_id,)).fetchone()[0]
+        job = self.get_job(job_id)
+        return max(n, job['attempts'] if job else 0) + 1
+
     def mark_running(self, job_id, log_path=None, status_path=None, code_sha=None, est_minutes=None,
-                     shadow=False, source='dispatcher', message=None):
+                     shadow=False, source='dispatcher', message=None, attempt=None):
         """queued -> running. Returns False if the job was no longer queued."""
         with self.tx() as c:
             job = _job(c.execute('SELECT * FROM jobs WHERE id = ?', (job_id,)).fetchone())
@@ -349,7 +357,7 @@ class Store:
                        float(est_minutes if est_minutes is not None else job['est_minutes']), int(shadow), job_id))
             self._event(c, 'shadow-start' if shadow else 'started', job_id=job_id, source=source,
                         telescope=job['telescope'], night=job['night'],
-                        message=message or 'attempt {}'.format(job['attempts'] + 1))
+                        message=message or 'attempt {}'.format(attempt or job['attempts'] + 1))
         return True
 
     def set_process(self, job_id, pid, proc_start):
@@ -453,7 +461,10 @@ class Store:
 
     def requeue(self, job_ids=None, signature=None, exact=False, dry_run=False, source='cli'):
         """Put failed jobs back in the queue with fresh retries. Returns [(id, outcome)]. A promote job that
-        already ran after a requeued job is queued again too, so the new run's output is judged as well."""
+        already ran after a requeued job is queued again too, so the new run's output is judged as well.
+
+        attempts goes back to 0 for the retry count; the next run is still numbered after the earlier ones
+        (next_attempt), so it gets its own log and status files."""
         q, args = "SELECT * FROM jobs WHERE state = 'failed'", []
         if job_ids:
             q += ' AND id IN ({})'.format(','.join('?' * len(job_ids)))

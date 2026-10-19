@@ -88,6 +88,13 @@ process group. Output goes to `<queue_root>/logs/jobs/<YYYY-MM>/<id>-<kind>-<tel
 unlike `PipelineOutput/v3/<TEL>/logs/<NIGHT>_1_v3.log` is never overwritten by a later run. The runner writes
 `<log>.status.json` with the exit code when the command ends.
 
+`<attempt>` counts every run the job has had, a requeue included, and the dispatcher never gives a run a log or
+status file that already exists, so each run has files of its own. A status file counts only if the runner
+that wrote it started no earlier than the attempt (60 s of slack for a clock step); an older one is ignored,
+with a `stale-status` event. Before this, `q requeue` reset the numbering with the retry count. On 19 October
+jobs 1502, 1625, 1627 and 1649 got attempt 1's paths again. The next poll failed each one on attempt 1's exit
+status and signature, freeing its locks and cores, while the run carried on and ended with exit 0.
+
 Every job records its start, end, exit code and the code it ran: the release it was pinned to (see *Deploying
 code*), or, with no release, the first word of `src/VERSION` if it exists, otherwise `tree-<hash>` of the
 deployed `.py` and `.sh` files (the production tree is a working copy,
@@ -97,7 +104,7 @@ When a job fails, its **failure signature** is the last exception line of its lo
 with paths, numbers and target names normalised. It is **transient** if the signature or the last 30 lines
 match a network, full-disk, I/O or memory pattern, or the exit code is 75, 137 or 143; transient failures are
 retried after an hour, at most twice. Anything else is **deterministic**: the job stops as failed, and after a
-fix `q requeue --signature "<text>"` puts every job with that signature back.
+fix `q requeue --signature "<text>"` puts every job with that signature back, with its retries restored.
 
 ### Restarts and the watchdog
 
