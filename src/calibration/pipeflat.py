@@ -33,6 +33,7 @@ from calibration.pipeutils import (apply_image_slice, open_fits_file, get_jd_hea
                                    frame_telescope)
 from calibration import readout
 from calibration.smear import correct_frame, shutterless
+from calibration.shutter_detect import NightRecords
 import warnings
 from astropy.io.fits.verify import VerifyWarning
 warnings.filterwarnings('ignore', category=VerifyWarning)
@@ -97,6 +98,9 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
     runname = os.path.basename(biasname).split('_MasterBias')[0]
     readout_record = None
     bias_median = None
+    # the measured shutter state of each flat's own night: this night's from
+    # T2, a borrowed night's measured now on that night's flats
+    shutter_records = NightRecords(outdir, runname, refresh_borrowed=True)
 
     # start counter
     frameno = 1
@@ -133,7 +137,9 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
                 # readout mode, and its clipped rows judged against its own
                 # saturation level, as T6 does for science frames.
                 frame_readout = None
-                if shutterless(header, params):
+                detection = shutter_records.for_frame(stripped, frame_telescope(hdulist)) \
+                    if params.get('smear') else None
+                if shutterless(header, params, detection=detection):
                     if readout_record is None:
                         readout_record = readout.load_or_measure(outdir, runname, params, frame_telescope(hdulist))
                     os_level, os_noise = readout.overscan_signature(hdulist[0].data, params)
@@ -178,7 +184,7 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
                     pedestal = float(overscan)
                 for key, value, comment in readout.header_cards(frame_readout, pedestal=pedestal):
                     header[key] = (value, comment)
-            corrected1 = correct_frame(corrected1, header, params, raw=data, pedestal=pedestal)
+            corrected1 = correct_frame(corrected1, header, params, raw=data, pedestal=pedestal, detection=detection)
             if header.get('SMEARCOR'):
                 n_desmeared += 1
                 print(f"De-smeared shutterless flat {os.path.basename(stripped)} "

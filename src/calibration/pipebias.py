@@ -4,7 +4,7 @@ import os
 import numpy as np
 import glob
 from calibration.pipeutils import get_instrument_parameters, apply_image_slice, open_fits_file, frame_telescope
-from calibration import readout
+from calibration import readout, shutter_detect
 from astropy.io import fits
 from astropy.stats import sigma_clip
 from reporting.QC import main as QC
@@ -138,6 +138,14 @@ def biasmaker(inlist, biasname, outdir, reportdir, run, targ):
         with open(outdir + "overscan.dat", "w") as f:
             f.write('%s' % np.ma.median(sigma_clip(overscan, maxiters=None)))
             f.close()
+
+    # The night's shutter state, measured on its own flats (and, where they do
+    # not settle it, its science frames; calibration/shutter_detect.py); T4
+    # and T6 read it back from shutter.json.
+    if params.get('smear'):
+        night = readout.night_from_reddir(outdir)
+        shutter_detect.load_or_detect(outdir, shutter_detect.own_night_dir(outdir, run, night), night, telescope,
+                                      refresh=True)
 
     # QC update RON
     dirsplit = outdir.split("/")

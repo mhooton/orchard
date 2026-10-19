@@ -368,8 +368,9 @@ class Notifier:
             resolved = [dict(r) for r in self.store.conn.execute(
                 "SELECT * FROM notify_incidents WHERE state = 'resolved' AND resolved_at > ? ORDER BY id", (since,))]
         report = os.path.join(queue_paths(self.cfg)['reports'], 'report_{}.md'.format(self.now.strftime('%Y%m%d')))
+        shutter = D.shutter_notes(D.Context(self.cfg, self.store, self.now))
         subject, body = D.render_digest(self.cfg, night, statuses, q, disk_list, open_now, resolved, self.now,
-                                        report_path=report if os.path.exists(report) else None)
+                                        report_path=report if os.path.exists(report) else None, shutter=shutter)
         if dry_run:
             return subject + '\n\n' + body
         status, _ = self._deliver('digest', subject, body)
