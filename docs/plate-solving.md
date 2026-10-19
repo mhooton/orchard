@@ -31,13 +31,24 @@ Every solution, whichever step made it, must pass `known_scale.verified()`. Of t
 
 - at least 6 lie within 3 px of a catalogue star,
 - that many is at most 10^-10 likely by chance, for the catalogue density in the frame,
-- and they are at least a quarter of what could match (`min(detections tested, catalogue stars in the frame)`).
+- and they are at least a quarter of what could match (`min(detections tested, catalogue stars in the frame)`), or
+  15% when the sources are round (`trail_ellipticity` below 0.5).
 
-A known-scale solution must also be what a telescope gives: the expected scale to 5% and square pixels to 2%.
+In a sparse field 5 matches also verify, if they are at least 80% of what could match. Four never do.
 
-Six is the floor because two matched stars fix a similarity, and in a frame with only 7 catalogue stars a
-4-match coincidence turns up about once in ten frames; 6 matches by chance is negligible. Correct solutions on the
-nights measured matched 6 of 7 stars in the sparsest SPIRIT fields and 45-100 of 100 elsewhere.
+A known-scale solution must also be what a telescope gives: the expected scale to 5% and, for a TAN fit, square
+pixels to 2%.
+
+Why these numbers:
+
+- **Six, or five nearly complete.** Two matched stars fix a similarity, so only the matches beyond two are
+  evidence. In a frame holding 7 catalogue stars, two chance coincidences beyond the first two turn up about once in
+  ten frames, which is why 4 matches is never enough. Three more coincidences, among only 5 or 6 stars, are
+  negligible. Old 5-match solutions in sparse SPIRIT fields agreed with this solve's.
+- **The share of matches** is there for star trails. A trail holds each star's position at some instant, so on frames
+  from a telescope that stopped tracking the best wrong candidates reached 8-19% of what could match, at chance
+  10^-10 to 10^-21. Correct solutions match 70-100% on most nights, and down to 21% on Artemis I+z frames, where most
+  bright detections are fainter than the catalogue's J = 16. Those frames' sources are round, so 15% applies.
 
 ## Reading a failure
 

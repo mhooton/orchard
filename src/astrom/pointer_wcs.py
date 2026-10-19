@@ -1031,11 +1031,12 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                     last_time = current_time
 
                 result['stage'] = 'star_matching'
+                trail = known_scale.trail_ellipticity(image_clean, all_stars_in_image)
                 solution = None
                 if known_scale_solve:
                     solution = known_scale.solve(
                         all_stars_in_image, catalogue[:, 0], catalogue[:, 1], (center.ra.deg, center.dec.deg),
-                        plate_scale, image_clean.shape, inner=inner, prior=prior_wcs)
+                        plate_scale, image_clean.shape, inner=inner, prior=prior_wcs, trail=trail)
                     if verbose:
                         print(f"Known-scale solve: success={solution['success']} method={solution['method']} "
                               f"verification={solution['verification']} candidates={solution['candidates']}")
@@ -1051,7 +1052,6 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                     known = solution['verification'] if solution is not None else None
 
                     def no_solution(reason):
-                        trail = known_scale.trail_ellipticity(image_clean, all_stars_in_image)
                         if trail is not None and trail >= TRAILED_ELLIPTICITY:
                             return (f"Sources trailed (axis ratio {known_scale.axis_ratio(trail):.1f}, all one way),"
                                     f" the telescope was probably not tracking; twirl: {reason}")
@@ -1112,7 +1112,7 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                     if verify_twirl:
                         check = known_scale.verify(image_star_mapping.wcs, all_stars_in_image, catalogue[:, 0],
                                                    catalogue[:, 1], image_clean.shape)
-                        if not known_scale.verified(check):
+                        if not known_scale.verified(check, trail):
                             result['error'] = no_solution(
                                 f"solution on {matches} matches failed verification ({check['matched']} of "
                                 f"{check['tested']} sources on catalogue stars)")

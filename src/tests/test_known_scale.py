@@ -242,6 +242,30 @@ def test_verified_thresholds():
     assert not ks.verified(None)
 
 
+def test_sparse_fields_verify_on_five_nearly_complete_matches():
+    # Callisto 20251030 Sp0050-2008: 14 sources, 5 catalogue stars in the frame, all 5 matched
+    sparse = dict(matched=5, tested=14, in_frame=5, expected=0.0015, log10_chance=-16.2)
+    assert ks.verified(sparse)
+    assert ks.verified(dict(sparse, tested=6, in_frame=15))             # 5 of 6 sources (Sp2151-1141)
+    assert not ks.verified(dict(sparse, matched=4, in_frame=4))         # four is never enough
+    assert not ks.verified(dict(sparse, in_frame=7))                    # 5 of 7: 71%
+    # Artemis 20240211 after the pointing walked off: 5 of 92 sources on 35 in-frame stars, chance 10^-10.4
+    assert not ks.verified(dict(matched=5, tested=92, in_frame=35, expected=0.08, log10_chance=-10.4), trail=0.1)
+    assert not ks.verified(dict(sparse, log10_chance=-8.0))             # the chance test still applies
+
+
+def test_round_sources_verify_on_a_smaller_share():
+    # Artemis 20220331: 12 of the brightest 100 on 56 in-frame catalogue stars (21%), at chance 10^-40
+    artemis = dict(matched=12, tested=100, in_frame=56, expected=0.004, log10_chance=-40.0)
+    assert not ks.verified(artemis)                  # trail unknown: the full share
+    assert ks.verified(artemis, trail=0.3)           # round sources
+    assert not ks.verified(artemis, trail=0.76)      # Ganymede 20250716's trails
+    # trailed frames' best wrong candidates: 8-19% of the possible matches, far beyond chance
+    trailed = dict(matched=19, tested=100, in_frame=939, expected=0.6, log10_chance=-21.1)
+    assert not ks.verified(trailed, trail=0.77)
+    assert not ks.verified(dict(artemis, matched=8), trail=0.3)      # 14%: below even the smaller share
+
+
 @pytest.mark.parametrize('k,lam', [(1, 0.5), (5, 0.1), (8, 3.0), (30, 2.0), (3, 7.0)])
 def test_poisson_tail_matches_the_direct_sum(k, lam):
     direct = sum(math.exp(-lam + i * math.log(lam) - math.lgamma(i + 1)) for i in range(k, k + 300))

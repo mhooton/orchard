@@ -8,23 +8,26 @@ Why: twirl (``pointer_wcs``'s first solver until 2026-10) matches 4-star asteris
 so a solution at any scale can win. When few of the 16 brightest detections are among the 32 brightest catalogue
 stars, a transform that squeezes the whole catalogue into a ~40 px clump around a handful of detections outscores
 the true one, and the plate-scale sanity check then rejects the frame ("Plate scale sanity check failed: solved=38
-arcsec/px ... Matches: 0"). Measured over every pipeline log on appct (2026-10-19), that was 40,852 frames whose
-last attempt failed on frames with 20 or more sources, the rate rising with field density from 0.1-0.4% below 50
-catalogue stars in the box to 18% above 4,000; the same frames solve, verified, when the scale is held fixed.
+arcsec/px ... Matches: 0"). Measured over every pipeline log on appct (2026-10-19), that was 39,765 frames whose
+last attempt failed on frames with 20 or more sources, the rate rising with field density from 0.15-0.42% below 50
+catalogue stars in the box to 18% above 4,000. In bulge fields twirl's plausible-scale solutions are often wrong too.
 
 How: the plate scale is known to ~1% (header or instrument config) and the pixel grid is square, so the sky-to-pixel
 map is a rotation, a parity and a translation. The rotation comes from star pairs: a detection pair and a catalogue
 pair of the same length vote for the angle between them. Each candidate rotation (both parities, and the opposite
 direction, since a pair has no sign) is scored by voting on the offset between every detection and every catalogue
 star; the true one gives a sharp peak. In crowded fields the pair votes drown, so a 1-degree rotation grid scored the
-same way is the fallback. The winner is refined by iterative cross-matching and a TAN fit (astropy's
-fit_wcs_from_points, as twirl's own last step), and accepted only if it passes ``verify``.
+same way is the fallback. The winner is refined by iterative cross-matching: a TAN fit (astropy's
+fit_wcs_from_points, as twirl's own last step) with 10 or more stars, a similarity below that.
 
-``verify`` is what keeps a wrong solution out, whichever solver made it: of the brightest detections, enough must sit
-within 3 px of a catalogue star, far more than chance allows for the catalogue density in the frame, and a fair share
-of those that could match must. Calibrated on 1,200 frames of 24 nights (mh_scratch/platesolve_partial): correct
-solutions match 45-100 of 100 detections; the best false candidates on trailed frames reached 7 (chance 10^-9.8) and
-were refused, as were twirl's own wrong solutions in bulge fields.
+``verified`` is what keeps a wrong solution out, whichever solver made it. Of the brightest 100 detections, 6 or more
+must sit within 3 px of a catalogue star, at most 10^-10 likely by chance for the catalogue density in the frame, and
+they must be a quarter of what could match (15% on round sources). In a sparse field, 5 that are 80% of what could
+match also verify. Measured on 820 frames of 29 nights (mh_scratch/platesolve_partial, 2026-10-19): of 620 frames
+from affected nights production made 281 correct solutions and 32 wrong ones, this solve 495 correct and none wrong,
+losing none of production's correct ones; on 8 control nights both made 200 of 200. Trails are what the share of
+matches guards against: on frames from a telescope that stopped tracking the best wrong candidates matched 8-19% of
+what could match, at chance 10^-10 to 10^-21.
 
 Everything here is pure: no file is read or written.
 """
@@ -49,6 +52,18 @@ VERIFY_SOURCES = 100         # brightest detections tested
 VERIFY_MIN_MATCHES = 6
 VERIFY_MIN_FRACTION = 0.25   # of min(detections tested, catalogue stars in the frame)
 VERIFY_MAX_LOG10_CHANCE = -10.0
+# On round sources a smaller share will do. Artemis I+z frames match a median 29% of their in-frame J < 16 stars
+# (down to 21%) on correct solutions. Star trails are why the share exists: a trail holds each star's position at
+# some instant, so on Ganymede 20250716's trailed frames the best wrong candidates reached 8-19% of matches at
+# chance 10^-10 to 10^-21; their sources measure 0.73-0.78 on trail_ellipticity.
+VERIFY_MIN_FRACTION_ROUND = 0.15
+ROUND_BELOW = 0.5            # trail_ellipticity below which a frame's sources count as round
+# A field with only 5 or 6 catalogue stars (to J = 16) cannot give 6 matches. Five verify there if they are nearly all
+# that could match: two matches fix a similarity, and three more coincidences among 6 stars are negligible. SPIRIT
+# has 36,093 frames solved on exactly 5 matches; on the sparse ones checked (Callisto 20251030 Sp0050-2008, 20260918
+# Sp2151-1141, 20261008 Sp0218-0617) the old solution and this solve's best candidate agreed, 5 of 5. Four never do.
+SPARSE_MIN_MATCHES = 5
+SPARSE_MIN_COMPLETENESS = 0.8   # of min(detections tested, catalogue stars in the frame)
 
 # Pair votes
 PAIR_SOURCES = 30
@@ -307,14 +322,18 @@ def verify(wcs, sources, ra, dec, shape, radius=VERIFY_RADIUS, n_sources=VERIFY_
     return out
 
 
-def verified(v, min_matches=VERIFY_MIN_MATCHES, min_fraction=VERIFY_MIN_FRACTION,
-             max_log10_chance=VERIFY_MAX_LOG10_CHANCE):
-    """The acceptance test for a solution, from verify()'s numbers."""
+def verified(v, trail=None, min_matches=VERIFY_MIN_MATCHES, max_log10_chance=VERIFY_MAX_LOG10_CHANCE):
+    """The acceptance test for a solution, from verify()'s numbers and, if known, the frame's trail_ellipticity."""
     if not v or v.get('expected') is None:
         return False
+    if v['log10_chance'] > max_log10_chance:
+        return False
     possible = max(1, min(v['tested'], v['in_frame']))
-    return (v['matched'] >= min_matches and v['log10_chance'] <= max_log10_chance
-            and v['matched'] >= min_fraction * possible)
+    if v['matched'] >= SPARSE_MIN_MATCHES and v['matched'] >= SPARSE_MIN_COMPLETENESS * possible:
+        return True             # a sparse field, nearly every possible match made
+    round_sources = trail is not None and trail < ROUND_BELOW
+    fraction = VERIFY_MIN_FRACTION_ROUND if round_sources else VERIFY_MIN_FRACTION
+    return v['matched'] >= min_matches and v['matched'] >= fraction * possible
 
 
 def solved_scale(wcs):
@@ -334,7 +353,7 @@ def _scale_ok(wcs, scale_deg, tolerance=SCALE_TOLERANCE, max_anisotropy=MAX_ANIS
     return abs(scale - scale_deg) / scale_deg <= tolerance and anisotropy <= max_anisotropy
 
 
-def solve(sources, ra, dec, centre, scale_deg, shape, inner=None, prior=None, grid=True):
+def solve(sources, ra, dec, centre, scale_deg, shape, inner=None, prior=None, grid=True, trail=None):
     """Plate-solve with the plate scale known.
 
     sources   detections (x, y), 0-based pixels, brightest first
@@ -345,6 +364,7 @@ def solve(sources, ra, dec, centre, scale_deg, shape, inner=None, prior=None, gr
     inner     boolean mask of the catalogue stars inside the INNER_BOX box (all if None)
     prior     a WCS to try first (e.g. the frame's inherited one): refined and verified like any other
     grid      allow the rotation-grid fallback
+    trail     the frame's trail_ellipticity, if measured: round sources may verify on a smaller share of matches
 
     Returns a dict: success, wcs (or None), method ('prior', 'pairs', 'grid'), matches, tested, verification
     (verify()'s dict for the accepted or best rejected solution), candidates (how many were refined).
@@ -371,7 +391,7 @@ def solve(sources, ra, dec, centre, scale_deg, shape, inner=None, prior=None, gr
         v = verify(wcs, sources, ra, dec, shape)
         if best['v'] is None or v['matched'] > best['v']['matched']:
             best['v'] = v
-        if verified(v):
+        if verified(v, trail):
             out.update(success=True, wcs=wcs, method=method, matches=v['matched'], tested=v['tested'],
                        verification=v)
             return True
