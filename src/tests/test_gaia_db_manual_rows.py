@@ -4,7 +4,8 @@ Tests for utils/gaia_db_manual_rows.py: hand-made rows for real Gaia stars the d
 Covers: CSV validation (band, method codes, real IDs, duplicates); check is read-only; apply inserts a
 missing row and records it in manual_rows, records (without inserting) a row already present with the
 same values, leaves alone a row whose ID is present with other values or that has another star within
-0.5"; a second apply changes nothing; the pipeline's lookup finds an inserted row; the repo CSV is valid.
+0.5"; a second apply changes nothing; the pipeline's lookup finds an inserted row; the repo CSV is valid;
+the ID an alias row maps a wrong plan-file ID to has its repo row (Sp1444-2019).
 
 Run:  pytest src/tests/test_gaia_db_manual_rows.py -q
 """
@@ -131,3 +132,20 @@ def test_repo_csv_is_valid():
     rows = mr.read_csv(mr.DEFAULT_CSV)
     assert rows, "the repo CSV holds the rows added so far"
     assert all(r["added"] and r["sources"] for r in rows)
+
+
+def test_sp1444_2019_alias_target_has_its_row(tmp_path):
+    # Sp1444-2019's plan files name a G=20.7 background star, and the alias table maps that ID to SSSPM
+    # J1444-2019, which the build left out. Applied, the repo row is what T8's lookup finds in the band of
+    # the plan file's J2000 dec.
+    use_id, _ = tm.apply_id_alias("6281432379554902656", "Sp1444-2019", "20250401", tm.load_id_aliases())
+    rows = [r for r in mr.read_csv(mr.DEFAULT_CSV) if r["values"][9] == use_id]
+    assert [r["sp_id"] for r in rows] == ["Sp1444-2019"]
+    db = str(tmp_path / "gaia.db")
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE '%s' %s" % (rows[0]["band"], SCHEMA))
+    conn.commit()
+    conn.close()
+    assert statuses(mr.run(db, rows, write=True, log=lambda *a: None))["Sp1444-2019"][0] == "inserted"
+    found = tm.lookup_gaia_id_in_db(use_id, dec_hint=-20.3227833, db_path=db)
+    assert found is not None and found["dr2_source_id"] == "6281432246412144384"
