@@ -218,7 +218,7 @@ class Telescope:
         return targ_jd_sub
 
 class LightCurve:
-    def __init__(self, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, jd,bjd,bjd_tdb, ra, dec,pmra,pmdec,parallax, x,y, g_rp,bp_rp,teff,gmag,ap,ap_size,filt,date,exp,gain,sat,lowflux):
+    def __init__(self, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, jd,bjd,bjd_tdb, ra, dec,pmra,pmdec,parallax, x,y, g_rp,bp_rp,teff,gmag,ap,ap_size,filt,date,exp,gain,sat,lowflux,smear=None):
         self.id = id
         self.gaia_dr2_id = gaia_dr2_id
         self.gaia_dr3_id = gaia_dr3_id
@@ -248,6 +248,10 @@ class LightCurve:
 
         self.saturated = sat
         self.lowflux = lowflux
+        # per frame: the aperture reaches a saturated star's under-corrected
+        # smear trail (shutterless frames only); such a star is no comparison
+        self.smear = np.zeros(len(jd), dtype=bool) if smear is None else np.asarray(smear, dtype=bool)
+        self.smeared = bool(self.smear.any())
 
         self.init_weights()
 
@@ -260,7 +264,7 @@ class LightCurve:
 
     def init_weights(self):
 
-        if not self.saturated and not self.lowflux:
+        if not self.saturated and not self.lowflux and not self.smeared:
             self.weight = 1
             self.w1 = np.nanmedian(self.flux)
             self.w2 = 1.
@@ -425,7 +429,7 @@ class LightCurve:
         jd = self.jd - 2450000
         bjd = self.bjd - 2450000
         bjd_tdb = self.bjd_tdb - 2450000
-        data = Table([jd, bjd,bjd_tdb, self.nlc, self.err, self.nlc_pwv, tel.ra_move, tel.dec_move, tel.fwhm, tel.psf_a_5, tel.psf_b_5, tel.bg, tel.airmass, tel.exposure],names=['TMID-2450000','BJDMID-2450000','BJDTDBMID-2450000','DIFF_FLUX','ERROR','DIFF_FLUX_PWV','RA_MOVE','DEC_MOVE','FWHM','PSF_a_5', 'PSF_b_5','SKYLEVEL', 'AIRMASS', 'EXPOSURE'])
+        data = Table([jd, bjd,bjd_tdb, self.nlc, self.err, self.nlc_pwv, tel.ra_move, tel.dec_move, tel.fwhm, tel.psf_a_5, tel.psf_b_5, tel.bg, tel.airmass, tel.exposure, self.smear.astype(int)],names=['TMID-2450000','BJDMID-2450000','BJDTDBMID-2450000','DIFF_FLUX','ERROR','DIFF_FLUX_PWV','RA_MOVE','DEC_MOVE','FWHM','PSF_a_5', 'PSF_b_5','SKYLEVEL', 'AIRMASS', 'EXPOSURE', 'SMEAR_FLAG'])
         ascii.write(data,outname, overwrite=True)
 
     def save_npy(self,savename):
@@ -444,17 +448,18 @@ class LightCurve:
         new_err_pwv = np.nanmean(bin_e)
         new_rms_pwv = np.nanstd(bin_y)
 
+        # the third field records whether the target's aperture reaches a
+        # saturated smear trail; such an aperture is chosen only if all are
+        on_trail = " " + str(int(self.smeared))
+
         if os.path.exists(fname + "_bestap.txt"):
             # Read in the file
             with open(fname + "_bestap.txt", 'r') as file:
                 filedata = file.read()
 
-            # aperture = filedata.split()[0]
-            ap_err = float(filedata.split()[1])
-
-            if ap_err > (new_err * new_rms):
+            if replaces_best_ap(filedata, new_err * new_rms, self.smeared):
                 # Replace the target string
-                filedata = str(ap) + " " + str(new_err * new_rms)
+                filedata = str(ap) + " " + str(new_err * new_rms) + on_trail
 
                 # plot target diff lc within limits
                 self.plot_standard(num_comp, self.bin, fname + "_bestap", True,True,(8, 8))
@@ -464,7 +469,7 @@ class LightCurve:
                 file.write(filedata)
 
         else:
-            filedata = str(ap) + " " + str(new_err * new_rms)
+            filedata = str(ap) + " " + str(new_err * new_rms) + on_trail
             with open(fname + "_bestap.txt", 'w') as file:
                 file.write(filedata)
 
@@ -476,19 +481,33 @@ class LightCurve:
             with open(fname + "_bestap_pwv.txt", 'r') as file:
                 filedata = file.read()
 
-            ap_err_pwv = float(filedata.split()[1])
-
-            if ap_err_pwv > (new_err_pwv * new_rms_pwv):
+            if replaces_best_ap(filedata, new_err_pwv * new_rms_pwv, self.smeared):
                 # Replace the target string
-                filedata = str(ap) + " " + str(new_err_pwv * new_rms_pwv)
+                filedata = str(ap) + " " + str(new_err_pwv * new_rms_pwv) + on_trail
             # Write the file out again
             with open(fname + "_bestap_pwv.txt", 'w') as file:
                 file.write(filedata)
         else:
-            filedata = str(ap) + " " + str(new_err_pwv * new_rms_pwv)
+            filedata = str(ap) + " " + str(new_err_pwv * new_rms_pwv) + on_trail
             if ~np.isnan(new_err_pwv * new_rms_pwv):
                 with open(fname + "_bestap_pwv.txt", 'w') as file:
                     file.write(filedata)
+
+def replaces_best_ap(stored, new_metric, new_on_trail):
+    """
+    Whether a new aperture should replace the one recorded in a *_bestap.txt.
+
+    stored is that file's text: "<ap> <metric>", and since smear-trail flagging a
+    third field, 1 when the target's aperture reaches a saturated smear trail in
+    some frame. An aperture on a trail never displaces one that is not, and is
+    displaced by any that is not; otherwise the lower metric wins, as before.
+    """
+    fields = stored.split()
+    stored_on_trail = len(fields) > 2 and fields[2] == '1'
+    if stored_on_trail != bool(new_on_trail):
+        return stored_on_trail
+    return float(fields[1]) > new_metric
+
 
 class ArtificialLightCurve:
     def __init__(self,lcurves):
@@ -774,12 +793,7 @@ def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
                                  dtype=[('ALC', np.float64)])
     alc_table['ALC'] = alc.nlc
 
-    flag_table = np.recarray(ntimes,
-                                 dtype=[('FLAG', np.int64),
-                                        ('BW_FLAG', np.int64)])
-
-    flag_table['FLAG'] = [int("0b" + str(int(b)),2) for b in tel.bw_mask]#int("0b" + str(int(tel.bw_mask)),2)
-    flag_table['BW_FLAG'] = tel.bw_mask
+    flag_table = flags_table(tel.bw_mask, targ.smear)
 
     # FLAGS
     # IMAGE SPECIFIC
@@ -851,6 +865,7 @@ def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
     print("initialising weights table...")
     weight_data = np.recarray(nstars, dtype=[('SATURATED', np.int64),
                                             ('LOWFLUX', np.int64),
+                                            ('SMEARED', np.int64),
                                             ('W1', np.float64),
                                             ('W2', np.float64),
                                             ('W3', np.float64),
@@ -861,6 +876,7 @@ def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
     weight_data['W3'] = extract(lcurves,'w3')
     weight_data['SATURATED'] = extract(lcurves, 'saturated')
     weight_data['LOWFLUX'] = extract(lcurves, 'lowflux')
+    weight_data['SMEARED'] = extract(lcurves, 'smeared')
     weight_data['W_TOTAL'] = extract(lcurves,'weight')
 
     print("initialising tables of image data...")
@@ -968,7 +984,7 @@ def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
         print('add alc')
         hdulist.append(fits.BinTableHDU(alc_table, name='ALC_' + str(ap)))
         print('add flags')
-        hdulist.append(fits.BinTableHDU(flag_table, name='FLAGS'))
+        hdulist.append(flags_hdu(flag_table))
         hdulist[0].header['DR2ID'] = header_id(targ.gaia_dr2_id)
         hdulist[0].header['DR3ID'] = header_id(targ.gaia_dr3_id)
         hdulist[0].header['PIPE_V'] = version
@@ -1088,6 +1104,32 @@ def get_all_data(lc):
 
     return ids, nfluxs,fluxs,jds,ras,decs,xs,ys,g_rps,bp_rps,teffs,gmags,izmags,ws,w1s,w2s,w3s
 
+def flags_table(bw_mask, smear):
+    """
+    The FLAGS table of a _diff.fits, one row per frame.
+
+    FLAG and BW_FLAG both hold the bad-weather flag and keep their names: the
+    portal ingest (update_environment_table.py) reads FLAG and the promotion
+    check (utils/promote_check.py) reads BW_FLAG. SMEAR_FLAG, added last, is 1
+    where the target's aperture reaches a saturated star's smear trail.
+    """
+    table = np.recarray(len(bw_mask), dtype=[('FLAG', np.int64),
+                                             ('BW_FLAG', np.int64),
+                                             ('SMEAR_FLAG', np.int64)])
+    table['FLAG'] = [int("0b" + str(int(b)), 2) for b in bw_mask]
+    table['BW_FLAG'] = bw_mask
+    table['SMEAR_FLAG'] = smear
+    return table
+
+
+def flags_hdu(table):
+    hdu = fits.BinTableHDU(table, name='FLAGS')
+    hdu.header.comments['TTYPE1'] = 'bad weather, as BW_FLAG (portal reads this)'
+    hdu.header.comments['TTYPE2'] = 'frame in bad weather (ALC variability)'
+    hdu.header.comments['TTYPE3'] = 'target aperture on a saturated smear trail'
+    return hdu
+
+
 def check_blended_stars(lcurves,ap,tel):
     ap_size = ap_size_pixels(ap, tel.rcore)[0]
     x = extract(lcurves,'x')
@@ -1132,10 +1174,12 @@ def saturated_stars(peak, sky, saturate, readmode, legacy_limit):
 
 
 def init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, saturated_flags, jd, bjd, bjd_tdb, ra, dec, pmra,
-                     pmdec, parallax, x, y, g_rp, bp_rp, teff, gmag, ap, filt, date, exp):
+                     pmdec, parallax, x, y, g_rp, bp_rp, teff, gmag, ap, filt, date, exp, smear_ap=None):
     lcurves = []
     ap_size = ap_size_pixels(ap, tel.rcore)[0]
     zero_weight = 0
+    on_trail = smear_trail_frames(smear_ap, ap, len(id), len(jd))
+    n_smeared = 0
 
     for i in range(len(id)):
         saturated = False
@@ -1187,6 +1231,13 @@ def init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, saturated_f
                 lowflux = True
                 zero_weight = zero_weight + 1
 
+        # A star whose aperture reaches a saturated star's smear trail in any
+        # frame is no comparison: the correction there is unreliable.
+        if on_trail[i].any():
+            n_smeared = n_smeared + 1
+            if not saturated and not lowflux:
+                zero_weight = zero_weight + 1
+
         # else:
         try:
             # print(id[i], gaia_id[i], nflux[i][0], flux[i][0], jd[0], ra[i], dec[i], pmra[i],pmdec[i],parallax[i], x[i][0], y[i][0], g_rp[i],bp_rp[i], teff[i],
@@ -1194,15 +1245,36 @@ def init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, saturated_f
             lcurves.append(
                 LightCurve(id[i], gaia_dr2_id[i], gaia_dr3_id[i], nflux[i], flux[i], jd, bjd, bjd_tdb, ra[i], dec[i],
                            pmra[i], pmdec[i], parallax[i], x[i], y[i], g_rp[i], bp_rp[i], teff[i], gmag[i], ap, ap_size,
-                           filt, date, tel.exposure, tel.gain, saturated, lowflux))
+                           filt, date, tel.exposure, tel.gain, saturated, lowflux, on_trail[i]))
         except Exception as e:
             print(i, e)
 
     print("Number of possible comparison stars: " + str(len(lcurves)))
-    print("Number of possible comparison stars (removing saturated and low flux stars): " + str(
+    print("Number of possible comparison stars (removing saturated, low flux and smear-trail stars): " + str(
         len(lcurves) - zero_weight))
+    if smear_ap is not None and np.any(np.asarray(smear_ap) != 0):
+        print("Stars whose aperture " + str(ap) + " reaches a saturated smear trail: " + str(n_smeared) +
+              " (frames with any such star: " + str(np.count_nonzero(on_trail.any(axis=0))) + " of " +
+              str(len(jd)) + ")")
+        not_assessed = np.count_nonzero(np.all(np.asarray(smear_ap) < 0, axis=0))
+        if not_assessed:
+            print("WARNING: " + str(not_assessed) + " frames were not assessed for smear trails")
 
     return lcurves
+
+def smear_trail_frames(smear_ap, ap, nstars, ntimes):
+    """
+    Per star and frame, whether aperture ap reaches an under-corrected smear trail.
+
+    smear_ap is condense_photometry's SMEAR_AP: the smallest aperture on a trail,
+    0 for none, -1 where not assessed (taken as no trail). None (a file condensed
+    before SMEAR_AP existed) means no trails.
+    """
+    if smear_ap is None:
+        return np.zeros((nstars, ntimes), dtype=bool)
+    smear_ap = np.asarray(smear_ap)
+    return (smear_ap > 0) & (smear_ap <= ap)
+
 
 def import_pwv(fname):
     data = ascii.read(fname)
@@ -1442,6 +1514,8 @@ def extract(complc,attr):
         return [x.saturated for x in complc]
     elif attr == "lowflux":
         return [x.lowflux for x in complc]
+    elif attr == "smeared":
+        return [x.smeared for x in complc]
     else:
         print(attr + " isn't an attribute of LightCurve object.")
 
@@ -1679,7 +1753,7 @@ def stable_weights(lcurves, targ, faint=STABLE_FAINT_LIMIT, kernel_arcmin=STABLE
     """Weights for the comparison stars without any discontinuous step. Returns (lcurves, num_comp).
 
     W1 is the leave-one-out inverse variance, W2 the distance kernel and W3 eligibility (magnitude
-    range and preclean); SATURATED/LOWFLUX stars keep W1 = 0 from init_weights. num_comp is the
+    range and preclean); SATURATED/LOWFLUX/SMEARED stars keep W1 = 0 from init_weights. num_comp is the
     number of stars that carry 95% of the weight, as iter_algorithm reports it."""
     min_mag = np.nanmedian(targ.izmag) + faint
     mags = np.nanmedian(extract(lcurves, 'izmag'), axis=1)
@@ -2083,6 +2157,7 @@ def fluxthresh(lcurves, targ):
     min_mag = np.nanmedian(targ.izmag) + 3
     mags = np.nanmedian(extract(lcurves, 'izmag'), axis=1)
     sat = extract(lcurves, 'saturated')
+    smeared = extract(lcurves, 'smeared')
     weights = extract(lcurves, 'weight')
     nonzero_weights = np.count_nonzero(weights)
     min_stars = 20
@@ -2114,8 +2189,9 @@ def fluxthresh(lcurves, targ):
     mags_for_sorting = mags.copy()
     mags_for_sorting[np.isnan(mags_for_sorting)] = 999.0
 
-    # Check for saturated stars that also have valid magnitudes
-    valid_unsaturated = valid_mag_mask & (np.array(sat) == False)
+    # Check for saturated stars that also have valid magnitudes (a star on a
+    # saturated smear trail is as unusable as a saturated one)
+    valid_unsaturated = valid_mag_mask & (np.array(sat) == False) & (np.array(smeared) == False)
     unsaturated_count = np.sum(valid_unsaturated)
 
     print(f"DEBUG: {unsaturated_count} unsaturated stars with valid magnitudes")
@@ -2755,6 +2831,9 @@ def import_outfits(outfits,goutfits,ap,targ_gaia):
         numstars = len(ra)
         dec = cat['dec'].read()
         peak = infile['peak'].read()
+        # condense_photometry's per-star, per-frame smear-trail flag; files
+        # condensed before it existed have none
+        smear_ap = infile['smear_ap'].read() if 'SMEAR_AP' in infile else None
         try:
             skybkg = infile['skybkg'].read()
         except Exception:
@@ -2935,6 +3014,8 @@ def import_outfits(outfits,goutfits,ap,targ_gaia):
 
         for i in range(len(flux)):
             flux[i] = np.array([j for _, j in sorted(zip(jd, flux[i]))])
+        if smear_ap is not None:
+            smear_ap = smear_ap[:, np.argsort(jd, kind='stable')]
 
         jd = np.array(sorted_jd)
         nflux = [normalise(f) for f in flux]
@@ -2954,7 +3035,7 @@ def import_outfits(outfits,goutfits,ap,targ_gaia):
         tel = Telescope(*tel_args)
         tel.saturate = saturate
         tel.readmode = readmode
-        return intarg, sp_id, no_teff, teff_header, obj_id, gaia_dr2_id, gaia_dr3_id, nflux, flux, saturation_inputs, jd,bjd,bjd_tdb, ra, dec, pmra,pmdec,parallax, x,y, g_rp, bp_rp,teff,gmag,tel,exposure, targname
+        return intarg, sp_id, no_teff, teff_header, obj_id, gaia_dr2_id, gaia_dr3_id, nflux, flux, saturation_inputs, jd,bjd,bjd_tdb, ra, dec, pmra,pmdec,parallax, x,y, g_rp, bp_rp,teff,gmag,tel,exposure, targname, smear_ap
 
 
 def plot_pwv_comparison(tel, targ_jd, targ_gaia, filt, date, savename):
@@ -3046,12 +3127,12 @@ def main(date, targ_gaia, ap, filt, outfits, goutfits, globallc, binning, versio
 
     # IMPORT all the objects from this field
     (intarg, targ_id, no_teff, teff_header, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, saturation_inputs, jd, bjd, bjd_tdb,
-     ra, dec, pmra, pmdec, parallax, x, y, g_rp, bp_rp, teff, gmag, tel, exp, targname) = import_outfits(
+     ra, dec, pmra, pmdec, parallax, x, y, g_rp, bp_rp, teff, gmag, tel, exp, targname, smear_ap) = import_outfits(
         outfits, goutfits, ap, targ_gaia)
     saturated = saturated_stars(*saturation_inputs, legacy_limit=saturation_limit)
     # INITIALISE ALL LIGHTCURVE OBJECTS
     lcurves = init_all_lcurves(tel, id, gaia_dr2_id, gaia_dr3_id, nflux, flux, saturated, jd, bjd, bjd_tdb, ra, dec, pmra,
-                               pmdec, parallax, x, y, g_rp, bp_rp, teff, gmag, ap, filt, date, exp)
+                               pmdec, parallax, x, y, g_rp, bp_rp, teff, gmag, ap, filt, date, exp, smear_ap)
 
     # GET GAIA IDS from output.fits file and find which objects are in the target list
     gaia_dr2_id = extract(lcurves, 'gaia_dr2_id')  # Continue using DR2 for matching
@@ -3103,6 +3184,10 @@ def main(date, targ_gaia, ap, filt, outfits, goutfits, globallc, binning, versio
             # return None
         target_lcurve = lcurves[targetid]
         target_lcurve.set_as_target(targname[0])
+        if target_lcurve.smeared:
+            print("WARNING: target's aperture reaches a saturated smear trail in " +
+                  str(np.count_nonzero(target_lcurve.smear)) + " of " + str(len(target_lcurve.smear)) +
+                  " frames (SMEAR_FLAG)")
 
         pltname = lcdir + "/" + targ_gaia + "_" +filt + "_"
         orig_pltname = pltname

@@ -18,6 +18,13 @@ Processing workflow:
     4. Build imagelist, catalogue, and flux HDUs from phot files
     5. For each identified target: write per-night output file and
        update (or create) the global multi-night output file
+
+SMEAR_AP (napertures x nimages, int16) flags stars whose apertures reach a
+saturated star's readout trail in a de-smeared shutterless frame, where the
+correction is unreliable: the smallest of the 13 apertures that reaches one,
+0 if none does, -1 if the frame's header cannot say (calibration/smear.py,
+apertures_on_trail). Star i is flagged at aperture j in frame k when
+0 < SMEAR_AP[i, k] <= j.
 """
 
 import argparse
@@ -38,9 +45,14 @@ except ImportError:         # run as a bare script: put the source root on the p
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from utils import target_list
 from utils.shared_files import acquire
+from calibration import smear
 
 logging.basicConfig(level='INFO', format='%(levelname)7s %(message)s')
 logger = logging.getLogger(__name__)
+
+# imcore's apertures FLUX_1 .. FLUX_13 as multiples of RCORE (as in
+# SPlightcurve.ap_size_pixels)
+APERTURE_RCORE = np.array([0.5, 1 / np.sqrt(2), 1, np.sqrt(2), 2, 2 * np.sqrt(2), 4, 5, 6, 7, 8, 10, 12])
 
 
 # this script takes all the phot files in and outputs one fits file cube
@@ -383,6 +395,8 @@ def main(args):
     image_names.extend(['FLUX_{}'.format(i) for i in flux_hdu_indexes])
     image_names.extend(['ERROR_{}'.format(i) for i in flux_hdu_indexes])
     image_map = {name: image(name) for name in image_names}
+    # last, so every HDU that existed before keeps its index
+    image_map['SMEAR_AP'] = FITSImage('SMEAR_AP', nimages, napertures, data_type=np.int16)
 
     aperture_sizes = first.get_aperture_sizes(flux_hdu_indexes)
 
@@ -450,7 +464,25 @@ def main(args):
             image_map[hdu_key].set_data(i, source.data[source_flux_key])
             image_map[error_key].set_data(i, source.data[source_error_key])
 
+        # Stars whose apertures reach an under-corrected smear trail. imcore's
+        # coordinates are 1-based; the trail record in the frame header is not.
+        # A frame whose record cannot be read is not assessed, never fatal.
+        try:
+            on_trail = smear.apertures_on_trail(
+                fits.getheader(image_filename), source.data['X_coordinate'] - 1, source.data['Y_coordinate'] - 1,
+                APERTURE_RCORE * source.header['rcore'])
+        except Exception as err:
+            logger.warning('Smear trails not assessed for %s: %s', image_filename, err)
+            on_trail = smear.SMEAR_NOT_ASSESSED
+        image_map['SMEAR_AP'].set_data(i, on_trail)
+
         del source
+
+    smear_ap = image_map['SMEAR_AP'].data
+    if np.any(smear_ap != 0):
+        logger.info('Smear trails: %d of %d frames not assessed; %d with a star whose apertures reach a trail',
+                    np.count_nonzero(np.all(smear_ap == smear.SMEAR_NOT_ASSESSED, axis=0)), nimages,
+                    np.count_nonzero(np.any(smear_ap > 0, axis=0)))
 
     logger.info('Post processing')
     logger.info(f'Successfully processed {nimages} images')
@@ -695,6 +727,18 @@ def main(args):
 
                         cntr = 0
 
+                        # A global file written before SMEAR_AP existed, or updated
+                        # since by code that does not write it (a job still pinned
+                        # to an older release, a rollback): the nights it lacks were
+                        # never assessed for smear trails. Those nights were appended
+                        # to the other HDUs, so SMEAR_AP is padded at the end to match.
+                        if 'SMEAR_AP' in hdulist_update:
+                            hdulist_update['SMEAR_AP'].data = pad_smear_ap(
+                                hdulist_update['SMEAR_AP'].data, hdulist_update['JD'].data.shape)
+                        else:
+                            hdulist_update.append(fits.ImageHDU(
+                                pad_smear_ap(None, hdulist_update['JD'].data.shape), name='SMEAR_AP'))
+
                         to_del_night = find_dups(np.transpose(hdulist_update['JD'].data),
                                                  np.transpose(image_map['JD'].data))
                         to_del_hdu = find_dups(np.transpose(image_map['JD'].data),
@@ -756,6 +800,28 @@ def main(args):
             print("Global LC FAILED, " + str(e))
         finally:
             os.close(output_lock)
+
+
+def pad_smear_ap(smear_ap, shape):
+    """
+    A global file's SMEAR_AP brought to the JD HDU's shape (stars x frames).
+
+    Frames it lacks are the last ones (every update appends), so they are added
+    at the end as not assessed. One whose number of stars differs cannot be lined
+    up, so it starts again as not assessed throughout. None (no SMEAR_AP yet)
+    gives not assessed everywhere.
+    """
+    shape = tuple(shape)
+    if smear_ap is not None and np.shape(smear_ap) == shape:
+        return np.asarray(smear_ap, dtype=np.int16)
+    out = np.full(shape, smear.SMEAR_NOT_ASSESSED, dtype=np.int16)
+    if smear_ap is not None:
+        smear_ap = np.asarray(smear_ap)
+        if smear_ap.ndim == 2 and smear_ap.shape[0] == shape[0] and smear_ap.shape[1] <= shape[1]:
+            out[:, :smear_ap.shape[1]] = smear_ap
+        else:
+            logger.warning('SMEAR_AP %s does not line up with JD %s; marked not assessed', smear_ap.shape, shape)
+    return out
 
 
 def find_dups(prev_arr,new_arr):

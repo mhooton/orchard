@@ -7,6 +7,7 @@ from astropy.io import fits as pyfits
 from calibration.pipeutils import (get_instrument_parameters, apply_image_slice, clean_bad_pixels, open_fits_file,
                                    create_dark_dict, create_flat_dict, frame_telescope)
 from calibration import readout
+from calibration.smear import correct_frame
 from functools import partial
 from multiprocessing.dummy import Pool as ThreadPool
 import timeit
@@ -76,28 +77,10 @@ def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, 
 
             # Apply corrections
             if hasattr(dark, 'shape') and dark.shape == data.shape:
-                corrected = (data - overscan - bias - (dark * exposure)) / flat_dict[filter]
+                signal = data - overscan - bias - (dark * exposure)
             else:
-                corrected = (data - overscan - bias) / flat_dict[filter]
+                signal = data - overscan - bias
 
-            # print("BPM type:", type(bpm))
-            # print("BPM dtype:", bpm.dtype)
-            # print("BPM unique values:", np.unique(bpm))
-            # print("BPM shape:", bpm.shape)
-            # print("Image shape:", corrected.shape)
-            if bpm is not None:
-                # print("Corrected type:", type(corrected))
-                # print("Corrected dtype:", corrected.dtype)
-                # if isinstance(corrected, np.ma.MaskedArray):
-                #     print("Corrected is a masked array")
-                #     print("Number of masked elements:", np.ma.count_masked(corrected))
-                # else:
-                #     print("Corrected is NOT a masked array")
-                corrected = clean_bad_pixels(corrected, bpm)
-
-            corrected = np.float32(corrected)
-
-            hdulist[0].data = corrected
             hdulist[0].header.set('OVERSCAN', overscan)
             hdulist[0].header.add_history('Overscan of ' + str(overscan) + ' subtracted')
 
@@ -118,6 +101,32 @@ def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, 
             for key, value, comment in readout.header_cards(values, pedestal=pedestal):
                 hdulist[0].header[key] = (value, comment)
             hdulist[0].header['PV'] = (version, 'Pipeline Version')
+
+            # A shutterless frame is de-smeared before the flat: the trail charge
+            # was collected by the upstream pixels, not the one it lands in. Its
+            # readout time follows READMODE and its clipped rows SATURATE, so
+            # the readout cards above are written first.
+            signal = correct_frame(signal, hdulist[0].header, params, raw=data, pedestal=pedestal)
+            corrected = signal / flat_dict[filter]
+
+            # print("BPM type:", type(bpm))
+            # print("BPM dtype:", bpm.dtype)
+            # print("BPM unique values:", np.unique(bpm))
+            # print("BPM shape:", bpm.shape)
+            # print("Image shape:", corrected.shape)
+            if bpm is not None:
+                # print("Corrected type:", type(corrected))
+                # print("Corrected dtype:", corrected.dtype)
+                # if isinstance(corrected, np.ma.MaskedArray):
+                #     print("Corrected is a masked array")
+                #     print("Number of masked elements:", np.ma.count_masked(corrected))
+                # else:
+                #     print("Corrected is NOT a masked array")
+                corrected = clean_bad_pixels(corrected, bpm)
+
+            corrected = np.float32(corrected)
+
+            hdulist[0].data = corrected
 
             if 'trim' in params and hdulist[0].header.get('CRPIX1') is not None:
                 trim_config = params['trim']

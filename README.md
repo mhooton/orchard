@@ -202,6 +202,7 @@ To do: nothing yet collects these values over time or flags a change of mode
 - Overscan correction with sigma clipping
 - 2044×2048 pixel trimmed output
 - No bad pixel correction
+- Readout-smear removal for shutterless frames (SSO ANDORs, `"smear"` block: readout `axis`, trail `direction`, `readout_time` in s, `n_shifts`)
 
 **SPIRIT (NIR):**
 - Exposure-matched dark frames
@@ -595,10 +596,11 @@ Creates normalised master flat fields from dome or twilight flats. Processes fla
 
 **Process:**
 1. Apply overscan, bias, and dark corrections to each flat
-2. Normalise each flat by its median flux
-3. Sigma-clipped median combination (rejects cosmic rays)
-4. Normalise master to unity mean
-5. With `--save-flat-products` only: write each calibrated flat and the per-pixel standard deviation and variance across the flats
+2. De-smear flats taken without the shutter (see [Shutterless frames](#shutterless-frames-readout-smear)); the master records how many in `NSMEARED`
+3. Normalise each flat by its median flux
+4. Sigma-clipped median combination (rejects cosmic rays)
+5. Normalise master to unity mean
+6. With `--save-flat-products` only: write each calibrated flat and the per-pixel standard deviation and variance across the flats
 
 **Output:**
 - `{run}_MasterFlat_{filter}.fits` (one per filter)
@@ -646,13 +648,16 @@ Applies all calibration corrections to science frames, producing reduced images 
 1. Overscan subtraction (sigma-clipped median)
 2. Bias subtraction
 3. Dark subtraction (exposure-time scaled or matched)
-4. Flat field division (filter-specific)
-5. Bad pixel interpolation (SPIRIT only)
-6. CRPIX adjustment for trimming
+4. Readout-smear removal for frames taken without the shutter (SSO ANDORs only)
+5. Flat field division (filter-specific)
+6. Bad pixel interpolation (SPIRIT only)
+7. CRPIX adjustment for trimming
 
 **Process:**
 ```python
-reduced = (raw - overscan - bias - dark × exptime) / flat
+signal = raw - overscan - bias - dark × exptime
+signal = desmear(signal) if shutterless else signal   # before the flat
+reduced = signal / flat
 reduced = interpolate_bad_pixels(reduced, bad_pixel_map)
 ```
 
@@ -667,6 +672,31 @@ reduced = interpolate_bad_pixels(reduced, bad_pixel_map)
   and T10 uses them for the noise model, the I+z magnitudes and the saturation flags.
 
 **Parallel Processing:** Supports multiprocessing for faster execution on multi-core systems.
+
+#### Shutterless frames (readout smear)
+
+**Module:** `src/calibration/smear.py`
+
+Without a mechanical shutter the CCD keeps integrating while it is read out, so every source leaves a one-sided trail along the readout axis: each pixel downstream of a source receives `t_read / (N × t_exp)` of that source's flux in the same row. On the SSO ANDORs the trail runs along +x (NAXIS1), `t_read` = 4.33 s and N = 2048, so the trail is 1.1×10⁻⁴ of the source per pixel at 20 s and the sky picks up a ramp reaching ~22% of the sky level at the far edge. `desmear()` inverts this exactly, row by row, after bias/dark subtraction and **before** the flat (the trail charge was collected by the upstream pixels, with their sensitivity).
+
+Whether a frame was shutterless is decided per frame:
+1. a row in `src/calibration/shutter_overrides.csv` for that `TELESCOP` whose UTC window holds `DATE-OBS`, else
+2. the `CAMSHUTT` header (written by Astra on all ANDORs since 2026-07-17, but set by hand, so it can be wrong; a value that is not a recognisable true/false is reported and taken as shutter used), else
+3. shutter used.
+
+The readout time of a shutterless frame comes from, in order: the override window, if the row sets `readout_time`; Astra's `READOUTM` card, written on every Andor frame since 2026-10-18 (Astra 1.3), an index into 5 MHz / 3 MHz / 1 MHz / 0.05 MHz looked up in `"readout_rate_time"` under `"smear"` in `instrument_config.json` (1 MHz 4.33 s, 3 MHz 1.5 s); else the readout mode T6 infers from the overscan, `READMODE`, looked up in `"readout_time"` (`NORMAL` 4.33 s, `FAST` 1.5 s, the 3 MHz readout of Ganymede 2026-02-27 to 03-01). A frame whose `READOUTM` names 5 or 0.05 MHz (never measured; the pixel-clock arithmetic predicts ~0.94 s and ~86 s), or a shutterless frame in any other `READMODE` (`PED7500`, `GAIN3.8`, `UNKNOWN`, …), is **not** de-smeared, because a wrong `t_read` would add a ramp of its own: it gets `SMEARCOR = F` and the reason in `SMEARERR`, and T4/T6 print a warning. Add a measured readout time to the config (or to the override window) before reprocessing such a night. T4 does the same for flats, and a master flat counts the shutterless inputs it could not de-smear in `NSMRLEFT`.
+
+Every T6 product of an instrument with smear parameters records the decision: `SMEARCOR` (T/F), and when corrected `SMEARTRD` (t_read used; the comment says whether from the override or `READMODE`), `SMEARTAU`, `SMEARSRC` (override/CAMSHUTT), `SMSATLEV` and `SMSATROW` (rows containing a clipped pixel). A pixel counts as clipped at the frame's own saturation level, `SATURATE` plus the pedestal T6 subtracted (overscan + master-bias median), which is far below 62,000 ADU in Ganymede's fast and 7,500-pedestal modes; frames without `SATURATE` use the config's `saturation_threshold`. Shuttered frames gain only `SMEARCOR = F`; their pixels are unchanged.
+
+**Known limit, flagged rather than corrected:** a saturated pixel's lost charge is not recorded, so its trail is under-corrected in every pixel downstream of it in that row. T6 records those rows in the frame header rather than storing a mask: `SMTRAXIS`/`SMTRDIR` give the geometry and `SMTR0001`, `SMTR0002`, … hold runs of consecutive rows as `'L:P,P,…'` (first row of the run, then the x of the first clipped pixel in each row, 1-based). That is a few cards per saturated star. T9 (`condense_photometry.py`) turns these into `SMEAR_AP` in `output.fits`, one int16 per star and frame: the smallest of the 13 apertures that overlaps a trail pixel. It is 0 if none does and −1 if not assessed, so a star is affected at aperture *j* when `0 < SMEAR_AP <= j`. T10 never uses a star that is affected in any frame as a comparison star (`SMEARED` in the weights table). It marks the target's affected frames in `SMEAR_FLAG` (the `FLAGS` table and the last column of the `_MCMC` file) and keeps them in the light curve. When choosing the best aperture, it never picks one where the target is on a trail if another aperture is clear; `*_bestap.txt` gains a third field, 1 when the chosen aperture is on a trail. How big the residual is, measured on Ganymede 20250408: behind a G = 8.8 star it is ~300 ADU per pixel across its 12–14 clipped rows, 17× the sky noise. Nothing shows upstream, or in the same rows on the shuttered night before. That puts 2–10% into TOI-1227's apertures 7–8.
+
+**Checking a night:** `src/calibration/smear_check.py` measures the trail behind bright isolated stars (or the ramp across a flat) and says whether frames were shutterless and what `t_read` they imply. Use it before adding an override window — a wrong window de-smears shuttered frames, and on a 7 s flat that puts a ~60% ramp into the master flat:
+
+```bash
+python calibration/smear_check.py @frames.txt --desmear
+```
+
+An asymmetric PSF fakes a small trail (+0.3 s on Ganymede at 20 s, −1.5 s on Io at 39 s with the default windows), which is negligible for telling shutterless from shuttered but matters when measuring `t_read` itself.
 
 ---
 
@@ -881,6 +911,7 @@ Performs forced aperture photometry at catalogue positions across all science fr
   - Headers: SEEING, FWHM, CLOUD_S, PSF parameters, frame shifts
 - `{filelist}_phot` - List of successfully processed frames
 - `{GAIA_ID}_stack_catalogue_pm.fits` - PM-corrected reference catalogue
+- `{GAIA_ID}_{filter}_{date}_output.fits` (condensed by `condense_photometry.py`): per-star, per-frame fluxes in 13 apertures, positions, peaks, and `SMEAR_AP` (stars on a saturated smear trail; see [Shutterless frames](#shutterless-frames-readout-smear))
 
 **Parameters:**
 - `--apsize`: Aperture radius in pixels (default: 4, typically matches FWHM)
@@ -908,7 +939,9 @@ Generates final calibrated light curves through differential photometry. Selects
    - Locates target in photometry catalogues
 
 2. **Comparison Star Selection** (`stable_weights`, the default; `--alc legacy` restores the pre-2026-10 chain):
-   - Candidates: every star that is not saturated, not low-flux and no more than 3 mag fainter than the target
+   - Candidates: every star that is not saturated, not low-flux, not on a saturated star's smear trail in any frame
+     (shutterless frames; see [Shutterless frames](#shutterless-frames-readout-smear)) and no more than 3 mag fainter
+     than the target
    - `preclean` drops stars that disagree with the rest of the field in more than 20% of frames
    - A smooth distance kernel, `1 / (1 + (sep / STABLE_KERNEL_ARCMIN)²)`, favours stars near the target
    - There is no magnitude-threshold search, no top-N cut and no reset, so a small change in the photometry gives a
@@ -953,7 +986,7 @@ Generates final calibrated light curves through differential photometry. Selects
   - Individual comparison star light curves
   - Stellar catalogue (Gaia parameters, Teff, colours)
   - Image metadata (airmass, FWHM, seeing, etc.)
-  - Quality flags and weights
+  - Quality flags and weights (`FLAGS`: `BW_FLAG` bad weather, read by the promotion check; `FLAG` the same bad-weather flag, read by the portal ingest; `SMEAR_FLAG` target aperture on a saturated smear trail. `WEIGHTS_{ap}`: `SATURATED`, `LOWFLUX`, `SMEARED`)
 
 **ASCII Files:**
 - `{GAIA_ID}_{filter}_{aperture}_MCMC` - Light curve for transit modelling:
