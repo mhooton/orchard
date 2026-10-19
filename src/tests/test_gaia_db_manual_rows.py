@@ -139,7 +139,7 @@ def test_sp1444_2019_alias_target_has_its_row(tmp_path):
     # J1444-2019, which the build left out. Applied, the repo row is what T8's lookup finds in the band of
     # the plan file's J2000 dec.
     use_id, _ = tm.apply_id_alias("6281432379554902656", "Sp1444-2019", "20250401", tm.load_id_aliases())
-    rows = [r for r in mr.read_csv(mr.DEFAULT_CSV) if r["values"][9] == use_id]
+    rows = [r for r in mr.read_csv(mr.DEFAULT_CSV) if use_id in r["values"][9:11]]
     assert [r["sp_id"] for r in rows] == ["Sp1444-2019"]
     db = str(tmp_path / "gaia.db")
     conn = sqlite3.connect(db)
@@ -148,4 +148,5 @@ def test_sp1444_2019_alias_target_has_its_row(tmp_path):
     conn.close()
     assert statuses(mr.run(db, rows, write=True, log=lambda *a: None))["Sp1444-2019"][0] == "inserted"
     found = tm.lookup_gaia_id_in_db(use_id, dec_hint=-20.3227833, db_path=db)
-    assert found is not None and found["dr2_source_id"] == "6281432246412144384"
+    assert found is not None and (found["source_id"], found["dr2_source_id"]) == (
+        "6281432246412503424", "6281432246412144384")

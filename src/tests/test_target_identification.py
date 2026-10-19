@@ -10,9 +10,11 @@ local database, or from Gaia altogether:
   - refusal of stale backup catalogues for targets without proper motion
   - refusal of backup catalogues condense cannot read (Pipeline_v2 format)
   - supplementary (hand-added) sources
+  - an aliased target and its target-table row naming one ID (Sp1444-2019)
 
 Run:  pytest src/tests/test_target_identification.py -q
 """
+import csv
 import os
 import sys
 import sqlite3
@@ -28,13 +30,15 @@ if SRC not in sys.path:
 from utils import target_management as tm          # noqa: E402
 from utils import gaia_id_from_schedule as gs      # noqa: E402
 from utils import supplementary_sources as ss      # noqa: E402
+from utils import build_target_table as btt        # noqa: E402
 
 WOLF = "3864972938605115520"        # Wolf 359, Gaia DR3 only
 NEIGH = "3864972728150826368"       # G=16 neighbour SPOCK wrote into 2021-22 plans
 WOLF_RA, WOLF_DEC = 164.10319030755974, 7.002726940984864   # J2016.0
 WOLF_PMRA, WOLF_PMDEC = -3866.338, -2699.215
 SP1444_SCHED = "6281432379554902656"   # G=20.7 background star in Sp1444-2019's plan files
-SP1444_DR3 = "6281432246412503424"     # SSSPM J1444-2019, Gaia DR3
+SP1444_DR2 = "6281432246412144384"     # SSSPM J1444-2019, Gaia DR2 ...
+SP1444_DR3 = "6281432246412503424"     # ... and DR3
 
 
 def make_plan(obsdir, date, targname, gaia_id, ra="10 56 28.99", dec="+07 00 52.00"):
@@ -113,8 +117,8 @@ def test_alias_table_from_repo_and_matching():
 def test_alias_sp1444_2019_background_star():
     aliases = tm.load_id_aliases()
     # no date bounds: every plan file that names the background star
-    assert tm.apply_id_alias(SP1444_SCHED, "Sp1444-2019", "20250401", aliases)[0] == SP1444_DR3
-    assert tm.apply_id_alias(SP1444_SCHED, "SP1444-2019", "20180601", aliases)[0] == SP1444_DR3
+    assert tm.apply_id_alias(SP1444_SCHED, "Sp1444-2019", "20250401", aliases)[0] == SP1444_DR2
+    assert tm.apply_id_alias(SP1444_SCHED, "SP1444-2019", "20180601", aliases)[0] == SP1444_DR2
     # another target that happens to carry the ID is untouched
     assert tm.apply_id_alias(SP1444_SCHED, "Sp1056+0700", "20250401", aliases)[0] == SP1444_SCHED
 
@@ -394,3 +398,29 @@ def test_identification_without_plan_file_falls_back_to_coordinates(tmp_path):
     assert [t for t in targets if t[1] == "primary"] == [(WOLF, "primary", 2831)]
     assert info["primary_method"] == "coordinates" and info["inject"]["row"] == 1
     assert info["id_source"] == "target_list_name"
+
+
+def test_sp1444_2019_is_one_primary_with_or_without_a_plan_file(tmp_path):
+    """
+    Sp1444-2019 through the repo's own alias table and resolved IDs.  Both must name the star by the ID the
+    table's crossmatch reports (DR2), or identify_targets lists it twice, primary under one ID and secondary
+    under the other, and write_target_roles marks its catalogue row secondary.
+    """
+    src = tmp_path / "ml_40pc.txt"
+    write_tlist(str(src), [("Sp1444-2019", "0000000000000000000", 221.0861250, -20.3227833, "2395.")])
+    header, rows, _ = btt.build(str(src), btt.load_resolved(btt.DEFAULT_RESOLVED), {}, expect_rows=1)
+    table = tmp_path / "ml_40pc_v2.csv"
+    with open(str(table), "w", newline="") as f:
+        csv.writer(f, lineterminator="\n").writerows([header] + rows)
+    planned, unplanned = tmp_path / "planned", tmp_path / "unplanned"
+    make_plan(str(planned), "20250401", "Sp1444-2019", SP1444_SCHED, ra="14 44 20.67", dec="-20 19 22.02")
+    os.makedirs(str(unplanned / "schedule" / "Plans_by_date"))
+    for obsdir, method in ((planned, "schedule"), (unplanned, "target_list_name")):
+        info = {}
+        targets = tm.identify_targets(
+            str(obsdir), "20250401", "Sp1444-2019",
+            catalogue_dr2_ids=["123", SP1444_DR2], catalogue_dr3_ids=["123", SP1444_DR3],
+            target_list_path=str(table), toi_table_path="/nonexistent",
+            aliases=tm.load_id_aliases(), info=info)
+        assert targets == [(SP1444_DR2, "primary", 2395)], method
+        assert info["primary_method"] == method and info["primary_row"] == 1

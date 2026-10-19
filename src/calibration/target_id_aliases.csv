@@ -16,6 +16,11 @@
 # pipeline measured that star.  The target is Gaia DR2 6281432246412144384 /
 # DR3 6281432246412503424 (G 16.6, parallax 58 mas, 3.5"/yr).
 #
+# use_id should be the ID the target table's crossmatch reports for the star:
+# its DR2 ID when it has one.  identify_targets tells targets apart by ID, so a
+# primary under the DR3 ID would come back a second time as a secondary under
+# the DR2 one, and its catalogue row would then be marked secondary.
+#
 # target,schedule_id,use_id,from_date,to_date,note
 Sp1056+0700,3864972728150826368,3864972938605115520,20210101,20221231,Wolf 359: DR2 neighbour written by SPOCK; star absent from DR2
-Sp1444-2019,6281432379554902656,6281432246412503424,,,SSSPM J1444-2019: plan files name a G=20.7 background star 42 arcsec from the list position
+Sp1444-2019,6281432379554902656,6281432246412144384,,,SSSPM J1444-2019 (DR2 ID): plan files name a G=20.7 background star 42 arcsec from the list position
