@@ -323,7 +323,8 @@ q notify recipients --add cj467@cam.ac.uk     # the recipient list (notify.to in
 ## Notifications
 
 `notify.py` is the pipeline's only sender of email; `digest.py` decides what it says. Pipeline stages should not
-email anyone; `ZLP_pipeline.sh` stopped calling `email_eon.py` once the digest was sending (18 Oct 2026).
+email anyone; `ZLP_pipeline.sh` stopped calling `email_eon.py` once the digest was sending (18 Oct 2026), and the
+script was deleted on 19 Oct 2026.
 
 - **Incidents.** Every run (`queue-cron.sh alerts` every 30 minutes, `queue-cron.sh digest` each morning) works out
   the conditions that need a person and keeps one incident per condition in the queue database
@@ -586,8 +587,8 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 
 - **Same-target nights stay one at a time**: the `target:` lock, because each target's `<gaia_id>_<filter>_output.fits`
   in `output/` gathers every night of that target on that telescope.
-- **Emails.** The digest replaced the per-target `email_eon.py` emails; the script is still in `src/reporting/` until the
-  old senders are deleted together (with the Pipeline_v2 ones).
+- **Emails.** The digest replaced the per-target `email_eon.py` emails, and the script was deleted on 19 Oct 2026, so
+  `notify.py` is the only sender left in `src/`. The Pipeline_v2 senders are outside this repository.
 - **Promotion is phase 1.** Pipeline jobs queued with `--promote` are judged and published by `utils/promote.py`;
   the nightly runs still use T12 (`promote.nightly`), and per-run staging and provenance keywords come after the
   backfill (see [promotion.md](promotion.md)).
