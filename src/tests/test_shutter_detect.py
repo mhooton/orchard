@@ -422,6 +422,16 @@ def test_sky_ramp_against_a_shuttered_reference_night(tmp_path, small):
         ('shutterless', 'sky_ramp', 'probable')                 # experimental: never unambiguous
 
 
+def test_sky_ramp_reading_3mhz_is_not_used(tmp_path, small):
+    # on shuttered nights the sky ramp reads +1 to +2.6 s, i.e. as 3 MHz: such a reading decides nothing
+    make_night(tmp_path, '20260809', evening='shuttered', morning='shuttered', n_flats=3)
+    d = make_night(tmp_path, NIGHT, science=['3MHz'] * 6, exptime=60.0, sky=3000.0)
+    rec = sd.detect_night(d, NIGHT, TEL)
+    assert rec['science'][0]['rate'] == '3MHz'
+    assert rec['result']['confidence'] == 'inconclusive' and rec['segments'] == []
+    assert any('not used' in n for n in rec['notes'])
+
+
 def test_sky_ramp_only_when_nothing_else_answers(tmp_path, small):
     make_night(tmp_path, '20260809', evening='shuttered', morning='shuttered', n_flats=3)
     d = make_night(tmp_path, NIGHT, evening='1MHz', science=['1MHz'] * 6, exptime=60.0, sky=3000.0)

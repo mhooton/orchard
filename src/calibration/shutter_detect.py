@@ -26,9 +26,11 @@ The order of evidence, first that gives an answer wins (agreed 2026-10-19):
    missing, one-sided or disagree: the star-trail excess (smear_check.measure)
    for exposures up to 40 s, needing about 12 frames. On a night whose evening
    and morning flats disagree, bins of consecutive science frames locate the
-   switch. For longer exposures the sky readout ramp against a shuttered
-   reference flat is measured too; that test is EXPERIMENTAL and never counts
-   as unambiguous.
+   switch. For longer exposures, on a night nothing else answered, the sky
+   readout ramp against a shuttered reference flat is measured too, and only
+   a conclusive 1 MHz reading of it is used (as probable): validation found
+   a ~1% night-sky/twilight difference that reads as 1-2.6 s, i.e. as 3 MHz,
+   on shuttered nights.
 4. CAMSHUTT, in smear.shutter_state(), when the measurement is inconclusive.
 5. Shutter used.
 
@@ -136,7 +138,8 @@ EXCLUDED_SIGMA = 3.0              # and excluded beyond it
 # unambiguous; the verified science-only nights had 4.0-4.9.
 SCIENCE_ALONE_SIGMA = float('inf')
 
-# Sky readout ramp (EXPERIMENTAL): exposures longer than TRAIL_MAX_EXPTIME.
+# Sky readout ramp (EXPERIMENTAL; only a 1 MHz reading is used, as probable):
+# exposures longer than TRAIL_MAX_EXPTIME on a night nothing else answered.
 SKY_SAMPLE = 16
 SKY_MIN_FRAMES = 6
 SKY_SYS_FLOOR = 0.3               # s; a 0.2% sky gradient across a 120 s frame fakes ~0.3 s
@@ -396,6 +399,11 @@ def trail_pairs(path, telescope, night):
     stars = smear_check.find_stars(oriented, _oriented(f, 'raw'), f['saturation'])
     _, _, pairs = smear_check.measure(oriented, stars)
     return pairs, f
+
+
+def slowest_rate(rates):
+    """The readout rate with the longest readout time (1 MHz): the most visible trail."""
+    return max(rates, key=rates.get) if rates else None
 
 
 def hypotheses(rates):
@@ -893,7 +901,7 @@ def detect_night(night_dir, night, telescope, science=True, all_levels=False, fr
             # "consistent with no trail" is not enough: a night half at 1 MHz
             # can be that.
             stacks = [st for st in night_sci if st['method'] == 'trail' and st.get('z')] + ends
-            slowest = max(rates, key=rates.get) if rates else None
+            slowest = slowest_rate(rates)
             if side['state'] == SHUTTERLESS:
                 supports = sci_state == (side['state'], side['rate'])
                 contradicts = sci_state is not None and not supports
@@ -921,13 +929,20 @@ def detect_night(night_dir, night, telescope, science=True, all_levels=False, fr
         confident = sci_margin is not None and sci_margin >= SCIENCE_ALONE_SIGMA
         result = whole(sci_state[0], sci_state[1], None, 'science', UNAMBIGUOUS if confident else PROBABLE,
                        'no usable flats; star trails alone, margin %s sigma' % sci_margin)
-    elif sky_state is not None:
+    elif sky_state is not None and sky_state[0] == SHUTTERLESS and sky_state[1] == slowest_rate(rates):
+        # Validated 2026-10-19: shuttered 41-157 s nights read +1.0 to +2.6 s
+        # against a shuttered reference (night sky and twilight light the
+        # detector differently by ~1%), right on 3 MHz, while shutterless
+        # 1 MHz nights read 5.2-5.4 s. So only a conclusive 1 MHz reading is
+        # used, and only as probable.
         result = whole(sky_state[0], sky_state[1], None, 'sky_ramp', PROBABLE,
-                       'no usable flats; sky ramp (experimental)')
+                       'no usable flats or trails; sky ramp (experimental) reads 1 MHz')
     else:
         result = {'state': None, 'source': None, 'confidence': INCONCLUSIVE, 'rate': None, 't_read': None}
         if ev['state'] == MIXED or mo['state'] == MIXED:
             rec['notes'].append('flats disagree among themselves')
+        if sky_state is not None:
+            rec['notes'].append('sky ramp (experimental) reads %s: not used' % (sky_state,))
 
     # Astra's READOUTM is the camera's own statement of the readout rate
     readoutm = _readoutm_rates(frames)
