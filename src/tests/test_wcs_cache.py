@@ -425,6 +425,28 @@ def test_a_bad_row_falls_back_to_solving_that_frame(tmp_path, solver, capsys):
                                                                          astrometry.WCS_KEYWORDS)
 
 
+def test_a_failed_header_write_falls_back_to_solving_that_frame(tmp_path, solver, capsys, monkeypatch):
+    night = Night(tmp_path)
+    night.t7()
+    night.reduce()
+    real = wcs_cache.apply
+    broken = night.procs[1]
+
+    def apply(path, cards, keywords):
+        if path == broken:
+            raise OSError('disk went away')
+        return real(path, cards, keywords)
+    monkeypatch.setattr(wcs_cache, 'apply', apply)
+    del solver[:]
+    night.t7()
+    assert len(solver) == 1
+    out = capsys.readouterr().out
+    assert 'WARNING: WCS cache not used for {}: disk went away'.format(os.path.basename(broken)) in out
+    assert 'WCS cache: 2 frames from the cache, 1 to solve (unusable 1)' in out
+    assert 'orchard 4.0.2 T7: WCS solved' in _history(broken)
+    assert all('orchard 4.0.2 T7: WCS from cache' in _history(p) for p in night.procs if p != broken)
+
+
 def test_an_unwritable_cache_does_not_stop_t7(tmp_path, solver, capsys):
     night = Night(tmp_path, n=2)
     night.t7(wcs_cache=str(night.raws[0]) + '/cannot/be/here.ecsv')   # a file where a directory should be

@@ -68,8 +68,11 @@ code) never counts as a solution. Without a usable row, a frame is always solved
 1. Reads the night's table once.
 2. For each frame with a usable row, applies it, header only: it clears the WCS keywords as a solve does, applies
    the cards with `header.update()`, and records the edit (`ORCHMOD`, HISTORY `orchard <ver> T7: WCS from cache`). The
-   pixels are never read, so a 16-bit frame stays 16-bit. The result is the header a fresh solve gives; only that
-   HISTORY card differs from a solve's `T7: WCS solved`.
+   pixels are never decoded, so a 16-bit frame stays 16-bit. The result is the header a fresh solve gives; only that
+   HISTORY card differs from a solve's `T7: WCS solved`. Each frame costs 20–60 ms on appct, nearly all of it
+   astropy recomputing `DATASUM`/`CHECKSUM` over the unchanged pixels when the file closes (T6 writes calibrated
+   frames with checksums). A solve's header write pays the same. That work holds the GIL, so threads do not
+   shorten it (tried on the scratch nights: no gain).
 3. Solves the other frames in the pool, as before.
 4. After the pool, the parent reads the solved frames' headers and writes their rows: one read-change-write under
    `utils/shared_files.locked`, through a temporary file and `os.replace`. Two runs on one night (two targets, a
