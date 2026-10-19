@@ -15,11 +15,11 @@ A piece of code's version is `git describe` of the commit it came from, without 
 | `3.1.0-4-g9a0de6d` | Four commits after `v3.1.0`, at commit `9a0de6d`. Exact, but not a numbered release. |
 | `9a0de6d` | No version tag is reachable from the commit. |
 | `...-dirty` | Run from a checkout with uncommitted changes. Never seen in production. |
-| `unknown` | The code was neither a git archive nor a checkout (see "Staging" below). |
+| `unknown` | The code was neither a git archive nor a checkout (see "How the version reaches production" below). |
 
 A product made before versioning has no `ORCHVER` at all.
 
-`VERSION`, `PV` and `PIPE_V` (all `'v3'`) are a different thing: they name the output tree
+`VERSION`, `PV` and `PIPE_V` (`'v3'`, or a hardcoded `'v2'` in the PWV files) are a different thing: they name the output tree
 (`PipelineOutput/v3`), not the code. They stay as they are, because the promotion checker reads `PIPE_V`.
 
 ## When the number goes up
