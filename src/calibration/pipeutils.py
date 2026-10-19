@@ -370,6 +370,12 @@ def create_flat_dict(flatnames):
     return flat_dict
 
 
+def proc_name(raw_path):
+    """The file name T6 gives a raw frame's calibrated copy: 'proc' + its name, without quotes, spaces as '--'
+    and .fts as .fits. T7 maps calibrated frames back to their raw frames by the same rule."""
+    return 'proc' + os.path.basename(raw_path).replace("'", "").replace(" ", "--").replace(".fts", ".fits")
+
+
 @contextmanager
 def open_fits_file(filename):
     if filename.endswith('.bz2'):
