@@ -188,6 +188,20 @@ def test_twirl_only_solve_is_still_available(tmp_path):
         assert result['error']
 
 
+def test_a_known_scale_crash_falls_back_to_twirl(tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError('simulated')
+    monkeypatch.setattr(pw.known_scale, 'solve', boom)
+    path, db, truth = frame_and_db(tmp_path)
+    result = pw.pointer_wcs(path, db, wcs_keywords=WCS_KEYWORDS, clear_existing_wcs=True)
+    # twirl ran: either it solved, verified, or it failed with its own reason
+    assert result['method'] in (None, 'twirl'), result
+    if result['success']:
+        assert header_error_arcsec(path, truth) < 2.0
+    else:
+        assert 'simulated' not in (result['error'] or '')
+
+
 def test_inside_query_box_matches_the_query():
     radecs = np.array([[150.0, -30.5], [150.05, -30.5], [150.2, -30.5], [150.0, -30.6]])
     mask = pw.inside_query_box(radecs, CENTRE, (0.12, 0.12))

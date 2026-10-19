@@ -1034,9 +1034,13 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 trail = known_scale.trail_ellipticity(image_clean, all_stars_in_image)
                 solution = None
                 if known_scale_solve:
-                    solution = known_scale.solve(
-                        all_stars_in_image, catalogue[:, 0], catalogue[:, 1], (center.ra.deg, center.dec.deg),
-                        plate_scale, image_clean.shape, inner=inner, prior=prior_wcs, trail=trail)
+                    try:
+                        solution = known_scale.solve(
+                            all_stars_in_image, catalogue[:, 0], catalogue[:, 1], (center.ra.deg, center.dec.deg),
+                            plate_scale, image_clean.shape, inner=inner, prior=prior_wcs, trail=trail)
+                    except Exception as e:      # never worse than the twirl-only solve
+                        solution = dict(success=False, wcs=None, method=None, verification=None, candidates=0,
+                                        error=f"known-scale solve raised {type(e).__name__}: {e}")
                     if verbose:
                         print(f"Known-scale solve: success={solution['success']} method={solution['method']} "
                               f"verification={solution['verification']} candidates={solution['candidates']}")
