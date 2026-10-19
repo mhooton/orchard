@@ -376,6 +376,17 @@ def record_primary_provenance(catalogue_path, info):
         logger.warning("Could not record primary provenance in '%s': %s", catalogue_path, e)
 
 
+def write_active_catalogue(sidecar_path, cat_path):
+    """Record the catalogue this run validated (tonight's stack, or the backup it restored) for T9 and
+    condense: one line, the catalogue's file name."""
+    try:
+        with open(sidecar_path, 'w') as f:
+            f.write(os.path.basename(cat_path) + '\n')
+        logger.info("Active catalogue recorded in '%s': %s", sidecar_path, os.path.basename(cat_path))
+    except Exception as e:
+        logger.warning("Could not write '%s': %s", sidecar_path, e)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -480,6 +491,15 @@ def main(filelist, outdir, backupcatdir, reportdir, filter, date,
         logger.info("Sidecar written: '%s' → %s", sidecar_path, cat_name)
     except Exception as _e:
         logger.warning("Could not write sidecar file: %s", _e)
+
+    # .active_stack_catalogue_<filter> names the catalogue this run validated (written at step 10).
+    # T9 and condense use it, so a backup an earlier run restored into this directory is never
+    # taken for one restored tonight. Remove an earlier run's record first.
+    active_sidecar = os.path.join(outdir, '.active_stack_catalogue_' + filter)
+    try:
+        os.remove(active_sidecar)
+    except FileNotFoundError:
+        pass
 
     # ------------------------------------------------------------------
     # Step 2: image selection
@@ -750,10 +770,12 @@ def main(filelist, outdir, backupcatdir, reportdir, filter, date,
         return 1
 
     # ------------------------------------------------------------------
-    # Step 10: write TARGET_ROLE column into the active catalogue
+    # Step 10: write TARGET_ROLE column into the active catalogue, and
+    # record which catalogue that is for T9 and condense
     # ------------------------------------------------------------------
     write_target_roles(active_cat_path, targets)
     record_primary_provenance(active_cat_path, ident_info)
+    write_active_catalogue(active_sidecar, active_cat_path)
 
     # ------------------------------------------------------------------
     # Step 11: backup management

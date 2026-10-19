@@ -672,6 +672,38 @@ iterate_and_act_on_lists() {
     fi
 }
 
+# The stack catalogue T9 and condense use for one target and filter: the one T8 recorded in
+# .active_stack_catalogue_<filter> (tonight's stack, or a backup it restored tonight). A backup an
+# earlier run restored into the directory is otherwise taken for tonight's: on 2026-10-17 that made
+# condense crash on 2024 catalogues and one night's photometry run on another night's catalogue.
+# Directories T8 wrote before the record existed fall back to the old rule: a catalogue that is not
+# tonight's expected one (a restored backup), else the expected one. Prints nothing if there is none.
+choose_stack_catalogue() {
+    local dir=$1 filter=$2 name="" expected="" f
+    if [ -f "${dir}/.active_stack_catalogue_${filter}" ]; then
+        name=$(tr -d '[:space:]' < "${dir}/.active_stack_catalogue_${filter}")
+        if [ -n "${name}" ] && [ -f "${dir}/${name}" ]; then
+            echo "${dir}/${name}"
+            return 0
+        fi
+    fi
+    if [ -f "${dir}/.expected_stack_catalogue" ]; then
+        expected=$(tr -d '[:space:]' < "${dir}/.expected_stack_catalogue")
+    fi
+    for f in ${dir}/[0-9]*_stack_catalogue_[!p]*.${OUTEXT}; do
+        [ -f "$f" ] || continue
+        if [ -n "${expected}" ] && [ "$(basename "$f")" = "${expected}" ]; then
+            continue
+        fi
+        echo "$f"
+        return 0
+    done
+    if [ -n "${expected}" ]; then
+        echo "${dir}/${expected}"
+    fi
+    return 0
+}
+
 # perform aperture photometry on a single target
 single_perform_aperture_photometry() {
 #    local filelist=$1
@@ -685,33 +717,8 @@ single_perform_aperture_photometry() {
             FILTER=${SUBLIST%_processed.dat}
             echo "For filter = ${FILTER}"
 
-            # Locate the stack catalogue for this filter. Under the new naming
-            # scheme (catalogue_fov.py) it is named by Gaia DR2 ID rather than
-            # target name. If two catalogues exist (tonight's failed stack and
-            # a restored backup), prefer the one that does NOT match tonight's
-            # telescope and date — i.e. the backup. If only one exists, use it.
-            # Use sidecar file to identify tonight's expected catalogue name.
-            # Prefer any catalogue that is NOT the expected one (i.e. a backup).
-            # Fall back to the expected catalogue if no backup is present.
-            CATFILE=""
-            EXPECTED_CAT=""
-            SIDECAR="${output_directory}/.expected_stack_catalogue"
-            if [ -f "${SIDECAR}" ]; then
-                EXPECTED_CAT=$(cat "${SIDECAR}" | tr -d '[:space:]')
-            fi
-            for f in ${output_directory}/[0-9]*_stack_catalogue_[!p]*.${OUTEXT}; do
-                [ -f "$f" ] || continue
-                fname=$(basename "$f")
-                if [ -n "${EXPECTED_CAT}" ] && [ "${fname}" = "${EXPECTED_CAT}" ]; then
-                    continue
-                fi
-                CATFILE="$f"
-                break
-            done
-            # Fall back to expected catalogue if no backup was found
-            if [ -z "${CATFILE}" ] && [ -n "${EXPECTED_CAT}" ]; then
-                CATFILE="${output_directory}/${EXPECTED_CAT}"
-            fi
+            # The stack catalogue for this filter: the one T8 validated, see choose_stack_catalogue.
+            CATFILE=$(choose_stack_catalogue "${output_directory}" "${FILTER}")
             if [ -z "${CATFILE}" ]; then
                 echo "WARNING: No stack catalogue found for filter ${FILTER} in ${output_directory} — skipping T9"
                 continue
@@ -761,27 +768,7 @@ condense_photometry() {
         --filter ${FILTER}
         --ext ${OUTEXT}
         --version ${VERSION}
-        --cat $(
-            CONDENSE_CAT=""
-            CONDENSE_EXPECTED=""
-            CONDENSE_SIDECAR="${OUTPUTDIR}/${DATE}/${i}/.expected_stack_catalogue"
-            if [ -f "${CONDENSE_SIDECAR}" ]; then
-                CONDENSE_EXPECTED=$(cat "${CONDENSE_SIDECAR}" | tr -d '[:space:]')
-            fi
-            for f in ${OUTPUTDIR}/${DATE}/${i}/[0-9]*_stack_catalogue_[!p]*.${OUTEXT}; do
-                [ -f "$f" ] || continue
-                fname=$(basename "$f")
-                if [ -n "${CONDENSE_EXPECTED}" ] && [ "${fname}" = "${CONDENSE_EXPECTED}" ]; then
-                    continue
-                fi
-                CONDENSE_CAT="$f"
-                break
-            done
-            if [ -z "${CONDENSE_CAT}" ] && [ -n "${CONDENSE_EXPECTED}" ]; then
-                CONDENSE_CAT="${OUTPUTDIR}/${DATE}/${i}/${CONDENSE_EXPECTED}"
-            fi
-            echo "$CONDENSE_CAT"
-        )
+        --cat $(choose_stack_catalogue "${OUTPUTDIR}/${DATE}/${i}" "${FILTER}")
         --tlist ${TLIST}"
     echo "${CMD}"
 
