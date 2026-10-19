@@ -222,6 +222,68 @@ def test_deployed_sha_prefers_version_file(tmp_path):
     assert deployed_sha(str(tmp_path)) == '96eb235'
 
 
+def test_requeued_job_is_not_failed_by_its_first_attempts_status_file(cfg, store, clock, tmp_path):
+    # 2026-10-19, jobs 1502, 1625, 1627: after `q requeue` the new run was given attempt 1's log and status paths
+    # again, so the next poll read attempt 1's exit 1, failed the job with the old signature and freed its locks
+    # while it carried on (1502 and 1625 then finished with exit 0)
+    marker = tmp_path / 'first-run-done'
+    script = ('import os, sys, time\n'
+              'if not os.path.exists({m!r}):\n'
+              '    open({m!r}, "w").close()\n'
+              '    print("Traceback (most recent call last):")\n'
+              '    print("KeyError: \'gaia_dr3_id\'")\n'
+              '    sys.exit(1)\n'
+              'time.sleep(1.5)\n').format(m=str(marker))
+    jid = add(store, [PY, '-c', script], telescope='Callisto', night='20240126')
+    d = make(cfg, store, clock)
+    d.poll()
+    first = poll_until(d, store, jid, ('failed',))
+    assert first['failure_signature'] == "KeyError: 'gaia_dr3_id'" and first['log_path'].endswith('-a1.log')
+    assert store.requeue(job_ids=[jid]) == [(jid, 'requeued')]
+    clock.advance(minutes=30)                                # same month: the same directory as attempt 1
+    d.poll()                                                 # starts the new run
+    d.poll()                                                 # and checks it: still running
+    j = store.get_job(jid)
+    assert j['state'] == 'running', j
+    assert j['log_path'].endswith('-a2.log') and j['status_path'] == j['log_path'] + '.status.json'
+    j = poll_until(d, store, jid, ('done',))
+    assert j['exit_code'] == 0 and j['failure_signature'] is None
+    assert open(j['log_path']).read().count('=== jobqueue job {} | started'.format(jid)) == 1   # this run only
+    assert json.load(open(first['status_path']))['exit_code'] == 1     # attempt 1's record is left as it was
+    assert [e['message'] for e in store.events(job_id=jid, kinds=['started'])] == ['attempt 1', 'attempt 2']
+
+
+def test_attempt_never_reuses_an_existing_log_or_status_file(cfg, store, clock):
+    jid = add(store, [PY, '-c', 'pass'])
+    d = make(cfg, store, clock)
+    log1 = d._job_paths(store.get_job(jid), 1, clock())[0]
+    open(log1 + '.status.json', 'w').write('{"exit_code": 1}')        # e.g. left by a restored database's job
+    d.poll()
+    j = store.get_job(jid)
+    assert j['log_path'].endswith('-a2.log')
+    assert store.events(job_id=jid, kinds=['started'])[0]['message'] == 'attempt 2'
+    poll_until(d, store, jid, ('done',))
+
+
+def test_status_file_written_before_the_attempt_started_is_ignored(cfg, store, clock):
+    jid = add(store, [PY, '-c', 'import time; time.sleep(60)'])
+    d = make(cfg, store, clock)
+    d.poll()
+    j = store.get_job(jid)
+    assert wait_for(lambda: os.path.exists(j['status_path'] + '.started'))
+    # an earlier run's exit status at this attempt's path (started an hour before this attempt did)
+    with open(j['status_path'], 'w') as f:
+        json.dump({'exit_code': 1, 'started_at': '2026-10-09T13:00:00Z', 'finished_at': '2026-10-09T13:40:00Z'}, f)
+    d.poll()
+    d.poll()
+    assert store.get_job(jid)['state'] == 'running'
+    stale = store.events(job_id=jid, kinds=['stale-status'])
+    assert len(stale) == 1 and '2026-10-09T13:00:00Z' in stale[0]['message']
+    store.cancel(jid, kill=True)
+    j = poll_until(d, store, jid, ('cancelled',))            # the runner's own status file replaces it
+    assert json.load(open(j['status_path']))['started_at'] != '2026-10-09T13:00:00Z'
+
+
 def test_command_outliving_its_runner_is_not_requeued_alongside_itself(cfg, store, clock, tmp_path):
     # the runner is SIGKILLed alone (as the OOM killer might); its command keeps running in the same group
     jid = add(store, [PY, '-c', 'import time; time.sleep(3)'])

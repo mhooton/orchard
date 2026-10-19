@@ -126,6 +126,21 @@ def test_requeue_by_signature(store):
     assert any(e['kind'] == 'requeued' for e in store.events(job_id=ids[0]))
 
 
+def test_requeue_resets_the_retries_but_not_the_attempt_numbers(store):
+    jid = add(store, max_retries=1)
+    assert store.next_attempt(jid) == 1
+    run(store, jid)
+    store.finish(jid, 1, signature='boom')
+    store.requeue(job_ids=[jid])
+    j = store.get_job(jid)
+    assert j['attempts'] == 0 and store.next_attempt(jid) == 2       # attempt 1's files stay attempt 1's
+    assert store.mark_running(jid, attempt=2)
+    assert store.events(job_id=jid, kinds=['started'])[-1]['message'] == 'attempt 2'
+    # the requeue gave it max_retries again: one transient retry, as for a new job
+    assert store.finish(jid, 1, signature='x', transient=True)['state'] == 'queued'
+    assert store.next_attempt(jid) == 3
+
+
 def test_requeue_skips_a_job_already_active_again(store):
     a, _ = store.add_job('P1', 'pipeline', ['x'], dedupe_key='k')
     run(store, a)

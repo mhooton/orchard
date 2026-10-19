@@ -36,6 +36,8 @@ from .signatures import extract, is_transient, read_tail
 from .util import iso, parse_iso, read_json, utcnow
 
 FITS_SUFFIXES = ('.fits', '.fts', '.fit', '.fits.fz', '.fits.gz')
+# A runner's start stamp may trail the attempt's started_at by this much (a clock step) and still count as its own.
+STATUS_CLOCK_SLACK = dt.timedelta(seconds=60)
 
 
 class AlreadyRunning(Exception):
@@ -144,12 +146,18 @@ class Dispatcher:
         return sha
 
     def _job_paths(self, job, attempt, now):
+        """(log, status, attempt) for a run, at the first attempt number from `attempt` on whose files do not
+        exist yet: a run must never inherit an earlier run's log or exit status."""
         d = os.path.join(self.paths['job_logs'], now.strftime('%Y-%m'))
         os.makedirs(d, exist_ok=True)
-        stem = '{:06d}-{}-{}-{}-a{}'.format(job['id'], job['kind'], job['telescope'] or 'x', job['night'] or 'x',
-                                            attempt)
-        log = os.path.join(d, stem + '.log')
-        return log, log + '.status.json'
+        while True:
+            stem = '{:06d}-{}-{}-{}-a{}'.format(job['id'], job['kind'], job['telescope'] or 'x', job['night'] or 'x',
+                                                attempt)
+            log = os.path.join(d, stem + '.log')
+            status = log + '.status.json'
+            if not any(os.path.exists(p) for p in (log, status, status + '.started')):
+                return log, status, attempt
+            attempt += 1
 
     def _estimate(self, job):
         if job['kind'] != 'pipeline' or not job['telescope'] or not job['night']:
@@ -200,6 +208,28 @@ class Dispatcher:
 
     # ------------------------------------------------------------------ running jobs
 
+    def _own_file(self, job, path):
+        """The runner's status (or .started) file at path, or None if an earlier run left it.
+
+        The runner stamps both files with its start time, which is never before the attempt's started_at (it is
+        launched just after mark_running). A file stamped earlier belongs to an earlier run, e.g. one whose paths
+        this run was given again, and its exit status must not end this run (as it ended requeued jobs 1502, 1625,
+        1627 and 1649 on 2026-10-19).
+        """
+        info = read_json(path)
+        ran = parse_iso(info.get('started_at')) if isinstance(info, dict) else None
+        began = parse_iso(job['started_at'])
+        if ran is None or began is None or ran >= began - STATUS_CLOCK_SLACK:
+            return info
+        if self._waiting.get(('stale', job['id'], path)) is None:
+            self._waiting[('stale', job['id'], path)] = True
+            msg = 'ignored {}: its runner started {}, before this attempt did ({})'.format(
+                path, info['started_at'], job['started_at'])
+            self.log('job {}: {}'.format(job['id'], msg))
+            self.store.event('stale-status', job_id=job['id'], source='dispatcher', telescope=job['telescope'],
+                             night=job['night'], message=msg)
+        return None
+
     def check_running(self, job, now):
         started = parse_iso(job['started_at']) or now
         if job['shadow']:
@@ -209,7 +239,7 @@ class Dispatcher:
             return
         pid = job['pid']
         if job['status_path'] and (not pid or not job['proc_start']):
-            info = read_json(job['status_path'] + '.started')
+            info = self._own_file(job, job['status_path'] + '.started')
             if info and info.get('pid'):
                 pid = info['pid']
                 self.store.set_process(job['id'], pid, info.get('proc_start') or job['proc_start'])
@@ -218,7 +248,7 @@ class Dispatcher:
             reap(pid)
         # The runner writes its status file as its last act, so a status file means the job is over, whatever
         # now holds its PID.
-        status = read_json(job['status_path']) if job['status_path'] else None
+        status = self._own_file(job, job['status_path']) if job['status_path'] else None
         leader = bool(pid) and pid_alive(pid, job['proc_start'], self.proc)
         if status is None and pid and not leader and group_alive(pid):
             # The runner is gone but the command it started is not: still running, exit status unknown. It is
@@ -288,7 +318,7 @@ class Dispatcher:
         return rel
 
     def start(self, job, now):
-        attempt = job['attempts'] + 1
+        attempt = self.store.next_attempt(job['id'])
         release = None if self.shadow else self.release()
         sha = release['id'] if release else self.code_sha()
         est = self._estimate(job)
@@ -298,9 +328,9 @@ class Dispatcher:
                 self.log('[shadow] would start job {} {} {} {} {}'.format(job['id'], job['class'], job['kind'],
                                                                       job['telescope'], job['night']))
             return
-        log_path, status_path = self._job_paths(job, attempt, now)
+        log_path, status_path, attempt = self._job_paths(job, attempt, now)
         if not self.store.mark_running(job['id'], log_path=log_path, status_path=status_path, code_sha=sha,
-                                       est_minutes=est):
+                                       est_minutes=est, attempt=attempt):
             return
         try:
             pid = self.launcher(job, log_path, status_path, sha, release)
