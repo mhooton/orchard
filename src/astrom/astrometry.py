@@ -502,6 +502,7 @@ def add_astrometry(f, ext, db_path, raw_images, trim_offsets, file_num=None, tot
                        f"Sources: {_n('sources_detected')}→{_n('sources_used')} "
                        f"Gaia: {_n('gaia_queried')}→{_n('gaia_used')} "
                        f"Matches: {_n('matches')} "
+                       f"Method: {result.get('method') or '?'} "
                        f"CRPIX=({crpix1:.2f},{crpix2:.2f}) "
                        f"CRVAL=({crval1:.6f},{crval2:.6f})")
         else:
