@@ -132,8 +132,9 @@ How to read a raw frame's header:
   - a frame orchard wrote before raw frames were versioned. These carry `ASTRAROT`/`ASTRAMIR` and the
     descriptive HISTORY cards, and nothing more. The archive is not retrofitted.
 
-One write is not recorded: T7's copy of its plate solution into raw light frames (`copy_wcs_to_raw`). It is
-being replaced by a WCS cache outside the raw tree.
+One write was never recorded: T7's copy of its plate solution into raw light frames (`copy_wcs_to_raw`). T7 no
+longer writes raw frames; it keeps its solutions in a cache outside the raw tree ([wcs-cache.md](wcs-cache.md)).
+Light frames solved before that still carry orchard's WCS cards, with no `ORCHMOD` to say so.
 
 The descriptive cards stay exactly as they were, because the repair scripts read them back:
 
