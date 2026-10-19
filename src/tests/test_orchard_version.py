@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 
+import numpy as np
 import pytest
 from astropy.io import fits
 
@@ -220,3 +221,110 @@ def test_command_line(tmp_path):
     out = subprocess.run([sys.executable, MODULE, '--line'], stdout=subprocess.PIPE, universal_newlines=True,
                          check=True).stdout
     assert out.startswith('orchard ')
+
+
+# --------------------------------------------------------------------------- creation and in-place edits
+
+def test_stamp_drops_what_a_copied_header_brings_along(released, monkeypatch):
+    """CASU's catalogues and stacks copy their input frame's header: the new file must not claim the frame's
+    version, its latest edit, or a release that did not make it."""
+    copied = fits.Header()
+    copied['ORCHVER'] = '3.9.9'
+    copied['ORCHREL'] = '20250101T000000Z-aaaaaaa'
+    copied['ORCHMOD'] = '3.9.9'
+    h = ov.stamp(copied.copy())
+    assert h['ORCHVER'] == '1.2.0-3-gab12cd3' and h['ORCHREL'] == '20261019T112705Z-ab12cd3' and 'ORCHMOD' not in h
+    monkeypatch.setattr(ov, 'info', lambda: {'version': '1.0.0', 'commit': COMMIT, 'date': None, 'release': None,
+                                             'source': 'git'})
+    h = ov.stamp(copied.copy())
+    assert h['ORCHVER'] == '1.0.0' and 'ORCHREL' not in h and 'ORCHMOD' not in h
+
+
+def test_record_edit_sets_orchmod_and_one_card_per_edit(released):
+    h = ov.stamp(fits.Header())
+    ov.record_edit(h, 'wcsfit', 'WCS refit')
+    ov.record_edit(h, 'wcsfit', 'WCS refit')                 # T8 and T9 both refit: one card
+    ov.record_edit(h, 'T7', 'WCS solved')
+    assert h['ORCHVER'] == h['ORCHMOD'] == '1.2.0-3-gab12cd3'
+    assert [str(c) for c in h['HISTORY']] == ['orchard 1.2.0-3-gab12cd3 wcsfit: WCS refit',
+                                              'orchard 1.2.0-3-gab12cd3 T7: WCS solved']
+
+
+def test_record_edit_without_history_leaves_history_alone(released):
+    """output.fits: HISTORY is the list of nights, and SPlightcurve reads HISTORY[0] as the date."""
+    h = fits.Header()
+    h['HISTORY'] = '20260810'
+    ov.record_edit(h, 'condense', history=False)
+    assert h['ORCHMOD'] == '1.2.0-3-gab12cd3' and [str(c) for c in h['HISTORY']] == ['20260810']
+
+
+def test_an_edit_card_is_one_card_and_never_looks_like_a_transform(released):
+    card = ov.edit_card('catalogue_fov', 'x' * 200)
+    assert len(card) == ov.HISTORY_LEN
+    h = ov.record_edit(fits.Header(), 'catalogue_fov', 'x' * 200)
+    assert len(h['HISTORY']) == 1
+    for reserved in ('horizontal mirroring', 'anticlockwise rotation', 'orient repair'):
+        with pytest.raises(ValueError):
+            ov.edit_card('astra_transform', reserved)
+    with pytest.raises(ValueError):
+        ov.edit_card('framepack', 'int16')                   # 'framepack:' is framepack's own card's tag
+
+
+def _int16_frame(path):
+    from utils import framepack as fp
+    src = str(path) + '.float.fits'
+    data = (1000 + 30 * np.random.default_rng(1).standard_normal((32, 48))).astype(np.float32)
+    fits.PrimaryHDU(data=data).writeto(src)
+    fp.to_int16(src, str(path))
+    return fits.getdata(str(path))
+
+
+def test_file_helpers_edit_the_header_only(released, tmp_path):
+    """A 16-bit frame (BZERO set) stays 16-bit: the pixels are never decoded."""
+    f = tmp_path / 'proc.fits'
+    before = _int16_frame(f)
+    assert ov.edit_file(str(f), 'T7', 'WCS solved')
+    assert ov.edit_file(str(f), 'T7', 'WCS solved')
+    h = fits.getheader(str(f))
+    assert h['BITPIX'] == 16 and h['ORCHMOD'] == '1.2.0-3-gab12cd3'
+    assert [str(c) for c in h['HISTORY']].count('orchard 1.2.0-3-gab12cd3 T7: WCS solved') == 1
+    np.testing.assert_array_equal(fits.getdata(str(f)), before)
+    assert ov.stamp_file(str(f)) and 'ORCHMOD' not in fits.getheader(str(f))
+    assert fits.getheader(str(f))['BITPIX'] == 16
+
+
+def test_file_helpers_report_instead_of_raising(released, tmp_path, capsys):
+    """A failed stamp must never fail the stage: casu_solve marks a frame unsolved on any exception."""
+    missing = str(tmp_path / 'missing.cat')
+    assert ov.stamp_file(missing) is False and ov.edit_file(missing, 'wcsfit', 'WCS refit') is False
+    assert 'could not' in capsys.readouterr().out
+
+
+def test_wcsfit_status_records_one_card_however_often_a_run_refits(released, tmp_path):
+    pytest.importorskip('fitsio')
+    from photometry.wcs_status import set_wcs_status
+    f = str(tmp_path / 'proc.fits')
+    fits.PrimaryHDU(data=np.zeros((4, 4), dtype=np.float32)).writeto(f)
+    for ok in (True, True, False):
+        set_wcs_status(f, succeeded=ok)
+    h = fits.getheader(f)
+    assert h['wcscompl'] is False and h['ORCHMOD'] == '1.2.0-3-gab12cd3'
+    assert [str(c) for c in h['HISTORY']] == ['orchard 1.2.0-3-gab12cd3 wcsfit: WCS refit',
+                                              'orchard 1.2.0-3-gab12cd3 wcsfit: WCS refit failed']
+
+
+def test_framepack_converts_a_frame_earlier_stages_edited(released, tmp_path):
+    """ORCHMOD on the source (T7, wcsfit) and a new ORCHMOD on the output must not fail the lossless checks."""
+    from utils import framepack as fp
+    f = str(tmp_path / 'proc.fits')
+    fits.PrimaryHDU(data=(1000 + np.arange(32 * 48, dtype=np.float32).reshape(32, 48))).writeto(f)
+    ov.edit_file(f, 'T7', 'WCS solved')
+    with fits.open(f, mode='update') as h:
+        h[0].header['ORCHMOD'] = '0.9.0'                     # an edit by an older orchard
+    for op in ('int16', 'compress'):
+        rep = fp.convert_in_place(f, op)
+        assert rep.status == 'done', rep
+        f = rep.final
+    h = fits.getheader(f, 1)
+    assert h['ORCHMOD'] == '1.2.0-3-gab12cd3' and 'orchard 1.2.0-3-gab12cd3 T7: WCS solved' in [
+        str(c) for c in h['HISTORY']]

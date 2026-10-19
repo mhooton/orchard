@@ -872,10 +872,12 @@ def test_condense_smear_ap_with_readout_columns_and_update(tmp_path):
         assert h['SMEAR_AP'].data.shape == h['JD'].data.shape == (3, 7)
         np.testing.assert_array_equal(h['SMEAR_AP'].data[:, 5:], c['SMEAR_AP'])
         np.testing.assert_array_equal(h['SMEAR_AP'].data[:, 3:5], b['SMEAR_AP'])
-        # a file every night adds to says which orchard updated it last
+        # a file every night adds to keeps the version that made it and says which orchard updated it last;
+        # its HISTORY stays the list of nights (SPlightcurve reads HISTORY[0] as a date)
         from utils import orchard_version
         assert h[0].header['ORCHVER'] == orchard_version.version()
-        assert h[0].header.comments['ORCHVER'] == 'orchard version of the last update'
+        assert h[0].header['ORCHMOD'] == orchard_version.version()
+        assert [str(c) for c in h[0].header['HISTORY']] == ['20260810', '20260811', '20260812']
 
     # a job still pinned to an older release updates the global file: every HDU but SMEAR_AP gains its two
     # frames. The next update pads SMEAR_AP with "not assessed" for them, so it lines up with JD again.

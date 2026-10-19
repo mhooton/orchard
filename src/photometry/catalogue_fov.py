@@ -52,6 +52,7 @@ from photometry.wcs_status import wcs_succeeded
 from photometry.wcs_fitting import m_solve_images
 from reporting.QC import main as QC
 from calibration.pipeutils import detect_instrument
+from utils import orchard_version
 from utils.target_management import (
     identify_targets,
     load_id_aliases,
@@ -570,6 +571,10 @@ def main(filelist, outdir, backupcatdir, reportdir, filter, date,
         outstack=stack_path,
         outconf=conf_path,
     )
+    # imstack copies an input frame's header, ORCHVER included: these are tonight's files
+    for made in (stack_path, conf_path):
+        if os.path.exists(made):
+            orchard_version.stamp_file(made)
 
     # ------------------------------------------------------------------
     # Step 6: source detection
@@ -583,6 +588,8 @@ def main(filelist, outdir, backupcatdir, reportdir, filter, date,
         verbose=verbose,
         ellfile=True,
     )
+    if os.path.exists(cat_path):
+        orchard_version.stamp_file(cat_path)
 
     # ------------------------------------------------------------------
     # Step 7: Gaia DR3 crossmatch
@@ -775,6 +782,8 @@ def main(filelist, outdir, backupcatdir, reportdir, filter, date,
     # ------------------------------------------------------------------
     write_target_roles(active_cat_path, targets)
     record_primary_provenance(active_cat_path, ident_info)
+    if using_backup:        # an earlier night's catalogue, rewritten for tonight's targets; it keeps its ORCHVER
+        orchard_version.edit_file(active_cat_path, 'catalogue_fov', 'target roles for ' + str(date))
     write_active_catalogue(active_sidecar, active_cat_path)
 
     # ------------------------------------------------------------------

@@ -74,6 +74,7 @@ from photometry.hjd_correction import append_hjd_correction_column
 from photometry.photom_quality_checks import frame_shift, m_frame_shift, cloud_check
 from photometry.super_sample import call_find_fwhm
 from photometry import casutools
+from utils import orchard_version
 import psutil
 
 
@@ -218,6 +219,9 @@ def wcs_photom(image,cat_file='nocat',conf_file='noconf',appsize=4,verbose=False
         pf.setval(outname,'PSF_a_'+str(val),1,value=fwhm_a['f_'+str(val)][0],comment='[pixels] psf long axis FWHM. '+positions[val-1])
         pf.setval(outname,'PSF_b_'+str(val),1,value=fwhm_b['f_'+str(val)][0],comment='[pixels] psf short axis FWHM. '+positions[val-1])
         pf.setval(outname,'PSF_t_'+str(val),1,value=t['f_'+str(val)][0],comment='[degrees] psf rotation angle. '+positions[val-1])
+
+    # imcore_list copied the frame's header into the new file, ORCHVER included: this is the run's own file
+    orchard_version.stamp_file(outname)
 
     # Compute the HJD values
     # append_hjd_correction_column(outname)

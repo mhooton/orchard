@@ -1752,11 +1752,17 @@ Licensed under the MIT License. See LICENSE file for details.
 
 ## Version History
 
-Releases are git tags `vMAJOR.MINOR.PATCH` on `main`, and every product records the version that made it in its
-`ORCHVER` header keyword. See [docs/versioning.md](docs/versioning.md) for when each part of the number goes up and
-which products carry it.
+Versions are git tags `vMAJOR.MINOR.PATCH` on `main`. Every FITS file the pipeline creates records the version
+that made it (`ORCHVER`), and every later in-place edit records itself (`ORCHMOD` and a HISTORY card). See
+[docs/versioning.md](docs/versioning.md) for when each part of the number goes up and what carries it.
 
-**v3.0** (Current - February 2025)
+**v4.0.0** (October 2026): the first tagged version
+- Every FITS product, calibration frame and catalogue records the orchard version that made it, and later in-place
+  edits record theirs
+- Code releases: queue jobs run from frozen, versioned copies of the code
+- From here on, "v2" and "v3" name only the output folders, which control what the portal ingests
+
+**v3.0** (February 2025)
 - Complete Python 2.7 → 3.9 migration
 - Dockerised deployment
 - JSON-based instrument configuration

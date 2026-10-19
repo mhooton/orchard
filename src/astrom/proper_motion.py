@@ -7,6 +7,7 @@ import numpy as np
 import datetime
 import astropy.time
 import photometry.gaia_dr2_test as gaia_dr2_test
+from utils import orchard_version
 
 """
 Proper Motion Correction for Reference Catalogues
@@ -87,6 +88,7 @@ def create_new_cat(old_cat,new_cat,stars):
 
         cfile[1].write(list(copy.values()),names=list(copy.keys()))
         print("Written new RA and DEC to " + str(new_cat))
+    orchard_version.stamp_file(new_cat)         # a copy of the stack catalogue, but this run's file
 
 def calculate_pm(stars,cat_jd,new_jd):
     for s in range(len(stars['ra'])):
@@ -128,6 +130,7 @@ def generate_new_cat(catfile, date, output_path):
     except:
         print("Gaia crossmatch has not been done for this field, crossmatching now...")
         gaia_dr2_test.crossmatch(catfile, logfile=None, n=8, ext='fits', date=date)  # Add ext parameter
+        orchard_version.edit_file(catfile, 'proper_motion', 'Gaia crossmatch')
         stars, cat_jd = import_stars(catfile)
 
     stars = calculate_pm(stars, cat_jd, new_jd)

@@ -85,6 +85,11 @@ from multiprocessing import Pool
 import numpy as np
 from astropy.io import fits
 
+try:
+    from utils import orchard_version
+except ImportError:         # run as a bare script
+    import orchard_version
+
 BLANK = -32768            # stored value of a NaN or infinite pixel
 STORED_MIN = -32767       # the usable stored range, BLANK excluded
 STORED_MAX = 32767
@@ -96,7 +101,8 @@ CASU_BAD_BELOW = -1000    # CASU imcore_list flags pixels below -1,000 as bad
 SCALING = ('BSCALE', 'BZERO', 'BLANK')
 STRUCTURAL = ('SIMPLE', 'XTENSION', 'BITPIX', 'NAXIS', 'NAXIS1', 'NAXIS2', 'EXTEND', 'PCOUNT', 'GCOUNT',
               'CHECKSUM', 'DATASUM')
-NOT_COMPARED = set(STRUCTURAL) | set(SCALING)
+# ORCHMOD: each conversion records itself as the file's latest edit, so it differs from the source by design
+NOT_COMPARED = set(STRUCTURAL) | set(SCALING) | {orchard_version.EDIT_KEYWORD}
 FITS_SUFFIXES = ('.fits', '.fts', '.fit')
 HISTORY_TAG = 'framepack:'
 OPS = ('int16', 'compress', 'decompress', 'pack')
@@ -176,6 +182,7 @@ def to_int16(src, dst):
     # one card (<= 72 characters), so the header comparison can recognise and skip it
     out.header.add_history(f'{HISTORY_TAG} float32 -> int16, {n_clipped} clipped, {n_blank} blank, '
                            f'{datetime.date.today().isoformat()}')
+    orchard_version.record_edit(out.header, 'framepack', history=False)    # the card above is the record
     out.writeto(dst, checksum=True)
     return bzero, n_clipped, n_blank
 
@@ -190,7 +197,8 @@ def compress(src, dst):
         bitpix = h[0].header['BITPIX']
         if bitpix != 16:
             raise FramePackError(f'BITPIX {bitpix}: only 16-bit images are compressed losslessly')
-        header = _strip(h[0].header, ('CHECKSUM', 'DATASUM'))
+        header = orchard_version.record_edit(_strip(h[0].header, ('CHECKSUM', 'DATASUM')), 'framepack',
+                                             history=False)
         c = fits.CompImageHDU(data=h[0].data, header=header, compression_type='RICE_1',
                               do_not_scale_image_data=True)
         fits.HDUList([fits.PrimaryHDU(), c]).writeto(dst, checksum=True)
@@ -206,6 +214,7 @@ def decompress(src, dst):
         stored = h[1].data
         out = fits.PrimaryHDU(data=stored, header=_strip(header, STRUCTURAL + SCALING), do_not_scale_image_data=True)
     _set_scaling(out.header, *scaling)
+    orchard_version.record_edit(out.header, 'framepack', history=False)
     out.writeto(dst, checksum=True)
 
 

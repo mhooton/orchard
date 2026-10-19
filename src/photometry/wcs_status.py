@@ -1,5 +1,7 @@
 import fitsio
 
+from utils import orchard_version
+
 __all__ = ['wcs_succeeded', 'set_wcs_status']
 
 HEADER_KEY = 'wcscompl'
@@ -49,3 +51,5 @@ def set_wcs_status(fname, succeeded, hdu=0):
     '''
     with fitsio.FITS(fname, 'rw') as outfile:
         outfile[hdu].write_key(HEADER_KEY, succeeded, comment='WCS succeeded?')
+        # every T8/T9 wcsfit of a frame ends here; one card per outcome however often a run refits it
+        orchard_version.edit_fitsio_hdu(outfile[hdu], 'wcsfit', 'WCS refit' if succeeded else 'WCS refit failed')

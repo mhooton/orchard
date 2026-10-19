@@ -680,8 +680,9 @@ def main(args):
                         header['TARGET_ROLE'] = role
                         header['SP_ID'] = sp_id
                         header['TEFF'] = teff_header
-                    # this run rewrites its night's rows and columns whether or not the night was there before
-                    orchard_version.stamp(header, updated=True)
+                    # this run rewrites its night's rows and columns whether or not the night was there before. ORCHVER
+                    # stays the creating run's; HISTORY here is the list of nights, so the edit is ORCHMOD alone
+                    orchard_version.record_edit(header, 'condense', history=False)
 
                     # extract existing column names
                     print('updating imagelist_data')
