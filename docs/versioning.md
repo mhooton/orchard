@@ -105,6 +105,78 @@ python -c "from astropy.io import fits; import sys; h = fits.getheader(sys.argv[
 `_MCMC` light curves are parsed by position, by the pipeline and by readers outside it, and a comment line would
 break them.
 
+## Raw frames
+
+Raw frames live in `Observations/<telescope>/images/<night>/`. ESO's downloads are kept exactly as delivered.
+Every file orchard writes there records itself, by the same rules as products: `ORCHVER` when orchard writes the
+frame at ingest, and `ORCHMOD` plus a HISTORY card for every later in-place edit.
+
+| Frame | Written by | Keywords | HISTORY |
+|---|---|---|---|
+| Downloaded and needing no transform (ACP era, any non-Astra frame) | `request_eso.py`, the queue's fetch | none: byte for byte as ESO delivered it | — |
+| Unpacked from a datacube (SPIRIT) | `unpack_datacubes.py`, at ingest | `ORCHVER` (+ `ORCHREL`) | `orchard <version> unpack_datacubes` |
+| Astra frame rotated (Andor) or mirrored (SPIRIT) on arrival: lights and calibration frames | `astra_transform()`, called by `SSO_download.py` and the queue's fetch | `ORCHVER` (+ `ORCHREL`); `ASTRAROT`/`ASTRAMIR` and `ASTRAWCS` as before | the transform's own `WCS updated for ...` card (lights), then `orchard <version> astra_transform` |
+| Transformed later from the command line | `python download/astra_transform.py ...` | `ORCHMOD` | `orchard <version> astra_transform: <mode> k=<n>` (or `: mirror`) |
+| WCS repaired | `repair_astra_wcs.py --apply` | `ORCHMOD`; `ASTRAWCS = 2` as before | `repair_astra_wcs: <signatures>` as before, then `orchard <version> repair_astra_wcs: <signatures>` |
+| Orientation repaired | `repair_orientation.py --apply` | `ORCHMOD` | `<date> orient repair: ...` as before, then `orchard <version> repair_orientation: rot90 k=<k>` (or `: fliplr`) |
+| Packed or unpacked by hand | `utils/framepack.py` | `ORCHMOD` | its own `framepack: ...` card |
+
+A frame that is both unpacked and turned on arrival carries `ORCHVER` once and both ingest cards, in that order.
+
+How to read a raw frame's header:
+
+- **`ORCHVER`**: orchard wrote this file at ingest, in that version.
+- **`ORCHMOD`**: orchard has edited the file in place since. The `orchard ...` cards say which tools did it.
+- **Neither**: the file is one of two things:
+  - ESO's file as delivered;
+  - a frame orchard wrote before raw frames were versioned. These carry `ASTRAROT`/`ASTRAMIR` and the
+    descriptive HISTORY cards, and nothing more. The archive is not retrofitted.
+
+One write is not recorded: T7's copy of its plate solution into raw light frames (`copy_wcs_to_raw`). It is
+being replaced by a WCS cache outside the raw tree.
+
+The descriptive cards stay exactly as they were, because the repair scripts read them back:
+
+- `repair_orientation` counts the `horizontal mirroring` cards and refuses a frame that carries `orient repair`.
+- `repair_astra_wcs` looks for `anticlockwise rotation` and `horizontal mirroring`.
+
+The `orchard ...` cards never contain those phrases (`edit_card` raises if one would), so a stamped frame is
+classified exactly as before.
+
+### Checksums
+
+Every orchard write to a raw frame leaves `CHECKSUM` and `DATASUM` valid:
+
+- **Whole-file writers** pass `checksum=True` to astropy: `unpack_datacubes`, `astra_transform`,
+  `repair_orientation` and framepack.
+- **`repair_astra_wcs`** replaces header bytes only. It recomputes `CHECKSUM` from the new header and the frame's
+  `DATASUM`:
+  - If the old `CHECKSUM` agreed with that `DATASUM`, the `DATASUM` is trusted. This check reads the header only.
+  - Otherwise `DATASUM` is computed from the data bytes, which are read but never decoded
+    (`download/raw_provenance.py`).
+
+Before this change, most of the archive's Astra frames did not verify. A survey on 2026-10-19 sampled 168 frames
+over 15 nights on Io, Europa, Ganymede and Callisto
+(`mh_scratch/raw-provenance/survey/` on appcs):
+
+- **ESO's downloads verify**, ACP-era nights included.
+- **Frames written by `astra_transform` don't**, on every night since Astra. `writeto(checksum=False)` writes back
+  the cards it was given, so every transformed frame kept ESO's `CHECKSUM`/`DATASUM` for the image before it was
+  turned. `repair_orientation` wrote the same way.
+- **The exception is light frames that T7 later wrote a WCS into.** astropy's update mode recomputes the cards a
+  file already has, so those frames verify, dated by T7's run.
+- **Calibration frames on Astra nights never verify**, because T7 never writes them.
+- **`repair_astra_wcs` header edits left `CHECKSUM` stale.**
+- **Datacube frames verify only until the transform.** The unpacker's update-mode reopen recomputed the cube's
+  copied cards, and the mirror then made them stale again.
+
+So a raw frame's checksum can be relied on when the frame carries `ORCHVER` or `ORCHMOD`. Without them, it holds
+only for ESO's untouched downloads. To check one (`1` valid, `0` wrong, `2` missing):
+
+```bash
+python -c "from astropy.io import fits; import sys; h = fits.open(sys.argv[1])[0]; print(h.verify_checksum(), h.verify_datasum())" <frame>
+```
+
 ## How the version reaches production
 
 Production runs from frozen copies of `src/`, not from a git checkout, so the code must carry its own version.

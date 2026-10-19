@@ -52,6 +52,12 @@ prevent any unpacked frame from overwriting it if filenames collide. It is
 deleted only after all frames have been successfully written. If the number
 of written frames does not match NAXIS3, the cube is renamed back to its
 original name and a warning is printed.
+
+Provenance
+----------
+Each frame is written once, with its final header: BZERO/BSCALE, the ingest
+stamp (ORCHVER, and the HISTORY card 'orchard <version> unpack_datacubes'; see
+download/raw_provenance.py) and a CHECKSUM/DATASUM computed for the frame.
 """
 
 import os
@@ -60,6 +66,8 @@ from astropy.io import fits
 from astropy.time import Time
 from astropy.coordinates import SkyCoord, EarthLocation, AltAz
 import astropy.units as u
+
+from download.raw_provenance import stamp_ingest
 
 
 def is_datacube(filepath):
@@ -94,6 +102,23 @@ def missing_bzero(header, stored_frame):
     if header.get('BITPIX') != 16 or 'BZERO' in header:
         return None
     return 32768 if int(np.min(stored_frame)) < 0 else 0
+
+
+def write_frame(path, stored, header):
+    """
+    Write one unpacked frame, once, with its final header: the stored integers as they are in the cube, BZERO and
+    BSCALE from the header, the ingest stamp (ORCHVER and the card 'orchard <version> unpack_datacubes') and a
+    CHECKSUM/DATASUM that cover it (the cube's own, copied with its header, are replaced).
+    """
+    scaling = [(kw, header[kw], header.comments[kw]) for kw in ('BSCALE', 'BZERO') if kw in header]
+    stamp_ingest(header, 'unpack_datacubes')
+    # PrimaryHDU drops BZERO/BSCALE from the header it is given; put them back where astropy would write them
+    hdu = fits.PrimaryHDU(data=stored, header=header, do_not_scale_image_data=True)
+    after = 'NAXIS{}'.format(hdu.header['NAXIS'])
+    for kw, value, comment in scaling:
+        hdu.header.set(kw, value, comment, after=after)
+        after = kw
+    hdu.writeto(path, overwrite=True, checksum=True)
 
 
 def _normalise_filename(filename):
@@ -391,21 +416,7 @@ def unpack_datacube(filepath, output_dir):
 
             # --- Write frame to disk -----------------------------------------
             try:
-                new_hdu = fits.PrimaryHDU(data=frame_data, header=frame_header)
-                new_hdu._do_not_scale_image_data = True
-                fits.HDUList([new_hdu]).writeto(output_path, overwrite=True)
-
-                # Restore BZERO/BSCALE explicitly after write — astropy strips
-                # them during HDU construction regardless of do_not_scale_image_data.
-                bzero = base_header.get('BZERO', None)
-                bscale = base_header.get('BSCALE', None)
-                if bzero is not None or bscale is not None:
-                    with fits.open(output_path, mode='update') as hdul_out:
-                        if bzero is not None:
-                            hdul_out[0].header['BZERO'] = bzero
-                        if bscale is not None:
-                            hdul_out[0].header['BSCALE'] = bscale
-
+                write_frame(output_path, frame_data, frame_header)
                 dp_id = original_filename.replace('.fits', '')
                 written_ids.append(dp_id)
                 print(f"  ✓ {i + 1}/{n_frames} {original_filename}")

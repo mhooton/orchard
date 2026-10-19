@@ -423,7 +423,7 @@ def data_bytes(path):
 def test_apply_writes_header_only_and_restore_undoes_it(tmp_path, filler):
     path = str(tmp_path / 'frame.fits')
     if filler == 'overflow':
-        # fill the header so that the two cards the repair adds need one more 2880-byte block
+        # fill the header so that the cards the repair adds need one more 2880-byte block
         raw = raw_like_frame(path)
         ncards = len(read_header_bytes(path)[1])
         n_fill = (36 - (ncards + 1) % 36) % 36
