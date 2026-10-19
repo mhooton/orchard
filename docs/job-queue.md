@@ -546,6 +546,7 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `release_exclude` | see file | caches, logs, core dumps left out of a release (`/x` anchors at the tree's root) |
 | `test_pylib`, `test_paths` | `mh_scratch/k1-deploy-check/pylib`, `tests`, `jobqueue/tests` | `q release test` |
 | `minutes_per_1000_frames` | ANDOR 69, SPIRIT 22 | estimates (2026 production medians) |
+| `telescopes.<TEL>.force_platesolve` | true for Io, Europa, Ganymede, Callisto; false for Artemis | pipeline jobs pass `--force-platesolve`: T7 ignores the night's WCS cache, re-solves every frame and refreshes the cache rows ([wcs-cache.md](wcs-cache.md)). SSO stays forced until the cache is validated |
 | `watcher.*` | see file | stability, deadlines, `recent_days` = 5 |
 | `lookback.*` | 30 nights, 2 reruns/night | |
 | `notify.transport`, `notify.env_file`, `notify.to` | `outbox`, none, none | `smtp` also sends each message (see Notifications) |

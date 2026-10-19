@@ -79,7 +79,7 @@ The file-level ones never raise: a stamp that fails is logged, and the stage car
 |---|---|---|---|
 | `<run>_MasterBias.fits`, `_MasterDark*.fits`, `_MasterFlat_<filt>.fits` | T2–T4 | yes | — |
 | `<run>_BadPixelMap.fits`, `hot/cold/flatbad_pixel_map.fits` | T5 | yes | — |
-| `proc*.fits` (calibrated frames) | T6 | yes | T7 `inherited WCS removed`, `WCS solved`; T8/T9 `wcsfit: WCS refit` (or `... failed`); framepack (`ORCHMOD` only; its own `framepack:` card is the record) |
+| `proc*.fits` (calibrated frames) | T6 | yes | T7 `inherited WCS removed`, `WCS solved` or `WCS from cache` ([wcs-cache.md](wcs-cache.md)); T8/T9 `wcsfit: WCS refit` (or `... failed`); framepack (`ORCHMOD` only; its own `framepack:` card is the record) |
 | `<target>/1_initial-catalogue.fits`, `proc*.cat` | T8/T9 | yes | — |
 | `*_outstack_<filt>.fits` (+ `_conf`), `*_stack_catalogue_<filt>.fits` | T8 | yes | A backup catalogue restored for a later night: `catalogue_fov: target roles for <night>`. Fallback crossmatch: `proper_motion: Gaia crossmatch` |
 | `*_stack_catalogue_pm_<filt>.fits` | T9 | yes | — |

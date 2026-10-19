@@ -271,7 +271,7 @@ The main pipeline script is `ZLP_pipeline.sh` located in `src/main/`.
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--cores N` | Number of parallel processes | `N_CORES` env var (20), or 1 |
-| `--force-platesolve` | Re-solve images that already have WCS | Disabled |
+| `--force-platesolve` | T7: ignore the night's WCS cache, solve every frame and refresh its cache rows ([docs/wcs-cache.md](docs/wcs-cache.md)) | Disabled |
 | `--save-flat-products` | T4: also write each calibrated flat (`reduction/flats/proc*`), `std.fts` and `variance.fts`. Nothing in the pipeline reads them | Disabled |
 | `--frame-format F` | After T11, store the night's calibrated frames as `int16` (whole ADU, half the size), `rice` (int16 plus lossless Rice compression, `proc*.fits.fz`) or `float32` (as T6 wrote them) | `int16` |
 | `--no_T1` through `--no_T12` | Skip specific pipeline stage | All enabled |
@@ -729,20 +729,30 @@ NIR images are noisy with many hot pixels. Calibration removes these false sourc
    - Computes WCS transformation (6-parameter plate solution)
    - Validates with minimum 4 matched stars
 
-4. **WCS Propagation:**
-   - Writes WCS keywords to reduced image header
-   - Copies WCS back to raw image header (with CRPIX offsets)
-   - Enables both reduced and raw images for subsequent processing
+4. **WCS Output:**
+   - Writes the WCS keywords to the calibrated frame's header (never to the raw frame)
+   - Keeps the night's solutions in the WCS cache, `<BASEDIR>/PipelineOutput/wcs_cache/<TEL>/<night>.ecsv`
+
+**WCS cache** ([docs/wcs-cache.md](docs/wcs-cache.md)): before solving, T7 applies the solution an earlier run kept
+for a frame, header only, when the raw frame, the calibrated frame's shape, the solver (`SOLVER_EPOCH`), the Gaia
+database and astropy/twirl are unchanged and a code release or the running commit wrote it. Only the other frames
+are solved; their solutions are added to the table afterwards. A WCS already in a frame's header (Astra's,
+PinPoint's, ESO's) never counts as solved. Failed frames are not kept, and any fault in the cache only means the
+frame is solved.
 
 **Output:**
-- Updated FITS headers with WCS keywords (CRVAL, CRPIX, CD matrix)
-- Plate solve success/failure logged to console
+- Updated FITS headers with WCS keywords (CRVAL, CRPIX, PC matrix), and HISTORY `T7: WCS solved` or
+  `T7: WCS from cache`
+- The night's WCS cache table
+- Plate solve success/failure logged to console, with a `WCS cache:` line for frames taken from the cache
 - Diagnostic plots (if verbose mode enabled)
 
 **Parameters:**
-- `--force-platesolve`: Re-solve images that already have WCS
+- `--force-platesolve`: ignore the WCS cache, solve every frame and refresh its rows (SSO pipeline jobs pass it
+  until the cache is validated: `force_platesolve` in `jobqueue/config.py`)
 - `--timeout`: Maximum time per image (default: 60s)
 - `--cores`: Number of parallel processes
+- `WCS_CACHE_DIR` (environment): keep the cache tables under this directory instead
 
 **Performance:** Typical plate solve time: 2-5s per image with local database, ~60s timeout handles difficult fields.
 
@@ -1520,6 +1530,7 @@ src/
 ├── astrom/                    # Astrometry (T7)
 │   ├── astrometry.py         # WCS solving orchestration
 │   ├── pointer_wcs.py        # Plate solving implementation
+│   ├── wcs_cache.py          # T7's per-night solution cache
 │   ├── proper_motion.py      # PM corrections
 │   └── twirl_speculoos.py    # Pattern matching wrapper
 │
