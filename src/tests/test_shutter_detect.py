@@ -411,6 +411,14 @@ def test_sky_ramp_against_a_shuttered_reference_night(tmp_path, small):
         ('shutterless', 'sky_ramp', 'probable')                 # experimental: never unambiguous
 
 
+def test_sky_ramp_only_when_nothing_else_answers(tmp_path, small):
+    make_night(tmp_path, '20260809', evening='shuttered', morning='shuttered', n_flats=3)
+    d = make_night(tmp_path, NIGHT, evening='1MHz', science=['1MHz'] * 6, exptime=60.0, sky=3000.0)
+    assert sd.detect_night(d, NIGHT, TEL)['science'] == []             # the evening flats answered
+    rec = sd.detect_night(d, NIGHT, TEL, all_levels=True)                # validation runs everything
+    assert [s['method'] for s in rec['science']] == ['sky_ramp']
+
+
 def test_judge():
     rates = {'1MHz': 4.33, '3MHz': 1.5}
     assert sd.judge(4.4, 0.1, 0.4, rates)[:2] == ('shutterless', '1MHz')

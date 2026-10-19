@@ -741,6 +741,11 @@ def detect_night(night_dir, night, telescope, science=True, all_levels=False, fr
     if need_science:
         for exptime, g in groups.items():
             night_sci.append(trail_stack(_sample(g, TRAIL_SAMPLE), telescope, night, log))
+    # The sky ramp is experimental and never decides anything on its own, and
+    # finding a reference flat reads up to REF_MAX_DAYS earlier nights, so
+    # outside validation it runs only when nothing else gave an answer.
+    trail_answered = any(st['verdict'] != INCONCLUSIVE for st in night_sci)
+    if need_science and (all_levels or not (ev_ok or mo_ok or trail_answered)):
         long_groups = {}
         for f in sci:
             if f['exptime'] > TRAIL_MAX_EXPTIME:
