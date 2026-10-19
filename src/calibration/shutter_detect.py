@@ -96,6 +96,11 @@ RATE_TOLERANCE = 0.15
 # twilights stray up to 0.34 s (Ganymede 2026-02-18 morning, 02-24 evening).
 RAMP_MIX_FRACTION = 0.25
 RAMP_MIX_FLOOR = 0.1              # s
+# Readout plus twilight make t_read climb at most 0.023 s per s of exposure
+# (Ganymede 2026-02 mornings). Early morning twilights on shuttered nights
+# climb 0.3 s per s and more (Ganymede 20260308: 28 s at 60 s, ~0 at 20 s):
+# a sky gradient, not a readout, so such a twilight names no rate.
+RAMP_MAX_SLOPE = 0.06             # s per s
 # Flats are split into evening and morning at the first and last science
 # frame, or without science at the largest gap if it is at least this long.
 TWILIGHT_GAP_HOURS = 4.0
@@ -123,7 +128,13 @@ TRAIL_SYS_PER_S = 0.02            # s of apparent t_read per s of exposure
 TRAIL_RATE_RANGE = (0.9, 1.35)
 CONSISTENT_SIGMA = 3.0            # a hypothesis is consistent within this
 EXCLUDED_SIGMA = 3.0              # and excluded beyond it
-SCIENCE_ALONE_SIGMA = 5.0         # margin for a science-only verdict to be unambiguous
+# A night measured on its science alone is never unambiguous by default: the
+# PSF bias has a long tail (Ganymede 20230130, shuttered, read -5.11 +/- 0.51 s
+# at 31 s), and a positive one that size would pass as a conclusive 1 MHz
+# trail and de-smear a whole shuttered night. A finite value makes a
+# science-only verdict with this margin (sigma) to every other hypothesis
+# unambiguous; the verified science-only nights had 4.0-4.9.
+SCIENCE_ALONE_SIGMA = float('inf')
 
 # Sky readout ramp (EXPERIMENTAL): exposures longer than TRAIL_MAX_EXPTIME.
 SKY_SAMPLE = 16
@@ -367,6 +378,8 @@ def side_summary(flats, rates=None):
                 rates = {r: t for r, t in (('1MHz', 4.33), ('3MHz', 1.5))}
             if resid > RAMP_MIX_FRACTION * abs(t0) + RAMP_MIX_FLOOR:
                 out['rate_note'] = 'flats scatter %.2f s about the line: not one readout rate' % resid
+            elif slope is not None and abs(slope) > RAMP_MAX_SLOPE:
+                out['rate_note'] = 't_read climbs %.3f s per s of exposure: a sky gradient, not a readout' % slope
             else:
                 out['rate'] = identify_rate(t0, rates)
                 if out['rate'] is None:
@@ -907,7 +920,7 @@ def detect_night(night_dir, night, telescope, science=True, all_levels=False, fr
     elif sci_state is not None:
         confident = sci_margin is not None and sci_margin >= SCIENCE_ALONE_SIGMA
         result = whole(sci_state[0], sci_state[1], None, 'science', UNAMBIGUOUS if confident else PROBABLE,
-                       'no usable flats; star trails, margin %s sigma' % sci_margin)
+                       'no usable flats; star trails alone, margin %s sigma' % sci_margin)
     elif sky_state is not None:
         result = whole(sky_state[0], sky_state[1], None, 'sky_ramp', PROBABLE,
                        'no usable flats; sky ramp (experimental)')

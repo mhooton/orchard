@@ -214,6 +214,10 @@ def test_twilight_rate_from_the_t_read_exposure_line():
     # shuttered flats: the flat field's own structure, +0.009 s per s, from ~0
     shut = [(6, 0.055), (10, 0.09), (15, 0.13), (25, 0.21), (40, 0.355)]
     assert sd.ramp_intercept([_flat('shuttered', t, e) for e, t in shut])[0] == pytest.approx(0.0, abs=0.02)
+    # an early morning twilight on a shuttered night (Ganymede 20260308): a sky gradient, not a readout
+    dawn = [(27, 2.50), (27, 3.17), (37, 5.33), (37, 6.43), (37, 7.71)]
+    s = sd.side_summary([_flat('shutterless', t, e) for e, t in dawn])
+    assert s['rate'] is None and 'sky gradient' in s['rate_note']
     # a cloud spoils one flat: the robust line barely moves
     cloudy = morning[:4] + [(15, 4.20)] + morning[5:]
     assert sd.side_summary([_flat('shutterless', t, e) for e, t in cloudy])['rate'] == '1MHz'
@@ -267,6 +271,13 @@ def test_one_twilight_contradicted_by_the_science(tmp_path, small):
     # the flats themselves are still known
     [seg] = rec['segments']
     assert seg['state'] == 'shuttered' and seg['end'] < '2026-08-11'
+
+
+def test_science_alone_is_never_unambiguous_by_default(tmp_path, small, monkeypatch):
+    d = make_night(tmp_path, science=['1MHz'] * 6)
+    assert sd.detect_night(d, NIGHT, TEL)['result']['confidence'] == 'probable'
+    monkeypatch.setattr(sd, 'SCIENCE_ALONE_SIGMA', 4.0)          # an opt-in margin (this night: ~4.6)
+    assert sd.detect_night(d, NIGHT, TEL)['result']['confidence'] == 'unambiguous'
 
 
 def test_trail_cannot_tell_shuttered_from_3mhz_without_readoutm(tmp_path, small, monkeypatch):
