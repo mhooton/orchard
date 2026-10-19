@@ -12,17 +12,21 @@ queue database it must live on appct's local disk and is only opened inside orch
 locking cannot be trusted over NFS, and appcs sees that disk over NFS.
 
 Tables
-    invocations  one row per promote.py command that wrote to the journal (run, accept, reject, resume)
-    verdicts     one row per judged candidate: a v3 target directory with a given fingerprint
-    promotions   one row per promotion (automatic or by accept), with every path decided up front
-    steps        the intent and the outcome of each step of a promotion
+    invocations       one row per promote.py command that wrote to the journal (run, accept, reject, resume)
+    verdicts          one row per judged candidate: a v3 target directory with a given fingerprint
+    promotions        one row per promotion (automatic, by accept, or by the policy), with every path decided up front
+    steps             the intent and the outcome of each step of a promotion
+    policy_decisions  each answer of the approval policy (promote_policy.py) about a HOLD or REJECT: promote, reject,
+                      reprocess or person, the rule that gave it, the evidence, and whether the night needs a rerun
+                      once the processing is fixed
 
 Verdict states
-    pending    HOLD or REJECT, waiting for a person: `promote.py accept` or `promote.py reject`
+    pending    HOLD or REJECT, waiting: for reprocessing or for a person, as its latest policy decision says
+               (`promote.py accept` or `promote.py reject` settle it by hand)
     promoting  a promotion of it started and has not finished, or failed (see promotions)
     promoted   promoted automatically (verdict PROMOTE)
-    accepted   promoted by `accept`
-    rejected   closed by `reject`; nothing was moved
+    accepted   promoted by `accept`, or by the policy (decided_by policy:v<N>:<rule>)
+    rejected   closed by `reject`, or by the policy; nothing was moved
     outdated   the candidate changed or left v3 before it was promoted or decided; a newer verdict, if any,
                replaces it
 
@@ -108,6 +112,20 @@ CREATE TABLE IF NOT EXISTS steps (
     detail TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS steps_promotion ON steps(promotion_id);
+
+CREATE TABLE IF NOT EXISTS policy_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    verdict_id INTEGER NOT NULL,
+    invocation_id INTEGER,
+    decided_at TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    outcome TEXT NOT NULL,
+    rule TEXT NOT NULL,
+    why TEXT NOT NULL DEFAULT '',
+    rerun INTEGER NOT NULL DEFAULT 0,
+    evidence TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS policy_verdict ON policy_decisions(verdict_id);
 """
 
 OPEN_STATES = ('pending', 'promoting')
@@ -132,7 +150,7 @@ def _dumps(obj):
     return json.dumps(obj, sort_keys=True, default=str)
 
 
-def _row(r, json_cols=('metrics', 'run', 'plan', 'detail', 'summary')):
+def _row(r, json_cols=('metrics', 'run', 'plan', 'detail', 'summary', 'evidence')):
     if r is None:
         return None
     d = dict(r)
@@ -320,21 +338,70 @@ class Journal(object):
     def steps(self, pid):
         return [_row(r) for r in self.conn.execute('SELECT * FROM steps WHERE promotion_id = ? ORDER BY id', (pid,))]
 
+    # ------------------------------------------------------------------ the approval policy
+
+    def add_policy_decision(self, verdict_id, invocation_id, version, outcome, rule, why, evidence, rerun=False):
+        with self.tx() as c:
+            return c.execute('INSERT INTO policy_decisions (verdict_id, invocation_id, decided_at, version, outcome, '
+                             'rule, why, rerun, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                             (verdict_id, invocation_id, iso(self.now()), version, outcome, rule, why, int(bool(rerun)),
+                              _dumps(evidence))).lastrowid
+
+    def _policy_rows(self, q, args=()):
+        try:
+            return [_row(r) for r in self.conn.execute(q, args)]
+        except sqlite3.OperationalError:        # a journal from before the policy, opened read-only
+            return []
+
+    def policy_decisions(self, verdict_id=None, since=None):
+        q, args = 'SELECT * FROM policy_decisions WHERE 1=1', []
+        if verdict_id is not None:
+            q += ' AND verdict_id = ?'
+            args.append(verdict_id)
+        if since:
+            q += ' AND decided_at >= ?'
+            args.append(since)
+        return self._policy_rows(q + ' ORDER BY id', args)
+
+    def latest_policy_decision(self, verdict_id):
+        rows = self._policy_rows('SELECT * FROM policy_decisions WHERE verdict_id = ? ORDER BY id DESC LIMIT 1',
+                                 (verdict_id,))
+        return rows[0] if rows else None
+
+    def latest_policy_decisions(self, verdict_ids):
+        """{verdict id: its latest policy decision} for those that have one."""
+        out = {}
+        ids = list(verdict_ids)
+        for k in range(0, len(ids), 500):
+            chunk = ids[k:k + 500]
+            if not chunk:
+                continue
+            for r in self._policy_rows('SELECT * FROM policy_decisions WHERE verdict_id IN ({}) ORDER BY id'.format(
+                    ','.join('?' * len(chunk))), chunk):
+                out[r['verdict_id']] = r
+        return out
+
 
 def review_summary(path, days=3, now=None):
-    """What the daily report says about promotion: verdicts waiting for a person, promotions that did not
-    finish, and what was promoted or decided in the last `days` days. None if there is no journal yet."""
+    """What the daily report says about promotion: verdicts waiting (each with its latest policy decision, which
+    says whether it waits for a person or for reprocessing), promotions that did not finish, what was promoted or
+    decided in the last `days` days, and the policy's decisions in that time. None if there is no journal yet."""
     if not path or not os.path.exists(path):
         return None
     now = now or utcnow()
     since = iso(now - dt.timedelta(days=days))
     j = Journal(path, readonly=True)
     try:
+        pending = j.verdicts(states=['pending'])
+        policy = j.latest_policy_decisions([v['id'] for v in pending])
+        for v in pending:
+            v['policy'] = policy.get(v['id'])
         out = {
-            'pending': j.verdicts(states=['pending']),
+            'pending': pending,
             'stuck': j.promotions(states=['in_progress', 'failed']),
             'promoted': j.verdicts(states=list(PROMOTED_STATES), since=since),
             'rejected': j.verdicts(states=['rejected'], since=since),
+            'policy': j.policy_decisions(since=since),
         }
     finally:
         j.close()
