@@ -17,11 +17,13 @@ run for that one night, and the pipeline run after it.
     so switching over never reprocesses the night before last.
   - Shadow mode needs nothing special here: the shadow configuration points at a separate database, and
     the shadow dispatcher only pretends to run what is queued.
+  - If ESO cannot be reached nothing changes and the next poll retries; each poll's outcome goes to
+    esoreach, from which the notifier opens an incident once the failures have gone on for a while.
 """
 import datetime as dt
 import os
 
-from . import jobspec
+from . import esoreach, jobspec
 from .config import camera, eso_telescopes
 from .nights import artemis_targets, list_frames, night_dir, pipeline_logs, read_transfer_log
 from .util import hhmm, iso, last_night, night_str, parse_iso, parse_night, utc_from_ts, utcnow
@@ -82,9 +84,11 @@ class Watcher:
     def run(self):
         out = []
         tels = eso_telescopes(self.cfg)
+        asked, answered, error = 0, 0, None
         for night in self.nights():
             pending = [t for t in tels if (self.store.watch_get(t, night) or {}).get('state') not in FINAL]
             if pending:
+                asked += 1
                 try:
                     summary = self.eso.night_summary(night)
                 except Exception as e:
@@ -92,8 +96,9 @@ class Watcher:
                     self.store.event('eso-error', source='watcher', night=night, message=str(e)[:500])
                     self.log(msg)
                     out.append(msg)
-                    summary = None
+                    summary, error = None, e
                 if summary is not None:
+                    answered += 1
                     for tel in pending:
                         prog = self.cfg['telescopes'][tel]['prog_id']
                         out.append(self.poll_eso(tel, night, summary.get(prog) or {'rows': 0, 'by_type': {},
@@ -101,6 +106,13 @@ class Watcher:
             for tel, tcfg in self.cfg['telescopes'].items():
                 if tcfg.get('source') == 'raw_dir':
                     out.append(self.poll_raw_dir(tel, night))
+        if asked:
+            s = esoreach.record(self.store, self.now, ok=answered > 0, error=error, source='watcher')
+            if not answered and s['failed_polls'] > 1:
+                msg = 'ESO has not answered on {} polls in a row, since {} ({:.0f} min of watcher time)'.format(
+                    s['failed_polls'], s['failing_since'], s['failing_minutes'])
+                self.log(msg)
+                out.append(msg)
         return out
 
     # ------------------------------------------------------------------ SSO telescopes via ESO

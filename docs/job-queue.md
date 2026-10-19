@@ -127,7 +127,8 @@ appcs sees that disk over NFS, where SQLite locking is unreliable, so the store 
 filesystem: always use it through `docker exec orchard-server` on appct.
 
 Tables: `jobs`, `events` (every transition, waiting reason, note and watcher decision), `watch`, `lookback`, `kv`
-(pauses, drain, dispatcher heartbeat).
+(pauses, drain, dispatcher heartbeat, `eso_reach`: whether ESO answered the latest polls), and the notifier's
+`notify_incidents`, `notify_messages` and `job_pwv` (the PWV outcome of each finished SSO pipeline job).
 
 ## The ESO watcher
 
@@ -169,7 +170,9 @@ Other cases:
   stopped changing for two polls; at 22:00 UTC it is queued with whatever is there. No download job.
 - A night that already has a pipeline log (the cron or a person ran it) is marked `processed` and left to the
   look-back, so the switch-over never reprocesses the night before last.
-- If ESO cannot be reached the watcher changes nothing; the next poll retries.
+- If ESO cannot be reached the watcher changes nothing; the next poll retries. Each poll (and each look-back run)
+  records whether ESO answered any of its queries in `kv` `eso_reach`, and the notifier opens an incident once
+  the failures have lasted 4 polls or 2 hours of watcher time (below).
 
 ## The look-back
 
@@ -335,13 +338,27 @@ email anyone; `ZLP_pipeline.sh` stopped calling `email_eon.py` once the digest w
   | `signature:<hash>` | 10 failures with one signature in 24 h, any class | fewer than 10 in the last 24 h |
   | `dispatcher`, `queue-stalled` | no dispatcher heartbeat for 30 min; jobs due but none running or started for 6 h | heartbeat back; a job starts |
   | `disk:<label>` | a disk under 2 TiB or 5% free | space is back |
+  | `eso-unreachable` | every ESO query of the watcher's last 4 polls failed, or failed for 2 h of watcher time (look-back runs count as polls; the overnight break does not count as time) | ESO answers a query |
+  | `pwv-nodata` | 3 SSO pipeline jobs since the last one that corrected PWV logged `No PWV data for:` on most of their light curves | a later job corrects PWV |
+
+  The last two come from the outage of 18 October 2026, when appct's first nameserver began answering SERVFAIL,
+  nothing resolved inside the containers, and for a day and a half the watcher logged a failed ESO query every
+  half hour while 95 pipeline jobs wrote light curves without PWV. `eso_reach` holds the run of failed polls (from
+  `watcher.py` and `lookback.py` through `esoreach.py`; a watcher that cannot set up its ESO client counts too).
+  For PWV, `pwvlog.py` reads each finished SSO pipeline job's log once, newest first and at most 40 a run, for jobs
+  finished in the last 48 h, and keeps the counts in `job_pwv`: each `python …SPlightcurve.py` line is one light
+  curve, and `PWV correction successful!`, `No PWV data for:` or `PWV Failed: No T_eff for target` (off by design:
+  Artemis, Teff < 2000 K) says what became of it. The incident names the jobs and the cause the log gives, and it
+  stays open while no SSO job runs, until one corrects PWV.
 
   A night with no frames is attributed, not explained: a night SPOCK planned mostly as Chilean time (`ch_` blocks
   in `Archive_night_blocks`) has no survey frames by design and never counts; a telescope dark while two others
   observe is down itself; when none observes it is the weather, which needs nobody.
 - **The digest** of last night (at 07:45 the night before last, processed yesterday) goes out every morning even
   when all is well: one line per telescope (frames, hours, light curves, or what went wrong), open and newly
-  resolved incidents, failure signatures, look-back actions, free disk, and the queue's work in two sections.
+  resolved incidents, messages that could not be sent, failure signatures, look-back actions, ESO query errors,
+  the PWV outcome of the SSO light curves made in the last 24 h (corrected, without LHATPRO data, other failures,
+  off by design), free disk, and the queue's work in two sections.
   *Processed in the last 24 h* and *Remaining* group jobs by class and campaign: done, failed and cancelled
   counts, telescopes, the nights covered, light curves made (for pipeline work), estimated hours left, and an
   ETA at the last 24 hours' pace. A job's campaign is its `q add --campaign` label (`q campaign` labels jobs
@@ -352,8 +369,11 @@ email anyone; `ZLP_pipeline.sh` stopped calling `email_eon.py` once the digest w
   `notify_messages`. Nothing is sent until `notify.transport` is `smtp` in `queue/config.json`; then each message
   also goes to the recipient list, `notify.to` (`q notify recipients` shows it, `--add` / `--remove` edit it in
   place), with `EMAIL_ADDRESS`, `EMAIL_PASSWORD` and `SMTP_SERVER` read from `notify.env_file`, a file readable
-  only by speculoos (the live `reporting/.env`, so a new Gmail app password reaches the notifier too). A message that cannot be sent still lands in the outbox; an
-  alert that failed is tried again on the next run. Incidents already alerted to the outbox before the switch are
+  only by speculoos (the live `reporting/.env`, so a new Gmail app password reaches the notifier too). A message
+  that cannot be sent still lands in the outbox; an alert that failed is tried again on the next run, and the next
+  digest that gets through lists every message since the last delivered digest whose sending failed, with the
+  error. The SMTP host is a name, so while appct cannot resolve names (as on 18 October 2026) nothing is sent, and
+  the outbox and that later digest are the record. Incidents already alerted to the outbox before the switch are
   not re-sent; the digest lists them.
 
   ```json
@@ -535,7 +555,7 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `promote.thresholds` | `{}` | overrides of `promote_check.THRESHOLDS`, e.g. `{"max_scatter_ratio": 1.3}` |
 | `promote.cores`, `promote.est_minutes`, `promote.priority` | 2, 15, 1e9 | the promote job |
 | `promote.nightly` | false | true: the watcher's, look-back's and fetch reruns' pipeline jobs run with `--no_T12` and a promote job |
-| `notify.*` thresholds | see file | dark nights (3), late hour (21:00), stall (6 h), dispatcher (30 min), disk (2 TiB / 5%), signature (10/24 h) |
+| `notify.*` thresholds | see file | dark nights (3), late hour (21:00), stall (6 h), dispatcher (30 min), disk (2 TiB / 5%), signature (10/24 h), ESO (4 polls / 2 h), PWV (3 jobs; logs of the last 48 h, 40 a run) |
 
 ## Files
 
@@ -555,6 +575,8 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `src/jobqueue/shadow_report.py` | the shadow report |
 | `src/jobqueue/digest.py` | what the notifier says: per-night status, queue, disks, incident conditions, the digest text |
 | `src/jobqueue/notify.py` | incidents, alerts and the digest; the outbox and SMTP delivery; the heartbeat |
+| `src/jobqueue/esoreach.py` | whether ESO answered: each watcher poll's and look-back run's outcome, for the notifier |
+| `src/jobqueue/pwvlog.py` | the PWV outcome of each finished SSO pipeline job, read from its log once |
 | `src/jobqueue/cli.py` | `q` |
 | `src/utils/promote.py`, `src/utils/promote_journal.py` | the promotion step and its journal ([promotion.md](promotion.md)) |
 | `src/jobqueue/cron/` | `queue-cron.sh`, `q`, `crontab.shadow`, `crontab.live` |

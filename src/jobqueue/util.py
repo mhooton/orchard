@@ -7,6 +7,7 @@ and of the ESO archive queries.
 import datetime as dt
 import json
 import os
+import re
 
 ISO = '%Y-%m-%dT%H:%M:%SZ'
 MJD0 = dt.datetime(1858, 11, 17)
@@ -86,6 +87,23 @@ def in_daily_window(now, start, end):
     if a <= b:
         return a <= t < b
     return t >= a or t < b
+
+
+NAME_RESOLUTION = re.compile(r'NameResolutionError|name resolution|Name or service not known|nodename nor servname|'
+                             r'getaddrinfo failed')
+
+
+def brief_error(text, limit=200):
+    """A network error as a person would put it. requests' messages run to 500 characters of pool and URL detail;
+    a DNS failure becomes 'cannot resolve www.eso.org (Temporary failure in name resolution)'."""
+    s = ' '.join(str(text or '').split())
+    if NAME_RESOLUTION.search(s):
+        host = re.search(r"Failed to resolve '([^']+)'", s) or re.search(r"host='([^']+)'", s)
+        why = re.search(r'\[Errno -?\d+\] ([^)\]"]+)', s)
+        return 'cannot resolve {} ({})'.format(host.group(1) if host else 'a host name',
+                                               why.group(1).strip() if why else 'DNS')
+    s = re.sub(r'<[\w.]+ object at 0x[0-9a-f]+>:? ?', '', s)
+    return s if len(s) <= limit else s[:limit - 1] + '…'
 
 
 def write_json_atomic(path, obj):

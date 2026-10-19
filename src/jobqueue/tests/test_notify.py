@@ -9,6 +9,7 @@ import os
 import pytest
 
 from jobqueue import digest as D
+from jobqueue import esoreach, pwvlog
 from jobqueue.notify import Notifier, read_smtp_settings, NotifyError
 from jobqueue.util import iso, parse_night
 
@@ -561,3 +562,296 @@ def test_real_smtp_is_refused_inside_a_test(clean, store, tmp_path):
     n.digest()
     assert {(m['status'], m['error']) for m in n.messages()} == {('failed', 'refused: a test tried to send real email')}
     assert len(outbox(cfg)) == 2
+
+
+# ---------------------------------------------------------------------------------------------- outages (2026-10-18)
+
+DNS_ERROR = ('ESO authentication failed:  with url: /sso/oidc/token?response_type=id_token+token&grant_type=password'
+             '&client_id=clientid&username=***&password=*** (Caused by NameResolutionError("<urllib3.connection.'
+             "HTTPSConnection object at 0x7f893eb1a400>: Failed to resolve 'www.eso.org' ([Errno -3] Temporary "
+             'failure in name resolution)"))')
+
+
+def eso_polls(store, start, outcomes, step=30, source='watcher'):
+    """Record watcher polls `step` minutes apart from `start`: True answered, False every query failed."""
+    t = start
+    for ok in outcomes:
+        esoreach.record(store, t, ok=ok, error=None if ok else DNS_ERROR, source=source)
+        t += dt.timedelta(minutes=step)
+
+
+def check_at(cfg, store, t, **kw):
+    heartbeat(store, t)
+    n = notifier(cfg, store, now=t, **kw)
+    n.check()
+    return n
+
+
+def keys(n):
+    return [i['key'] for i in n.incidents()]
+
+
+def test_eso_unreachable_opens_after_four_failed_polls_and_resolves(clean, store):
+    cfg = clean
+    t = dt.datetime(2026, 10, 18, 10, 30)
+    eso_polls(store, t, [True, False, False, False])            # answered at 10:30; failed 11:00, 11:30, 12:00
+    assert notifier(cfg, store).check(dry_run=True) == ['no conditions']
+    eso_polls(store, dt.datetime(2026, 10, 18, 12, 30), [False])
+    n = check_at(cfg, store, dt.datetime(2026, 10, 18, 12, 40))
+    [inc] = n.incidents()
+    assert (inc['key'], inc['title']) == ('eso-unreachable', 'ESO queries failing since 18 Oct 11:00')
+    assert inc['detail'].startswith('Every ESO query has failed on the last 4 polls, since 18 Oct 11:00 UTC: 2.0 h '
+                                    'of watcher time, the latest by the watcher at 18 Oct 12:30 UTC. ESO last answered '
+                                    '18 Oct 10:30 UTC.\nLast error: cannot resolve www.eso.org (Temporary failure in '
+                                    'name resolution)\n')
+    assert 'getent hosts www.eso.org' in inc['detail'] and 'password' not in inc['detail']
+    [alert] = [read(p) for p in outbox(cfg) if '_alert-' in p]
+    assert alert['Subject'] == '[orchard] ESO queries failing since 18 Oct 11:00'
+    # ESO answers again: one resolved email in the same thread
+    eso_polls(store, dt.datetime(2026, 10, 18, 13, 0), [True])
+    n = check_at(cfg, store, dt.datetime(2026, 10, 18, 13, 10))
+    assert n.incidents() == []
+    [resolved] = [read(p) for p in outbox(cfg) if '_resolved-' in p]
+    assert resolved['In-Reply-To'] == alert['Message-ID']
+    assert [e['message'] for e in store.events(kinds=['eso-recovered'])] == [
+        'ESO answered the watcher at 2026-10-18T13:00:00Z after 4 failed polls since 2026-10-18T11:00:00Z']
+
+
+def test_eso_failures_count_watcher_time_not_the_overnight_break(clean, store):
+    cfg = clean
+    # hourly polls: two failures are two hours of failure
+    eso_polls(store, dt.datetime(2026, 10, 18, 10, 0), [True, False, False], step=60)
+    assert keys(notifier(cfg, store)) == [] and \
+        [l.split()[0] for l in notifier(cfg, store).check(dry_run=True)] == ['eso-unreachable']
+    # answered at 23:00, failed at 23:30 and at 11:00 the next morning: 30 + 60 min, not 12 hours
+    eso_polls(store, dt.datetime(2026, 10, 18, 23, 0), [True, False])
+    t = dt.datetime(2026, 10, 19, 11, 0)
+    eso_polls(store, t, [False])
+    assert esoreach.get(store)['failing_minutes'] == 90.0
+    heartbeat(store, t)
+    assert notifier(cfg, store, now=t).check(dry_run=True) == ['no conditions']
+
+
+def test_a_look_back_failure_counts_as_a_poll(clean, store):
+    eso_polls(store, dt.datetime(2026, 10, 18, 20, 0), [False, False])           # watcher 20:00, 20:30
+    eso_polls(store, dt.datetime(2026, 10, 18, 20, 45), [False], source='look-back')
+    eso_polls(store, dt.datetime(2026, 10, 18, 21, 0), [False])
+    s = esoreach.get(store)
+    assert (s['failed_polls'], s['failing_minutes'], s['last_source']) == (4, 30.0 + 15.0 + 15.0, 'watcher')
+    # the look-back finishes its run after the watcher's next poll: time never goes backwards
+    esoreach.record(store, dt.datetime(2026, 10, 18, 20, 50), ok=False, error='x', source='look-back')
+    assert esoreach.get(store)['last_poll'] == '2026-10-18T21:00:00Z'
+
+
+LC_LINE = ('python /data/SPECULOOSPipeline/queue/releases/20261018T102613Z-f854bc4/src/diff_photometry/SPlightcurve.py '
+           '/data/SPECULOOSPipeline/PipelineOutput/v3/{tel}/output/{night}/Sp0439+1615/3310083401849536384_zYJ_{night}_'
+           'output.fits -o /data/SPECULOOSPipeline/PipelineOutput/v3/{tel}/output -f zYJ -b 5 -d {night} -a {ap}\n')
+LC_OUTCOME = {
+    'ok': 'Performing PWV Correction\nPWV correction successful!\n',
+    # releases before the LHATPRO fix: no cause, and numpy's message after it
+    'nodata': 'Performing PWV Correction\nNo PWV data for: 2025-12-24T12:30:16.819 - 2025-12-25T16:41:39.941\n'
+              'PWV Failed: All-NaN slice encountered\n',
+    # since the fix: the cause after the window
+    'dns': ('Performing PWV Correction\nNo PWV data for: 2025-12-24T12:30:16.819 - 2025-12-25T16:41:39.941 '
+            "(ConnectionError: HTTPSConnectionPool(host='archive.eso.org', port=443): Max retries exceeded with url: "
+            '/wdb/wdb/asm/lhatpro_paranal/query?wdbo=csv (Caused by NameResolutionError("<urllib3.connection.'
+            "HTTPSConnection object at 0x7f1c>: Failed to resolve 'archive.eso.org' ([Errno -3] Temporary failure in "
+            'name resolution)")))\nPWV Failed: no LHATPRO PWV data (ConnectionError: ...)\n'),
+    'off': 'WARNING: Effective Temperature is too low for reliable PWV correction: 1900K\n'
+           'PWV Failed: No T_eff for target\n',
+    'other': 'Performing PWV Correction\nPWV Failed: output array is read-only\n',
+    'none': 'Traceback (most recent call last):\nValueError: no stars\n',
+}
+
+
+def pwv_log(cfg, name, tel, night, outcomes):
+    path = os.path.join(cfg['queue_root'], 'logs', 'jobs', '2026-10', '{}.log'.format(name))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        f.write('=== jobqueue job | started 2026-10-18T15:04:55Z\nRunning T1\nPWV correction successful! (not T10)\n')
+        for ap, outcome in enumerate(outcomes, 3):
+            f.write(LC_LINE.format(tel=tel, night=night, ap=ap))
+            f.write('FILES: /data/x/3310083401849536384_zYJ_{}_output.fits\n'.format(night))
+            f.write(LC_OUTCOME[outcome])
+        f.write('Running T11\n')
+    return path
+
+
+def pwv_job(cfg, store, clock, tel, night, outcomes, minutes=20, state='done'):
+    """A pipeline job finishing `minutes` after the clock, whose log holds one light curve per outcome."""
+    clock.advance(minutes=minutes)
+    jid, _ = store.add_job('P2', 'pipeline', ['./main/ZLP_pipeline.sh'], telescope=tel, night=night)
+    store.mark_running(jid, log_path=pwv_log(cfg, 'job{}'.format(jid), tel, night, outcomes))
+    if state == 'done':
+        store.finish(jid, 0)
+    else:
+        store.finish(jid, 1, failure_kind='deterministic', signature='boom')
+    return jid
+
+
+def test_pwv_outcome_of_each_light_curve(cfg):
+    def scan(*outcomes):
+        c = pwvlog.scan_log(pwv_log(cfg, 'x', 'Callisto', '20251224', outcomes))
+        return c, pwvlog.verdict(c)
+    c, v = scan('ok', 'nodata', 'dns', 'off', 'other', 'none')
+    assert c == {'n_lc': 6, 'n_ok': 1, 'n_nodata': 2, 'n_off': 1, 'n_other': 1, 'n_none': 1,
+                 'reason': 'cannot resolve archive.eso.org (Temporary failure in name resolution)'}
+    assert v == 'ok'                                  # 2 of the 4 that tried had no data: not most
+    assert scan('ok', 'nodata', 'nodata', 'off', 'off')[1] == 'nodata'
+    assert scan('nodata')[0]['reason'] is None        # no cause logged, and numpy's message is not one
+    assert scan('off', 'off')[1] == 'neutral' and scan('none')[1] == 'neutral'
+    c, v = scan('other', 'other')
+    assert (c['reason'], v) == ('output array is read-only', 'neutral')
+    assert scan()[0]['n_lc'] == 0
+
+
+@pytest.fixture
+def outage(clean, store, clock):
+    """At NOW: a job that corrected PWV, then two SSO jobs without LHATPRO data, an Artemis job and a job whose
+    targets are too cool for PWV; one SSO job short of an incident."""
+    cfg = clean
+    clock.t = NOW - dt.timedelta(hours=6)
+    ok = pwv_job(cfg, store, clock, 'Callisto', '20251223', ['ok'] * 6)
+    a = pwv_job(cfg, store, clock, 'Callisto', '20251224', ['nodata'] * 6)
+    artemis = pwv_job(cfg, store, clock, 'Artemis', '20261016', ['nodata'] * 6)     # not SSO: not looked at
+    b = pwv_job(cfg, store, clock, 'Europa', '20240101', ['ok'] + ['dns'] * 5)
+    cool = pwv_job(cfg, store, clock, 'Io', '20240102', ['off'] * 4)                # neither success nor failure
+    return {'ok': ok, 'a': a, 'artemis': artemis, 'b': b, 'cool': cool}
+
+
+def test_pwv_failing_opens_one_incident_naming_the_jobs(outage, cfg, store, clock):
+    jobs = outage
+    assert notifier(cfg, store).check(dry_run=True) == ['no conditions']
+    c = pwv_job(cfg, store, clock, 'Ganymede', '20240103', ['dns'] * 6, state='failed')
+    n = notifier(cfg, store)
+    n.check()
+    [inc] = [i for i in n.incidents() if i['key'] == 'pwv-nodata']
+    assert inc['title'] == 'PWV correction failing: no LHATPRO data'
+    detail = inc['detail']
+    assert detail.startswith("3 SSO pipeline jobs have finished since 18 Oct 02:25 UTC with no LHATPRO data for most "
+                             "of their light curves ('No PWV data for:' in the job log): 17 of their 18 light curves "
+                             'were written without the PWV correction. The last job that corrected PWV was job {} '
+                             '(Callisto 20251223, finished 18 Oct 02:05 UTC).'.format(jobs['ok']))
+    assert 'Latest: job {} (Ganymede 20240103, finished 18 Oct 03:45 UTC), 6 of 6 light curves.'.format(c) in detail
+    assert 'Cause logged: cannot resolve archive.eso.org (Temporary failure in name resolution)' in detail
+    assert 'Jobs: {}, {}, {}\n'.format(jobs['a'], jobs['b'], c) in detail
+    [alert] = [read(p) for p in outbox(cfg) if '_alert-' in p]
+    assert alert['Subject'] == '[orchard] PWV correction failing: no LHATPRO data'
+    # more jobs without data: the same incident, its detail updated, no second email
+    d = pwv_job(cfg, store, clock, 'Io', '20240104', ['nodata'] * 2)
+    n = check_at(cfg, store, NOW + dt.timedelta(minutes=30))
+    [inc] = [i for i in n.incidents() if i['key'] == 'pwv-nodata']
+    assert inc['detail'].startswith('4 SSO pipeline jobs') and ', {}\n'.format(d) in inc['detail']
+    assert len([p for p in outbox(cfg) if '_alert-' in p]) == 1
+
+
+def test_pwv_incident_resolves_only_when_a_later_job_corrects_pwv(outage, cfg, store, clock):
+    pwv_job(cfg, store, clock, 'Ganymede', '20240103', ['dns'] * 6)
+    n = check_at(cfg, store, NOW)
+    assert 'pwv-nodata' in keys(n)
+    # no SSO job for four days (the queue paused, say): still open, not resolved by the jobs ageing out
+    later = NOW + dt.timedelta(days=4)
+    n = check_at(cfg, store, later)
+    assert 'pwv-nodata' in keys(n)
+    # a job mostly without data, though one light curve was corrected: still failing
+    clock.t = later
+    pwv_job(cfg, store, clock, 'Europa', '20240105', ['ok', 'dns', 'dns'])
+    assert 'pwv-nodata' in keys(check_at(cfg, store, later + dt.timedelta(hours=1)))
+    pwv_job(cfg, store, clock, 'Europa', '20240106', ['ok'] * 6)
+    n = check_at(cfg, store, later + dt.timedelta(hours=2))
+    assert 'pwv-nodata' not in keys(n)
+    [resolved] = [read(p) for p in outbox(cfg) if '_resolved-' in p and 'PWV' in read(p)['Subject']]
+    assert resolved['Subject'] == 'Re: [orchard] PWV correction failing: no LHATPRO data'
+
+
+def test_pwv_logs_are_read_once_and_again_after_a_rerun(outage, cfg, store, clock, monkeypatch):
+    read_logs = []
+    scan = pwvlog.scan_log
+    monkeypatch.setattr(pwvlog, 'scan_log', lambda path: read_logs.append(path) or scan(path))
+    notifier(cfg, store).check(dry_run=True)
+    assert len(read_logs) == 4                                   # the four SSO jobs; Artemis is not read
+    assert store.conn.execute('SELECT COUNT(*) FROM job_pwv').fetchone()[0] == 0     # a dry run keeps nothing
+    check_at(cfg, store, NOW)
+    check_at(cfg, store, NOW + dt.timedelta(minutes=30))
+    assert len(read_logs) == 8                                   # read once more for real, then never again
+    # job a fails, is requeued and runs again, this time with PWV: its new log is read
+    a = outage['a']
+    clock.t = NOW + dt.timedelta(minutes=40)
+    store.conn.execute("UPDATE jobs SET state = 'failed' WHERE id = ?", (a,))
+    store.requeue([a])
+    store.mark_running(a, log_path=pwv_log(cfg, 'rerun', 'Callisto', '20251224', ['ok'] * 6))
+    store.finish(a, 0)
+    check_at(cfg, store, NOW + dt.timedelta(hours=1))
+    assert read_logs[8:] == [store.get_job(a)['log_path']]
+    row = store.conn.execute('SELECT verdict, n_ok FROM job_pwv WHERE job_id = ?', (a,)).fetchone()
+    assert tuple(row) == ('ok', 6)
+
+
+def test_pwv_reads_at_most_pwv_max_scans_logs_a_run_newest_first(outage, cfg, store):
+    jobs = outage
+    cfg = dict(cfg, notify=dict(cfg['notify'], pwv_max_scans=2))
+
+    def read():
+        return {r[0] for r in store.conn.execute('SELECT job_id FROM job_pwv')}
+    check_at(cfg, store, NOW)
+    assert read() == {jobs['b'], jobs['cool']}
+    check_at(cfg, store, NOW + dt.timedelta(minutes=30))
+    assert read() == {jobs['ok'], jobs['a'], jobs['b'], jobs['cool']}
+
+
+def test_digest_counts_pwv_outcomes(outage, cfg, store, clock):
+    pwv_job(cfg, store, clock, 'Ganymede', '20240103', ['dns'] * 6)
+    text = notifier(cfg, store).digest(dry_run=True)
+    assert ('PWV, 28 light curves from 5 SSO pipeline jobs in the last 24 h: 7 corrected, 17 without LHATPRO data '
+            '(3 jobs), 4 off by design (Teff or telescope)') in text
+    assert 'PWV correction failing: no LHATPRO data' in text
+
+
+def test_digest_says_nothing_of_pwv_without_sso_jobs(clean, store):
+    assert 'PWV,' not in notifier(clean, store).digest(dry_run=True)
+
+
+class DnsDownSmtp:
+    """smtplib.SMTP while appct cannot resolve names: smtp.gmail.com fails before anything is sent."""
+
+    def __init__(self, host, port, timeout=None):
+        import socket
+        raise socket.gaierror(-3, 'Temporary failure in name resolution')
+
+
+def test_mail_that_cannot_be_sent_stays_in_the_outbox_and_the_next_digest_says_so(clean, store, tmp_path):
+    cfg = smtp_cfg(clean, tmp_path)
+    eso_polls(store, NOW - dt.timedelta(hours=2), [False] * 4)
+    # the alert: written to the outbox, not sent, tried again on the next run
+    n = check_at(cfg, store, NOW + dt.timedelta(minutes=10), smtp_factory=DnsDownSmtp)
+    [inc] = n.incidents()
+    assert inc['key'] == 'eso-unreachable' and inc['alerted_at'] is None
+    [msg] = n.messages()
+    assert (msg['status'], msg['error']) == ('failed',
+                                             'smtp.example.org:2525: [Errno -3] Temporary failure in name resolution')
+    assert [read(p)['Subject'] for p in outbox(cfg)] == ['[orchard] ESO queries failing since 18 Oct 05:45']
+    # the next morning's digest cannot be sent either; its outbox copy lists the alert
+    day2 = NOW + dt.timedelta(days=1)
+    heartbeat(store, day2)
+    out = notifier(cfg, store, now=day2, smtp_factory=DnsDownSmtp).digest()
+    assert 'failed via smtp' in out
+    [digest2] = [read(p).get_content() for p in outbox(cfg) if '_digest-' in p]
+    assert 'Sending failed for 1 message since 12 Oct 07:45 UTC (2 attempts); each is in {}:'.format(
+        os.path.join(cfg['queue_root'], 'notify', 'outbox')) in digest2
+    assert '  • [orchard] ESO queries failing since 18 Oct 05:45 — not sent (2 attempts)' in digest2
+    assert '  Last error: smtp.example.org:2525: [Errno -3] Temporary failure in name resolution' in digest2
+    # mail works again: the alert goes out, and the digest says what was missed
+    FakeSmtp.sent = []
+    day3 = NOW + dt.timedelta(days=2)
+    heartbeat(store, day3)
+    notifier(cfg, store, now=day3, smtp_factory=FakeSmtp).digest()
+    assert [m['Subject'] for m, *_ in FakeSmtp.sent] == ['[orchard] ESO queries failing since 18 Oct 05:45',
+                                                          '[orchard] Night of 18 Oct 2026: 1 needs attention']
+    body = FakeSmtp.sent[-1][0].get_content()
+    assert 'Sending failed for 2 messages since' in body
+    assert '  • [orchard] ESO queries failing since 18 Oct 05:45 — sent on a later attempt' in body
+    assert '  • [orchard] Night of 17 Oct 2026: 1 needs attention — not sent' in body
+    # once a digest is through, the next one starts afresh
+    day4 = NOW + dt.timedelta(days=3)
+    heartbeat(store, day4)
+    assert 'Sending failed' not in notifier(cfg, store, now=day4, smtp_factory=FakeSmtp).digest(dry_run=True)

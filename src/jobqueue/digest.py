@@ -1,8 +1,10 @@
 """What the notifier says: each telescope's night, the queue, the disks, and the conditions that open incidents.
 
-Read-only. Everything comes from the queue database (the watcher's per-night rows, jobs and their failure
-signatures, look-back rows) and the production tree (raw night directories, SPOCK's night blocks, light curves).
-Nothing here sends anything; notify.py delivers.
+Read-only, but for one cache: everything comes from the queue database (the watcher's per-night rows, jobs and
+their failure signatures, look-back rows, whether ESO answered) and the production tree (raw night directories,
+SPOCK's night blocks, light curves). The PWV outcome of each finished SSO pipeline job is read from its log once
+and kept in the job_pwv table (pwvlog), unless the Context is told not to record. Nothing here sends anything;
+notify.py delivers.
 
 The digest describes last_night(now). At the morning digest that is the night before last: its frames reached
 ESO yesterday afternoon and went through the pipeline then.
@@ -21,6 +23,7 @@ import os
 import re
 from collections import Counter
 
+from . import esoreach, pwvlog
 from .config import eso_telescopes
 from .nights import frame_time, list_frames, night_dir
 from .store import job_is_due
@@ -87,10 +90,12 @@ def disk_usage(path):
 
 
 class Context:
-    """Cached reads of the queue and the production tree for one notifier run."""
+    """Cached reads of the queue and the production tree for one notifier run. record: keep the PWV counts of
+    newly read job logs in job_pwv (off for dry runs)."""
 
-    def __init__(self, cfg, store, now):
+    def __init__(self, cfg, store, now, record=False):
         self.cfg, self.store, self.now = cfg, store, now
+        self.record = record
         self.n = cfg['notify']
         self.basedir = cfg['basedir']
         self.sso = eso_telescopes(cfg)
@@ -112,6 +117,14 @@ class Context:
 
     def lcs(self, tel, night):
         return self._get(('lcs', tel, night), lambda: lc_targets(self.basedir, tel, night))
+
+    def pwv(self):
+        """The PWV outcomes of SSO pipeline jobs (pwvlog), with the logs of newly finished jobs read."""
+        def load():
+            log = pwvlog.PwvLog(self.cfg, self.store, self.now, record=self.record)
+            log.refresh()
+            return log
+        return self._get('pwv', load)
 
     def chilean(self, tel, night):
         p = self.plan(tel, night) or {}
@@ -257,6 +270,8 @@ def queue_summary(ctx, hours=24):
         'heartbeat': parse_iso(info.get('heartbeat')), 'last_start': parse_iso(last_start),
         'lookback_actions': actions,
         'eso_errors': store.events(since=since, kinds=['eso-error']),
+        'eso_reach': esoreach.get(store),
+        'pwv': pwvlog.summary(ctx.pwv().finished_since(now - dt.timedelta(hours=hours))),
     }
 
 
@@ -473,9 +488,62 @@ def disk_conditions(ctx, disk_list):
     return out
 
 
+def eso_conditions(ctx):
+    """Every ESO query of the last eso_fail_polls watcher polls (or look-back runs) failed, or they have failed for
+    eso_fail_hours of watcher time (esoreach). The first query ESO answers resolves it."""
+    s = esoreach.get(ctx.store)
+    if s.get('state') != 'failing':
+        return []
+    polls, minutes = int(s.get('failed_polls') or 0), float(s.get('failing_minutes') or 0.0)
+    if polls < int(ctx.n['eso_fail_polls']) and minutes < 60.0 * float(ctx.n['eso_fail_hours']):
+        return []
+    error = s.get('error') or '-'
+    detail = ('Every ESO query has failed on the last {} polls, since {} UTC: {:.1f} h of watcher time, the latest '
+              'by the {} at {} UTC. ESO last answered {}.\nLast error: {}\n'
+              'Until it answers, no SSO night is downloaded or queued. The watcher picks up the last two nights once '
+              'it can, and the look-back fetches older ones.'.format(
+                  polls, fmt_time(s.get('failing_since')), minutes / 60.0, s.get('last_source') or 'watcher',
+                  fmt_time(s.get('last_failure')),
+                  '{} UTC'.format(fmt_time(s['last_ok'])) if s.get('last_ok') else 'before this was recorded', error))
+    if error.startswith('cannot resolve'):
+        detail += ('\nNames do not resolve: check DNS inside the container (docker exec orchard-server getent hosts '
+                   'www.eso.org). Light curves made meanwhile get no PWV correction, and mail from appct may fail.')
+    return [condition('eso-unreachable', 'eso', 'ESO queries failing since {}'.format(fmt_time(s.get('failing_since'))),
+                      detail)]
+
+
+def pwv_conditions(ctx):
+    """pwv_alert_jobs SSO pipeline jobs whose light curves mostly got no LHATPRO data ('No PWV data for:' in the job
+    log) since the last job that corrected PWV (pwvlog). The next job that corrects PWV resolves it; with no jobs
+    running it stays open."""
+    run, ok = ctx.pwv().failing_run()
+    if len(run) < int(ctx.n['pwv_alert_jobs']):
+        return []
+    t, last = pwvlog.summary(run), run[-1]
+    reason = next((r['reason'] for r in reversed(run) if r.get('reason')), None)
+    ids = [str(r['job_id']) for r in run]
+    detail = ('{} SSO pipeline jobs have finished since {} UTC with no LHATPRO data for most of their light curves '
+              "('No PWV data for:' in the job log): {} of their {} light curves were written without the PWV "
+              'correction. {}\nLatest: job {} ({} {}, finished {} UTC), {} of {} light curves.\nCause logged: {}\n'
+              'Jobs: {}{}\nThose light curves need T10 rerunning once LHATPRO answers, and every SSO pipeline job that '
+              'runs meanwhile adds to them. The next job that corrects PWV resolves this.'.format(
+                  len(run), fmt_time(run[0]['finished_at']), t['n_nodata'], t['n_lc'],
+                  'The last job that corrected PWV was job {} ({} {}, finished {} UTC).'.format(
+                      ok['job_id'], ok['telescope'], ok['night'], fmt_time(ok['finished_at'])) if ok else
+                  'No job read since the notifier began reading logs has corrected PWV.',
+                  last['job_id'], last['telescope'], last['night'], fmt_time(last['finished_at']), last['n_nodata'],
+                  last['n_lc'], reason or 'none (releases before the LHATPRO fix of 2026-10 do not log it); check that '
+                  'archive.eso.org resolves inside orchard-server',
+                  ', '.join(ids[:30]), ' and {} more'.format(len(ids) - 30) if len(ids) > 30 else ''))
+    # no time in the title: it is fixed when the incident opens, and right after a deploy the first run reads only
+    # the newest pwv_max_scans logs, so the earliest job is not yet known
+    return [condition('pwv-nodata', 'pwv', 'PWV correction failing: no LHATPRO data', detail)]
+
+
 def conditions(ctx, q, disk_list):
     return (failed_conditions(ctx) + late_conditions(ctx) + dark_conditions(ctx) + queue_conditions(ctx, q) +
-            signature_conditions(ctx, q) + disk_conditions(ctx, disk_list))
+            signature_conditions(ctx, q) + disk_conditions(ctx, disk_list) + eso_conditions(ctx) +
+            pwv_conditions(ctx))
 
 
 # ---------------------------------------------------------------------------------------------- the digest
@@ -567,8 +635,42 @@ def render_work(q, now, top=8):
     return out
 
 
-def render_digest(cfg, night, statuses, q, disk_list, open_incidents, resolved, now, report_path=None):
-    """Subject and plain-text body of the morning digest."""
+def render_pwv(q):
+    """The PWV outcome of the SSO light curves made in the window, or None if no SSO pipeline job finished."""
+    p = q.get('pwv') or {}
+    if not p.get('jobs'):
+        return None
+    parts = ['{} corrected'.format(p['n_ok']),
+             '{} without LHATPRO data{}'.format(p['n_nodata'], ' ({} job{})'.format(
+                 p['jobs_nodata'], '' if p['jobs_nodata'] == 1 else 's') if p['jobs_nodata'] else '')]
+    parts += [text.format(p[k]) for k, text in (('n_other', '{} other PWV failures'),
+                                                 ('n_off', '{} off by design (Teff or telescope)'),
+                                                 ('n_none', '{} that stopped before PWV')) if p[k]]
+    return 'PWV, {} light curves from {} SSO pipeline job{} in the last {} h: {}'.format(
+        p['n_lc'], p['jobs'], '' if p['jobs'] == 1 else 's', q['hours'], ', '.join(parts))
+
+
+def render_undelivered(failed, since, outbox):
+    """Messages since the last digest that could not be sent; each is in the outbox all the same."""
+    if not failed:
+        return []
+    out = ['Sending failed for {} message{} since {} ({} attempt{}); each is in {}:'.format(
+        len(failed), '' if len(failed) == 1 else 's', fmt_time(since) + ' UTC' if since else 'the start',
+        sum(m['failed'] for m in failed), '' if sum(m['failed'] for m in failed) == 1 else 's', outbox)]
+    for m in failed[:10]:
+        out.append('  • {} — {}'.format(m['subject'], 'sent on a later attempt' if m['status'] in ('sent', 'written')
+                                         else 'not sent' + (' ({} attempts)'.format(m['failed']) if m['failed'] > 1
+                                                            else '')))
+    if len(failed) > 10:
+        out.append('  … and {} more'.format(len(failed) - 10))
+    out.append('  Last error: {}'.format(max(failed, key=lambda m: m['failed_at'])['error'] or '-'))
+    return out + ['']
+
+
+def render_digest(cfg, night, statuses, q, disk_list, open_incidents, resolved, now, report_path=None,
+                  undelivered=None, undelivered_since=None, outbox=None):
+    """Subject and plain-text body of the morning digest. undelivered: messages whose sending failed since
+    undelivered_since (notify.Notifier.undelivered), so a digest that does get through says what did not."""
     incident_tels = {i['telescope'] for i in open_incidents if i.get('telescope')}
     lines, flagged = [], 0
     for s in statuses:
@@ -593,6 +695,7 @@ def render_digest(cfg, night, statuses, q, disk_list, open_incidents, resolved, 
         body.append('Resolved since the last digest')
         body += ['  • {} (resolved {})'.format(i['title'], fmt_time(i['resolved_at'])) for i in resolved]
         body.append('')
+    body += render_undelivered(undelivered, undelivered_since, outbox or 'the outbox')
 
     body += render_work(q, now)
     if q['failures']:
@@ -602,9 +705,18 @@ def render_digest(cfg, night, statuses, q, disk_list, open_incidents, resolved, 
     if q['lookback_actions']:
         body.append('Look-back: ' + '; '.join('{} {} {}'.format(r['telescope'], r['night'], r['last_action'])
                                               for r in q['lookback_actions'][:10]))
-    if q['eso_errors']:
-        body.append('Watcher: {} ESO query error{} in the last {} h'.format(
-            len(q['eso_errors']), '' if len(q['eso_errors']) == 1 else 's', q['hours']))
+    reach = q.get('eso_reach') or {}
+    if q['eso_errors'] or reach.get('state') == 'failing':
+        line = 'Watcher: {} ESO query error{} in the last {} h'.format(
+            len(q['eso_errors']), '' if len(q['eso_errors']) == 1 else 's', q['hours'])
+        if reach.get('state') == 'failing':
+            line += '; failing on {} poll{} in a row since {}, last answered {}'.format(
+                reach['failed_polls'], '' if reach['failed_polls'] == 1 else 's', fmt_time(reach['failing_since']),
+                fmt_time(reach.get('last_ok')))
+        body.append(line)
+    pwv_line = render_pwv(q)
+    if pwv_line:
+        body.append(pwv_line)
     body.append('')
     if disk_list:
         body.append('Disks: ' + ' · '.join('{} {:.1f} TiB free ({:.0f}%)'.format(d['label'], d['free_tib'],

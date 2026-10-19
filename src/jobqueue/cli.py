@@ -586,11 +586,27 @@ def _eso(cfg):
     return EsoArchive(cfg['eso_env_file'])
 
 
+def _eso_or_record(cfg, store, now, source, record=True):
+    """The ESO client, or None after recording a failed poll: a client that cannot even be set up (credentials
+    unreadable, the downloader failing to import) is ESO unreachable as far as the nightly work is concerned."""
+    from . import esoreach
+    try:
+        return _eso(cfg)
+    except Exception as e:                       # noqa: BLE001 - reported and recorded, like a failed query
+        print('{} cannot set up the ESO client: {}'.format(iso(now), e))
+        if record:
+            esoreach.record(store, now, ok=False, error='cannot set up the ESO client: {}'.format(e), source=source)
+        return None
+
+
 def cmd_watch(cfg, store, a):
     from .watcher import Watcher
     now = utcnow()
     print('{} watcher ({} mode)'.format(iso(now), cfg['mode']))
-    for line in Watcher(cfg, store, _eso(cfg), now=now).run():
+    eso = _eso_or_record(cfg, store, now, 'watcher')
+    if eso is None:
+        return 1
+    for line in Watcher(cfg, store, eso, now=now).run():
         print('  ' + line)
     return 0
 
@@ -600,7 +616,10 @@ def cmd_lookback(cfg, store, a):
     now = utcnow()
     print('{} look-back over {} nights ({}{})'.format(iso(now), cfg['lookback']['nights'], cfg['mode'],
                                                      ', dry run' if a.dry_run else ''))
-    res = Lookback(cfg, store, _eso(cfg), now=now, dry_run=a.dry_run).run()
+    eso = _eso_or_record(cfg, store, now, 'look-back', record=not a.dry_run)
+    if eso is None:
+        return 1
+    res = Lookback(cfg, store, eso, now=now, dry_run=a.dry_run).run()
     print(format_report(res))
     if a.json:
         with open(a.json, 'w') as f:
