@@ -39,9 +39,12 @@ For each target-night, the candidate is a v3 target directory holding a *_diff.f
                 reduction's flats/.  *_diff.fits, *_output.fits, lightcurves/, plots and stacks stay, with
                 thinned.tsv listing what went.  The frames go last, so that v2 lacks the target only for the
                 moment between two renames, not for the time the deletions take
-  HOLD and   change nothing on disk.  With --apply the verdict and its reasons go into the journal
-  REJECT     (promote_journal.py) for a person: `accept <id> --reason` performs the PROMOTE steps, and
-             `reject <id> --reason` records the decision.
+  HOLD and   With --apply the verdict and its reasons go into the journal (promote_journal.py), and the approval
+  REJECT     policy (promote_policy.py) decides it: promote (the PROMOTE steps, with the files the run did not
+             write set aside first), reject (v2 keeps what it has), reprocess (the pipeline, not the data, is at
+             fault: listed for a rerun), or a person.  `accept <id> --reason` performs the PROMOTE steps by
+             hand, and `reject <id> --reason` records a person's decision.  --no-policy leaves every one for a
+             person.
 
 Each promotion is journalled before and after each step.  One cut short by a crash is listed by `list`
 and in the queue's daily report, and finished by `resume`; `run --apply` finishes those of a night before
@@ -81,6 +84,7 @@ from collections import Counter, OrderedDict
 import numpy as np
 
 from utils import promote_check
+from utils import promote_policy
 from utils import target_management
 from utils.promote_check import Identity, RawFrames, assess
 from utils.promote_journal import Journal, iso, parse_iso, utcnow
@@ -92,7 +96,8 @@ KEEP_IN_RUN_DIRS = ('.dat', '.dat_phot')   # frame lists: tiny, and they say whi
 TOLERANCE = 1.0                     # seconds: run starts are logged to the second
 EX_TEMPFAIL = 75                    # the queue retries a job with this exit code an hour later
 PROC = '/proc'                      # where night_busy looks for pipeline runs outside the queue (tests point it away)
-STEPS = ('check', 'supersede', 'publish', 'touch', 'reduction', 'records', 'thin')
+STEPS = ('check', 'aside', 'supersede', 'publish', 'touch', 'reduction', 'records', 'thin')
+STALE = '-stale'                    # superseded/<TEL>/<NIGHT>/<TARGET>/<stamp>-stale/: files set aside before publishing
 RANK = {'PROMOTE': 0, 'HOLD': 1, 'REJECT': 2}
 EPOCH = dt.datetime(1970, 1, 1)
 
@@ -274,7 +279,7 @@ def parse_log(path):
     """What a ZLP_pipeline.sh log says about its run: start and end (its first and last `date` lines, UTC in the
     container), the targets it ran and whether they were given, and whether it completed. None without a start."""
     run = {'source': 'log', 'log': path, 'job': None, 'state': None, 'start': None, 'end': None, 'targets': None,
-           'specified': None, 'complete': False}
+           'specified': None, 'complete': False, 'science': True}
     try:
         with open(path, 'rb') as f:
             for k, raw in enumerate(f):
@@ -339,6 +344,15 @@ def queue_job(conn, job_id):
     return dict(r) if r else None
 
 
+def science_argv(argv):
+    """Whether a ZLP_pipeline.sh invocation runs T10, the stage that writes the light curves. An --only_T11 run (the
+    PDF and frame packing) or an --only_T12 sweep makes no products, so S1 must not judge files against it."""
+    only = [a for a in argv if a.startswith('--only_T')]
+    if only:
+        return any(a == '--only_T10' for a in only)
+    return '--no_T10' not in argv
+
+
 def runs_from_queue(conn, tel, night):
     """Pipeline jobs of the night that have started, as runs (the latest attempt of each)."""
     if conn is None:
@@ -348,10 +362,15 @@ def runs_from_queue(conn, tel, night):
                         'AND started_at IS NOT NULL ORDER BY id', (tel, night)).fetchall()
     for r in rows:
         targets = (r['targets'] or '').split()
+        try:
+            argv = json.loads(r['argv'] or '[]')
+        except ValueError:
+            argv = []
         out.append({'source': 'job', 'job': r['id'], 'state': r['state'], 'start': parse_iso(r['started_at']),
                     'end': None if r['state'] == 'running' else parse_iso(r['finished_at']),
                     'targets': targets or None, 'specified': bool(targets), 'complete': None, 'log': None,
-                    'job_log': r['log_path'], 'exit_code': r['exit_code'], 'code': r['code_sha']})
+                    'job_log': r['log_path'], 'exit_code': r['exit_code'], 'code': r['code_sha'],
+                    'science': science_argv(argv)})
     return out
 
 
@@ -387,6 +406,20 @@ def covers(run, target):
 def latest_run(runs, target):
     cover = [r for r in runs if covers(r, target)]
     return max(cover, key=lambda r: (r['start'], r['job'] or 0)) if cover else None
+
+
+def science_run(runs, target):
+    """The run a candidate's light curves come from: the latest run covering the target that ran T10. The runs after
+    it that made no light curves (an --only_T11 PDF run, an --only_T12 sweep) are listed in its 'later', oldest first,
+    because their PDF and log belong to the night's records. None if no such run is known."""
+    order = lambda r: (r['start'], r['job'] or 0)
+    cover = sorted((r for r in runs if covers(r, target)), key=order)
+    made = [r for r in cover if r.get('science', True)]
+    if not made:
+        return None
+    run = dict(made[-1])
+    run['later'] = [run_json(r) for r in cover if order(r) > order(run)]
+    return run
 
 
 def night_busy(conn, tel, night, own_job=None, proc=None):
@@ -650,13 +683,15 @@ class TableIdentity(Identity):
 
 class Promoter(object):
     def __init__(self, base, journal=None, queue=None, identity=None, raw=None, th=None, apply=False, own_job=None,
-                 invocation=None, proc=None, now_fn=utcnow, out=print):
+                 invocation=None, proc=None, now_fn=utcnow, out=print, policy=False, policy_th=None):
         self.tree = Tree(base)
         self.journal = journal
         self.queue = queue
         self.identity = identity or Identity(base)
         self.raw = raw
         self.th = dict(th or promote_check.THRESHOLDS)
+        self.policy = policy                 # decide HOLDs and REJECTs with promote_policy.py
+        self.policy_th = dict(policy_th or {})
         self.apply = apply
         self.own_job = own_job
         self.invocation = invocation
@@ -670,12 +705,16 @@ class Promoter(object):
     def judge(self, tel, night, target, runs):
         cand = self.tree.output('v3', tel, night, target)
         inc = self.tree.output('v2', tel, night, target)
-        run = latest_run(runs, target)
+        run = science_run(runs, target)
         c = scan_dir(cand, run['start'] if run else None)
         i = scan_dir(inc)
         row = assess(tel, night, target, cand, inc if i['fp'] is not None else '', self.identity, self.raw, self.th)
         hold = []
-        if run is None:
+        if run is None and latest_run(runs, target) is not None:
+            hold.append('S2 no run of the night covering {} made light curves (the latest, {}, did not run T10), so '
+                        'its files cannot be checked against the run that wrote them'.format(
+                            target, describe_run(latest_run(runs, target))))
+        elif run is None:
             hold.append('S2 no pipeline run of the night covering {} was found (no queue job, no log in v3/ or v2/{}/'
                         'logs), so its files cannot be checked against the run'.format(target, tel))
         elif c['stale'] and len(c['stale']) == c['files']:
@@ -694,7 +733,7 @@ class Promoter(object):
                 'incumbent': inc if i['fp'] is not None else '', 'verdict': verdict,
                 'checker_verdict': row['verdict'], 'reasons': '; '.join(x for x in [row['reasons']] + hold if x),
                 'notes': row['notes'] or '', 'metrics': jsonable(row), 'run': run, 'cand_fp': c['fp'],
-                'inc_fp': i['fp'], 'cand_files': c['files'], 'stale_files': len(c['stale'])}
+                'inc_fp': i['fp'], 'cand_files': c['files'], 'stale_files': len(c['stale']), 'stale': c['stale']}
 
     # ------------------------------------------------------------------ the journal
 
@@ -737,10 +776,15 @@ class Promoter(object):
         tel, night, target = v['telescope'], v['night'], v['target']
         run = run_from_json(v['run'])
         dest = self.tree.output('v2', tel, night, target)
-        c, i = scan_dir(v['candidate']), scan_dir(dest)
+        c = scan_dir(v['candidate'], run['start'] if run and run.get('start') else None)
+        i = scan_dir(dest)
+        # files the run did not write go aside, so v2 holds only the promoted run's own (an accept of an S1 hold,
+        # or the policy's)
+        aside = {'dir': self.tree.superseded(tel, night, target, stamp + STALE), 'files': c['stale']} \
+            if c['stale'] else None
         return {'stamp': stamp, 'candidate': v['candidate'], 'dest': dest, 'cand_fp': v['cand_fp'],
                 'cand_ino': c['ino'], 'inc_fp': v['inc_fp'], 'inc_ino': i['ino'],
-                'superseded': self.tree.superseded(tel, night, target, stamp) if i['ino'] else None,
+                'superseded': self.tree.superseded(tel, night, target, stamp) if i['ino'] else None, 'aside': aside,
                 'reduction': self.plan_reduction(tel, night, run, stamp), 'records': self.plan_records(tel, night, run),
                 'run': v['run']}
 
@@ -792,45 +836,51 @@ class Promoter(object):
         return r
 
     def plan_records(self, tel, night, run):
+        """The logs of the run and of the later runs that made no light curves (an --only_T11 run writes the PDF),
+        and the night's PDF if one of them wrote it."""
         out = []
         if run is None:
             return out
-        stamp = run_stamp(run)
-        log = run.get('log') if run.get('log') and os.path.isfile(run['log']) else None
-        job_log = run.get('job_log') if run.get('job_log') and os.path.isfile(run['job_log']) else None
+        runs = [run] + [run_from_json(r) for r in run.get('later') or ()]
         logs = self.tree.logs('v2', tel)
-        if log and os.path.dirname(os.path.abspath(log)) == os.path.abspath(logs):
-            out.append({'kind': 'log', 'missing': 'the log is in v2 already ({})'.format(os.path.basename(log))})
-        elif log or job_log:
-            if log:
-                stem = COPY_STAMP.sub('', os.path.basename(log)[:-len('.log')])
+        for r in runs:
+            stamp = run_stamp(r)
+            log = r.get('log') if r.get('log') and os.path.isfile(r['log']) else None
+            job_log = r.get('job_log') if r.get('job_log') and os.path.isfile(r['job_log']) else None
+            if log and os.path.dirname(os.path.abspath(log)) == os.path.abspath(logs):
+                out.append({'kind': 'log', 'missing': 'the log is in v2 already ({})'.format(os.path.basename(log))})
+            elif log or job_log:
+                if log:
+                    stem = COPY_STAMP.sub('', os.path.basename(log)[:-len('.log')])
+                else:
+                    stem = '{}_{}_v3{}'.format(night, RUNNAME, '_' + '_'.join(r['targets']) if r['specified'] else '')
+                out.append({'kind': 'log', 'src': log or job_log,
+                            'dst': os.path.join(logs, '{}.{}.log'.format(stem, stamp)),
+                            'plain': os.path.join(logs, stem + '.log')})
             else:
-                stem = '{}_{}_v3{}'.format(night, RUNNAME, '_' + '_'.join(run['targets']) if run['specified'] else '')
-            out.append({'kind': 'log', 'src': log or job_log,
-                        'dst': os.path.join(logs, '{}.{}.log'.format(stem, stamp)),
-                        'plain': os.path.join(logs, stem + '.log')})
-        else:
-            out.append({'kind': 'log', 'missing': 'no log of the run was found'})
+                out.append({'kind': 'log', 'missing': 'no log of {} was found'.format(describe_run(r))})
         pdf = os.path.join(self.tree.reports('v3', tel), '{}_{}.pdf'.format(tel, night))
         reports = self.tree.reports('v2', tel)
         if not os.path.isfile(pdf):
             out.append({'kind': 'pdf', 'missing': 'there is no {}'.format(pdf)})
-        else:
-            t = os.path.getmtime(pdf)
-            end = epoch(run['end']) + 60 if run.get('end') else None
-            if t < epoch(run['start']) - TOLERANCE or (end is not None and t > end):
-                out.append({'kind': 'pdf', 'missing': '{} was written by another run'.format(os.path.basename(pdf))})
-            else:
+            return out
+        t = os.path.getmtime(pdf)
+        for r in reversed(runs):
+            end = epoch(r['end']) + 60 if r.get('end') else None
+            if epoch(r['start']) - TOLERANCE <= t and (end is None or t <= end):
                 out.append({'kind': 'pdf', 'src': pdf,
-                            'dst': os.path.join(reports, '{}_{}.{}.pdf'.format(tel, night, stamp)),
+                            'dst': os.path.join(reports, '{}_{}.{}.pdf'.format(tel, night, run_stamp(r))),
                             'plain': os.path.join(reports, '{}_{}.pdf'.format(tel, night))})
+                return out
+        out.append({'kind': 'pdf', 'missing': '{} was written by another run'.format(os.path.basename(pdf))})
         return out
 
     # ------------------------------------------------------------------ promoting
 
     def promote(self, v, how, by=None, reason=None):
-        """The PROMOTE steps for a verdict: an automatic one (state promoting) or one a person accepted (pending).
-        Returns (state, error): state is done, aborted (nothing moved) or failed."""
+        """The PROMOTE steps for a verdict: an automatic one (state promoting), one a person accepted (pending), or
+        one the approval policy accepted (pending, how 'policy'). Returns (state, error): state is done, aborted
+        (nothing moved) or failed."""
         stamp = [None]
 
         def make_plan(pid):
@@ -841,10 +891,44 @@ class Promoter(object):
                                            make_plan)
         if pid is None:
             return 'aborted', 'verdict {} is no longer open'.format(v['id'])
-        if how == 'accept':
+        if how in ('accept', 'policy'):
             self.journal.set_verdict_state(v['id'], 'promoting', decided_by=by, decided_at=iso(self.now()),
                                            decision_reason=reason)
         return self.run_steps(self.journal.promotion(pid))
+
+    # ------------------------------------------------------------------ the approval policy
+
+    def apply_policy(self, j, v):
+        """Ask the approval policy (promote_policy.py) about a pending HOLD or REJECT and act on its answer: promote
+        it, reject it, or leave it pending for reprocessing or for a person. Every answer is journalled. Returns
+        the action text for the night's listing."""
+        run = j['run']
+        log = None
+        if run:
+            log = run.get('log') if run.get('log') and os.path.isfile(run['log']) else run.get('job_log')
+        losses = promote_policy.frame_losses(log, j['target'], dict(promote_policy.THRESHOLDS, **self.policy_th))
+        d = promote_policy.decide(j['verdict'], j['metrics'], j['reasons'], bool(j['incumbent']),
+                                  j['stale'] if run else None, j['cand_files'], losses,
+                                  dict(self.th, **self.policy_th))
+        evidence = {'losses': losses, 'stale': promote_policy.stale_summary(j['stale']) if run else None,
+                    'files': j['cand_files']}
+        if not self.apply:
+            return 'policy would {} ({}): {}'.format(d.outcome, d.rule, d.why)
+        self.journal.add_policy_decision(v['id'], self.invocation, promote_policy.VERSION, d.outcome, d.rule, d.why,
+                                         evidence)
+        if d.outcome == promote_policy.PROMOTE:
+            state, err = self.promote(v, 'policy', by=d.by, reason=d.why)
+            p = self.journal.promotion(self.journal.verdict(v['id'])['promotion_id'] or 0)
+            j['plan'] = p['plan'] if p else None
+            j['error'] = state == 'failed'
+            return ('promoted by policy ({}): {}'.format(d.rule, d.why) if state == 'done'
+                    else 'policy promotion {}: {}'.format(state, err))
+        if d.outcome == promote_policy.REJECT:
+            self.journal.set_verdict_state(v['id'], 'rejected', expect=('pending',), decided_by=d.by,
+                                           decided_at=iso(self.now()), decision_reason=d.why)
+            return 'rejected by policy ({}): {}'.format(d.rule, d.why)
+        return 'left for {} ({}): {}'.format('reprocessing' if d.outcome == promote_policy.REPROCESS else 'a person',
+                                            d.rule, d.why)
 
     def run_steps(self, prom):
         """Run a promotion's remaining steps. Returns (state, why): done, aborted (nothing moved), failed, or
@@ -866,7 +950,8 @@ class Promoter(object):
                 err = '{} step: {}: {}'.format(name, type(e).__name__, e)
                 note = {'error': err}
                 if name == 'check':
-                    # nothing moved: an automatic verdict is left to the next judgement, an accepted one to the person
+                    # nothing moved: an automatic or policy verdict is left to the next judgement, an accepted one to
+                    # the person
                     self.journal.step_end(sid, 'failed', note)
                     self.journal.finish_promotion(pid, 'aborted', error=err,
                                                   verdict_state='pending' if prom['how'] == 'accept' else 'outdated')
@@ -879,7 +964,8 @@ class Promoter(object):
                 return 'failed', err
             self.journal.step_end(sid, 'skipped' if detail.pop('skipped', False) else 'done', detail)
             done.add(name)
-        self.journal.finish_promotion(pid, 'done', verdict_state='accepted' if prom['how'] == 'accept' else 'promoted')
+        self.journal.finish_promotion(pid, 'done', verdict_state='accepted' if prom['how'] in ('accept', 'policy')
+                                      else 'promoted')
         return 'done', ''
 
     def undo_supersede(self, plan):
@@ -906,11 +992,41 @@ class Promoter(object):
         if os.path.islink(plan['dest']) or os.path.islink(plan['candidate']):
             raise PromoteError('a symbolic link where a directory should be')
         red = plan['reduction']
-        same_device(plan['candidate'], plan['dest'], plan['superseded'], red.get('dst'), red.get('superseded'))
+        aside = (plan.get('aside') or {}).get('dir')
+        same_device(plan['candidate'], plan['dest'], plan['superseded'], red.get('dst'), red.get('superseded'), aside)
         problems = access_problems(plan)
         if problems:
             raise PromoteError('; '.join(problems))
         return {'candidate_files': c['files'], 'incumbent_files': i['files']}
+
+    def step_aside(self, plan, prom):
+        """Move the files the run did not write out of the candidate, into superseded/.../<stamp>-stale/ with their
+        relative paths, so that v2 gets only the promoted run's own files."""
+        aside = plan.get('aside')
+        if not aside or not aside.get('files'):
+            return {'skipped': True, 'why': "every file in the candidate is the run's own"}
+        root = aside['dir']
+        if not self.tree.under_superseded(root):
+            raise PromoteError('refusing to set files aside outside {}: {}'.format(SUPERSEDED, root))
+        moved = already = gone = nbytes = 0
+        for rel in aside['files']:
+            src, dst = os.path.join(plan['candidate'], rel), os.path.join(root, rel)
+            if not os.path.lexists(src):
+                if os.path.lexists(dst):
+                    already += 1        # moved before an interruption
+                else:
+                    gone += 1
+                continue
+            if os.path.lexists(dst):
+                raise PromoteError('{} is set aside already, and {} is still in the candidate'.format(dst, rel))
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            nbytes += os.lstat(src).st_size
+            os.rename(src, dst)
+            moved += 1
+        write_note(root, {'set_aside_at': iso(self.now()), 'from': plan['candidate'], 'promotion': prom['id'],
+                          'verdict': prom['verdict_id'], 'why': 'these files predate the run that was promoted',
+                          'run': plan.get('run')})
+        return {'dir': root, 'moved': moved, 'bytes': nbytes, 'resumed': already, 'gone': gone}
 
     def step_supersede(self, plan, prom):
         src, dst = plan['dest'], plan['superseded']
@@ -992,7 +1108,8 @@ class Promoter(object):
     def step_thin(self, plan, prom):
         out = {}
         red = plan['reduction'].get('superseded') if plan['reduction'].get('action') != 'keep' else None
-        for key, path in (('target', plan['superseded']), ('reduction', red)):
+        aside = (plan.get('aside') or {}).get('dir')
+        for key, path in (('target', plan['superseded']), ('reduction', red), ('aside', aside)):
             if not path or not os.path.isdir(path):
                 continue
             if not self.tree.under_superseded(path):
@@ -1043,7 +1160,7 @@ class Promoter(object):
             if self.apply:
                 v, why = self.record(j)
                 j['verdict_id'] = v['id']
-                if why:
+                if why and not (self.policy and v['state'] == 'pending' and self._policy_due(v)):
                     j['action'] = 'left: ' + why
                 elif j['verdict'] == 'PROMOTE':
                     state, err = self.promote(v, 'auto')
@@ -1051,6 +1168,8 @@ class Promoter(object):
                     j['plan'] = p['plan'] if p else None
                     j['action'] = 'promoted' if state == 'done' else '{}: {}'.format(state, err)
                     j['error'] = state == 'failed'
+                elif self.policy:
+                    j['action'] = 'verdict {}: {}'.format(v['id'], self.apply_policy(j, v))
                 else:
                     j['action'] = 'recorded {} as verdict {}'.format(j['verdict'], v['id'])
             else:
@@ -1059,11 +1178,19 @@ class Promoter(object):
             self.out('{:8} {} {:16} {:7} {}'.format(tel, night, target, j['verdict'], j['action']))
         return results
 
+    def _policy_due(self, v):
+        """Whether the policy should decide a pending verdict the journal already held unchanged: not when this
+        version of it has already left the verdict for reprocessing or for a person."""
+        prev = self.journal.latest_policy_decision(v['id'])
+        return not (prev and prev['version'] == promote_policy.VERSION)
+
     def _dry_action(self, j):
         if j['verdict'] != 'PROMOTE':
             prev = self.journal.latest_verdict(j['telescope'], j['night'], j['target']) if self.journal else None
             if prev and prev['state'] == 'rejected' and prev['cand_fp'] == j['cand_fp']:
                 return 'would leave: rejected by {} on {}'.format(prev['decided_by'], prev['decided_at'])
+            if self.policy:
+                return 'would record; ' + self.apply_policy(j, None)
             return 'would record for review'
         plan = self.plan({'telescope': j['telescope'], 'night': j['night'], 'target': j['target'],
                           'candidate': j['candidate'], 'cand_fp': j['cand_fp'], 'inc_fp': j['inc_fp'],
@@ -1095,6 +1222,9 @@ def access_problems(plan):
     want = [os.path.dirname(plan['candidate']), plan['candidate'], nearest_existing(os.path.dirname(plan['dest']))]
     if plan['superseded']:
         want += [plan['dest'], nearest_existing(plan['superseded'])]
+    if (plan.get('aside') or {}).get('files'):
+        want += [nearest_existing(plan['aside']['dir'])]
+        want += sorted({os.path.join(plan['candidate'], os.path.dirname(rel)) for rel in plan['aside']['files']})
     if red.get('action') != 'keep':
         want.append(nearest_existing(os.path.dirname(red['dst'])))
         if red.get('superseded'):
@@ -1263,8 +1393,11 @@ def make_promoter(a, cfg, paths, apply, journal, queue=None):
     raw = None if a.no_raw else CachedRawFrames(a.base, raw_path, seed=a.raw_seed,
                                                 readonly=not apply and not a.raw_cache)
     own = os.environ.get('JOBQUEUE_JOB_ID')
+    pcfg = cfg.get('promote') or {}
+    policy = bool(pcfg.get('policy', True)) and not getattr(a, 'no_policy', False)
     return Promoter(a.base, journal=journal, queue=queue or open_queue(a.queue_db), identity=identity, raw=raw,
-                    th=th, apply=apply, own_job=int(own) if own and own.isdigit() else None)
+                    th=th, apply=apply, own_job=int(own) if own and own.isdigit() else None, policy=policy,
+                    policy_th=pcfg.get('policy_thresholds') or {})
 
 
 def cmd_run(a, cfg, paths):
@@ -1358,10 +1491,15 @@ def cmd_list(a, cfg, paths):
                       night=a.night)
     if a.grep:
         rows = [v for v in rows if a.grep.lower() in (v['reasons'] or '').lower()]
+    policy = j.latest_policy_decisions([v['id'] for v in rows])
+    if a.needs:
+        rows = [v for v in rows if v['state'] == 'pending' and
+                (policy.get(v['id']) or {}).get('outcome', promote_policy.PERSON) == a.needs]
     for v in rows:
-        print('{:>6} {:9} {:8} {} {:16} {:7} {:9} {}'.format(v['id'], v['state'], v['telescope'], v['night'],
-                                                            v['target'], v['verdict'], v['created_at'][:10],
-                                                            v['reasons'][:150]))
+        d = policy.get(v['id'])
+        print('{:>6} {:9} {:8} {} {:16} {:7} {:9} {:10} {}'.format(
+            v['id'], v['state'], v['telescope'], v['night'], v['target'], v['verdict'], v['created_at'][:10],
+            (d['outcome'] if d else '-') if v['state'] == 'pending' else '', (d['why'] if d else v['reasons'])[:150]))
     for p in j.promotions(states=['in_progress', 'failed']):
         print('promotion {} ({} {} {}, verdict {}) is {}: {}'.format(p['id'], p['telescope'], p['night'], p['target'],
                                                                   p['verdict_id'], p['state'], p['error'] or ''))
@@ -1389,6 +1527,12 @@ def cmd_show(a, cfg, paths):
     print('candidate: {} of {} points, p2p {}, {} raw frames; v2: {} points, p2p {}'.format(
         m.get('c_valid'), m.get('c_frames'), f(m.get('c_p2p')) or '-', f(m.get('raw_frames')) or '-',
         m.get('i_valid'), f(m.get('i_p2p')) or '-'))
+    for d in j.policy_decisions(v['id']):
+        print('policy v{} {}: {} ({}): {}'.format(d['version'], d['decided_at'], d['outcome'], d['rule'], d['why']))
+        losses = (d['evidence'] or {}).get('losses')
+        if losses:
+            print('  plate solves: {} solved, {} lost to the sky, {} to the pipeline; {}'.format(
+                losses.get('solved'), losses.get('data'), losses.get('processing'), losses.get('causes')))
     for p in j.promotions():
         if p['verdict_id'] != v['id']:
             continue
@@ -1525,7 +1669,8 @@ def cmd_abandon(a, cfg, paths):
     published = any(s['step'] == 'publish' and s['state'] == 'done' for s in j.steps(p['id']))
     inv = j.invocation_start('abandon', sys.argv[1:], _code())
     j.finish_promotion(p['id'], 'abandoned', error='abandoned by {}: {}'.format(_by(a), a.reason),
-                       verdict_state=('accepted' if p['how'] == 'accept' else 'promoted') if published else 'outdated')
+                       verdict_state=('accepted' if p['how'] in ('accept', 'policy') else 'promoted') if published
+                       else 'outdated')
     j.invocation_end(inv, {'promotion': p['id'], 'published': published})
     print('promotion {} abandoned ({}); nothing on disk was changed by this'.format(
         p['id'], 'the candidate is in v2' if published else 'the candidate was not published'))
@@ -1563,6 +1708,9 @@ def build_parser():
     s.add_argument('--target', action='append', help='only this target (repeatable)')
     s.add_argument('--job', type=int, help="judge the targets of this queue pipeline job's night")
     s.add_argument('--apply', action='store_true', help='act: promote, and journal holds and rejects')
+    s.add_argument('--no-policy', action='store_true',
+                   help='leave every HOLD and REJECT for a person (default: the approval policy, promote_policy.py, '
+                        'decides them unless promote.policy is false in the queue config)')
     s.add_argument('--csv', help='write one row per target-night here')
     s.add_argument('--report', help='write a markdown summary here')
     s.set_defaults(fn=cmd_run)
@@ -1571,6 +1719,8 @@ def build_parser():
     common(s)
     s.add_argument('--all', action='store_true', help='every verdict, decided ones included')
     s.add_argument('--grep', help='only verdicts whose reasons contain this text, e.g. S1')
+    s.add_argument('--needs', choices=(promote_policy.PERSON, promote_policy.REPROCESS),
+                   help='only pending verdicts the policy left for a person, or for reprocessing')
     s.set_defaults(fn=cmd_list)
 
     s = sub.add_parser('show', help='one verdict, its reasons, and its promotion step by step')

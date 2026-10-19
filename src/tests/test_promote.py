@@ -179,13 +179,13 @@ def test_stale_files_in_a_reused_v3_directory_are_held_until_accepted(env):
     env.toy.target_dir('v3', TEL, NIGHT, A, aps=(3, 4, 5))            # the rerun rewrites all but ap 8
     env.toy.reduction('v3', TEL, NIGHT, [A])
     before = snapshot(env.base)
-    assert apply_night(env) == 0
+    assert apply_night(env, NIGHT, '--no-policy') == 0                          # holds wait for a person
     assert snapshot(env.base) == before                                         # a HOLD moves nothing
     (v,) = verdicts(env)
     assert v['verdict'] == 'HOLD' and v['state'] == 'pending'
     assert 'S1 1 of its' in v['reasons'] and '_8_diff.fits' in v['reasons']
     # unchanged on the next run: the same verdict, not a new one
-    assert apply_night(env) == 0
+    assert apply_night(env, NIGHT, '--no-policy') == 0
     assert [x['id'] for x in verdicts(env)] == [v['id']]
     # a person accepts it
     assert run(env, 'accept', str(v['id']), '--reason', 'ap 8 is not used', '--telescope', TEL, '--night', NIGHT) == 0
@@ -193,6 +193,7 @@ def test_stale_files_in_a_reused_v3_directory_are_held_until_accepted(env):
     assert run(env, 'accept', str(v['id']), '--reason', 'ap 8 is not used', '--apply', '--by', 'mh',
                '--telescope', TEL, '--night', NIGHT) == 0
     assert not os.path.exists(d) and os.path.isdir(env.v2('output', NIGHT, A))
+    assert not [n for n in os.listdir(env.v2('output', NIGHT, A)) if n.endswith('_8_diff.fits')]   # set aside
     (v,) = verdicts(env)
     assert (v['state'], v['decided_by'], v['decision_reason']) == ('accepted', 'mh', 'ap 8 is not used')
 
@@ -212,7 +213,7 @@ def test_incumbent_with_aperture_5_against_a_candidate_without_is_rejected(env):
     env.toy.log('v3', TEL, NIGHT, now() - dt.timedelta(minutes=20), [A])
     env.toy.target_dir('v3', TEL, NIGHT, A, aps=(3, 4))
     before = snapshot(env.base)
-    assert apply_night(env) == 0
+    assert apply_night(env, NIGHT, '--no-policy') == 0
     assert snapshot(env.base) == before
     (v,) = verdicts(env)
     assert v['verdict'] == 'REJECT' and v['state'] == 'pending'
@@ -242,7 +243,7 @@ def test_a_crash_after_publishing_is_finished_by_resume(env, monkeypatch):
     steps = {s['step']: s['state'] for s in j.steps(p['id'])}
     j.close()
     assert p['state'] == 'in_progress'
-    assert steps == {'check': 'done', 'supersede': 'done', 'publish': 'done', 'touch': 'intent'}
+    assert steps == {'check': 'done', 'aside': 'skipped', 'supersede': 'done', 'publish': 'done', 'touch': 'intent'}
     assert os.path.isdir(env.v2('output', NIGHT, A)) and not os.path.exists(env.v2('output', NIGHT, 'reduction'))
     monkeypatch.setattr(promote.Promoter, 'step_touch', original)
     assert run(env, 'resume', '--telescope', TEL, '--night', NIGHT) == 0       # dry run
@@ -318,7 +319,8 @@ def queue_db(env, jobs):
     s = Store(path, check_local=False)
     ids = []
     for j in jobs:
-        jid, _ = s.add_job(j.get('cls', 'P2'), j.get('kind', 'pipeline'), ['./main/ZLP_pipeline.sh'], telescope=TEL,
+        jid, _ = s.add_job(j.get('cls', 'P2'), j.get('kind', 'pipeline'), j.get('argv', ['./main/ZLP_pipeline.sh']),
+                           telescope=TEL,
                            night=j.get('night', NIGHT), targets=j.get('targets', ''),
                            locks=['night:{}:{}'.format(TEL, j.get('night', NIGHT))])
         s.conn.execute('UPDATE jobs SET state = ?, started_at = ?, finished_at = ?, exit_code = ? WHERE id = ?',
@@ -560,3 +562,152 @@ def test_a_binary_with_two_table_rows_agrees_with_a_plan_naming_either(env):
     assert row['verdict'] == 'PROMOTE', row['reasons']
     assert row['expected_id'] == faint and row['expected_src'] == 'target table, plan agrees'
     assert os.path.isdir(d)
+
+
+# ---------------------------------------------------------------------------- the approval policy
+
+
+def policy_rows(env, vid):
+    j = journal(env)
+    try:
+        return j.policy_decisions(vid)
+    finally:
+        j.close()
+
+
+def stale_rerun(env):
+    """An earlier run's directory, then a rerun that rewrites all but its aperture-8 curve: S1 holds that file."""
+    env.toy.raw(TEL, NIGHT, A, 121)
+    env.toy.plan(TEL, NIGHT, A, gaia_id(A))
+    d = env.toy.target_dir('v3', TEL, NIGHT, A, aps=(3, 4, 5, 8))
+    time.sleep(2.2)
+    start = now()
+    time.sleep(1.1)
+    env.toy.log('v3', TEL, NIGHT, start, [A])
+    env.toy.target_dir('v3', TEL, NIGHT, A, aps=(3, 4, 5))
+    env.toy.reduction('v3', TEL, NIGHT, [A])
+    return d
+
+
+def write_solves(log, target, solved, failed, sources, error):
+    """T7's plate-solve summaries for a target, as astrometry.py prints them, appended to a toy log."""
+    total = solved + failed
+    lines = ['TARGET: {}'.format(target)]
+    lines += ['[{0}/{1}] proc{2}-ok{0:04d}.fits SUCCESS - Sources: 200→16 Gaia: 300→32 Matches: 12 '
+              'CRPIX=(1.00,1.00) CRVAL=(15.000000,10.000000)'.format(k + 1, total, target) for k in range(solved)]
+    lines += ['[{0}/{1}] proc{2}-bad{0:04d}.fits FAILED - Sources: {3}→16 Gaia: 300→32 Matches: 0 '
+              'Error: {4}'.format(solved + k + 1, total, target, sources, error) for k in range(failed)]
+    with open(log, 'a', encoding='utf-8') as f:
+        f.write('\n'.join(lines) + '\n')
+
+
+def partial_night(env, sources, error):
+    """121 raw frames, a light curve of 60: the other 61 failed to plate solve, for the given reason."""
+    env.toy.raw(TEL, NIGHT, A, 121)
+    env.toy.plan(TEL, NIGHT, A, gaia_id(A))
+    log = env.toy.log('v3', TEL, NIGHT, now() - dt.timedelta(minutes=30), [A])
+    write_solves(log, A, 60, 61, sources, error)
+    env.toy.target_dir('v3', TEL, NIGHT, A, frames=60)
+    env.toy.reduction('v3', TEL, NIGHT, [A])
+
+
+def test_policy_promotes_a_candidate_whose_stale_files_are_clutter_and_sets_them_aside(env):
+    stale_rerun(env)
+    assert apply_night(env) == 0
+    (v,) = verdicts(env)
+    assert v['verdict'] == 'HOLD' and 'S1 1 of its' in v['reasons']
+    assert (v['state'], v['decided_by']) == ('accepted', 'policy:v1:clutter-only')
+    names = os.listdir(env.v2('output', NIGHT, A))
+    assert any(n.endswith('_5_diff.fits') for n in names) and not any(n.endswith('_8_diff.fits') for n in names)
+    (aside,) = [s for s in os.listdir(env.sup(NIGHT, A)) if s.endswith(promote.STALE)]
+    kept = os.listdir(env.sup(NIGHT, A, aside))
+    assert 'superseded.json' in kept and any(n.endswith('_8_diff.fits') for n in kept)
+    assert [(d['outcome'], d['rule']) for d in policy_rows(env, v['id'])] == [('promote', 'clutter-only')]
+
+
+def test_policy_rejects_a_candidate_without_aperture_5_and_v2_keeps_its_own(env):
+    env.toy.raw(TEL, NIGHT, A, 121)
+    env.toy.plan(TEL, NIGHT, A, gaia_id(A))
+    env.toy.target_dir('v2', TEL, NIGHT, A, aps=(3, 4, 5))
+    env.toy.log('v3', TEL, NIGHT, now() - dt.timedelta(minutes=20), [A])
+    env.toy.target_dir('v3', TEL, NIGHT, A, aps=(3, 4))
+    before = snapshot(env.base)
+    assert apply_night(env) == 0
+    assert snapshot(env.base) == before
+    (v,) = verdicts(env)
+    assert v['verdict'] == 'REJECT' and v['state'] == 'rejected'
+    assert v['decided_by'] == 'policy:v1:no-aperture-5' and 'v2 keeps its own' in v['decision_reason']
+    assert apply_night(env) == 0 and len(policy_rows(env, v['id'])) == 1     # left alone from then on
+
+
+def test_policy_sends_frames_the_pipeline_lost_to_reprocessing(env, capsys):
+    partial_night(env, 250, 'Plate scale sanity check failed: solved=25.674 arcsec/px, expected=0.348 arcsec/px, '
+                            'deviation=7277.6%')
+    assert apply_night(env) == 0
+    (v,) = verdicts(env)
+    assert v['verdict'] == 'HOLD' and v['state'] == 'pending' and 'A4' in v['reasons']
+    (d,) = policy_rows(env, v['id'])
+    assert (d['outcome'], d['rule']) == ('reprocess', 'frames-lost-to-pipeline')
+    assert d['evidence']['losses']['processing'] == 61 and d['evidence']['losses']['solved'] == 60
+    assert os.path.isdir(env.v3('output', NIGHT, A)) and not os.path.exists(env.v2('output', NIGHT, A))
+    capsys.readouterr()
+    assert run(env, 'list', '--needs', 'reprocess') == 0
+    assert '1 verdict(s)' in capsys.readouterr().out
+    assert run(env, 'list', '--needs', 'person') == 0
+    assert '0 verdict(s)' in capsys.readouterr().out
+    assert apply_night(env) == 0 and len(policy_rows(env, v['id'])) == 1     # not asked again while unchanged
+
+
+def test_policy_promotes_a_partial_night_the_sky_explains(env):
+    partial_night(env, 3, 'Not enough stars detected for plate solve: 3 (more than 4 are needed to match an 4-star '
+                          'asterism)')
+    assert apply_night(env) == 0
+    (v,) = verdicts(env)
+    assert v['verdict'] == 'HOLD' and 'A4' in v['reasons']
+    assert (v['state'], v['decided_by']) == ('accepted', 'policy:v1:partial-night-data')
+    assert os.path.isdir(env.v2('output', NIGHT, A))
+
+
+def test_a_t11_only_run_after_the_science_run_is_not_the_run_s1_judges(env):
+    science = now() - dt.timedelta(minutes=40)
+    env.toy.night(TEL, NIGHT, [A], science, pdf=False)          # the science run: it died before T11
+    time.sleep(1.1)
+    t11 = now()
+    time.sleep(1.1)
+    env.toy.pdf('v3', TEL, NIGHT)                               # an --only_T11 run writes the night's PDF
+    path, (sci_job, t11_job) = queue_db(env, [
+        {'state': 'failed', 'start': science - dt.timedelta(seconds=5), 'end': t11 - dt.timedelta(seconds=1),
+         'exit': 1},
+        {'state': 'done', 'start': t11, 'end': now() + dt.timedelta(seconds=5), 'exit': 0,
+         'argv': ['./main/ZLP_pipeline.sh', '--no_T12', '--only_T11', '1', '/data', NIGHT, '8', '2', TEL]}])
+    assert apply_night(env) == 0
+    (v,) = verdicts(env)
+    assert v['verdict'] == 'PROMOTE' and v['state'] == 'promoted', v['reasons']
+    assert v['run']['job'] == sci_job and [r['job'] for r in v['run']['later']] == [t11_job]
+    assert [n for n in os.listdir(env.v2('reports')) if '-j{}'.format(t11_job) in n]
+
+
+def test_dry_run_says_what_the_policy_would_do(env, capsys):
+    stale_rerun(env)
+    before = snapshot(env.base)
+    assert run(env, 'run', '--telescope', TEL, '--night', NIGHT) == 0
+    assert 'policy would promote (clutter-only)' in capsys.readouterr().out
+    assert snapshot(env.base) == before and not os.path.exists(env.db)
+
+
+def test_holds_recorded_before_the_policy_are_decided_by_the_next_run(env):
+    stale_rerun(env)
+    assert apply_night(env, NIGHT, '--no-policy') == 0
+    (v,) = verdicts(env)
+    assert v['state'] == 'pending'
+    assert apply_night(env) == 0
+    (v,) = verdicts(env)
+    assert (v['state'], v['decided_by']) == ('accepted', 'policy:v1:clutter-only')
+
+
+def test_science_argv_tells_runs_that_make_light_curves_from_those_that_do_not():
+    assert promote.science_argv(['./main/ZLP_pipeline.sh', '--no_T12', '1', '/d', NIGHT, '8', '2', TEL])
+    assert not promote.science_argv(['./main/ZLP_pipeline.sh', '--no_T12', '--only_T11', '1', '/d', NIGHT])
+    assert not promote.science_argv(['./main/ZLP_pipeline.sh', '--only_T12', '1', '/d', NIGHT])
+    assert promote.science_argv(['./main/ZLP_pipeline.sh', '--only_T10', '1', '/d', NIGHT])
+    assert not promote.science_argv(['./main/ZLP_pipeline.sh', '--no_T10', '1', '/d', NIGHT])

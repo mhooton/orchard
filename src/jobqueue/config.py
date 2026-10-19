@@ -115,6 +115,10 @@ DEFAULTS = {
         'raw_cache': None,             # raw-frame counts per night (check A4); default <queue_root>/promote_raw.sqlite
         'identity': 'plan',            # A3: 'plan' (schedule plan files), or 'table': <basedir>/ml_40pc_v2.csv for Sp
         'thresholds': {},              # overrides of promote_check.THRESHOLDS, e.g. {"max_scatter_ratio": 1.3}
+        # the approval policy (utils/promote_policy.py) decides HOLDs and REJECTs: promote, reject, reprocess, or a
+        # person; false leaves every one for a person, as before 2026-10-19
+        'policy': True,
+        'policy_thresholds': {},       # overrides of promote_policy.THRESHOLDS
         'cores': 2,
         'est_minutes': 15.0,
         'priority': 1000000000.0,      # ahead of the pipeline jobs of its class: it is short and holds up their results

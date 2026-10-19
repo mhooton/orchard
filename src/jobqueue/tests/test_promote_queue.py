@@ -140,6 +140,33 @@ def test_the_daily_report_lists_holds_rejects_and_unfinished_promotions(cfg, sto
     assert 'q promote resume --promotion {} --apply'.format(pid) in text
 
 
+def test_the_daily_report_lists_reprocessing_apart_from_decisions(cfg, store):
+    clock = lambda: dt.datetime(2026, 10, 18, 6, 0)                                        # noqa: E731
+    j = Journal(queue_paths(cfg)['promote_db'], now_fn=clock, check_local=False)
+    lost = j.add_verdict(None, 'Callisto', '20241117', 'Sp0409-0605', '/v3/x', '/v2/x', 'HOLD',
+                         'A4 light curve has 80 of 243 raw science frames (33%)', '', {}, {}, 'fp', 'fp', 'pending')
+    j.add_policy_decision(lost, None, 1, 'reprocess', 'frames-lost-to-pipeline', '162 of 243 raw frames lost to '
+                          'plate-solve failures on frames with stars', {})
+    mixed = j.add_verdict(None, 'Callisto', '20250202', 'TOI-6714', '/v3/y', '/v2/y', 'HOLD',
+                          'R1 444 finite points against 483 in v2', '', {}, {}, 'fp', 'fp', 'pending')
+    j.add_policy_decision(mixed, None, 1, 'person', 'mixed-against-v2', 'mixed against v2: x0.92 the points, x1.16 '
+                          'the scatter', {})
+    gone = j.add_verdict(None, 'Europa', '20260523', 'Sp1746-3214', '/v3/z', '', 'REJECT',
+                         'A1 no aperture-5 light curve', '', {}, {}, 'fp', None, 'pending')
+    j.add_policy_decision(gone, None, 1, 'reject', 'no-aperture-5', 'no aperture-5 light curve', {})
+    j.set_verdict_state(gone, 'rejected', decided_by='policy:v1:no-aperture-5', decided_at='2026-10-18T06:00:00Z',
+                        decision_reason='no aperture-5 light curve')
+    j.close()
+    text = build_report(dict(cfg, mode='live'), store, days=3, now=dt.datetime(2026, 10, 18, 6, 30))
+    assert '1 candidate(s) wait for a decision' in text
+    assert '| {} | HOLD | Callisto | 20250202 | TOI-6714 | 2026-10-18 | mixed against v2'.format(mixed) in text
+    assert '1 candidate(s) wait for reprocessing' in text
+    assert '| {} | Callisto | 20241117 | Sp0409-0605 | frames-lost-to-pipeline | 162 of 243'.format(lost) in text
+    assert 'The approval policy decided 3 verdict(s) in the last 3 days: 1 person, 1 reject, 1 reprocess.' in text
+    assert '0 by the policy, 0 accepted by a person, 1 rejected' in text
+    assert 'Sp1746-3214 (verdict' not in text            # policy rejects are counted, not listed one by one
+
+
 def test_no_journal_no_section(cfg, store):
     text = build_report(dict(cfg, mode='live'), store, days=1, now=dt.datetime(2026, 10, 18, 6, 30))
     assert 'Promotion' not in text

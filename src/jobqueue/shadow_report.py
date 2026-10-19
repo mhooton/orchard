@@ -160,21 +160,40 @@ def _promotion(cfg, days, now, out):
     if r is None:
         return None
     out += ['## Promotion: holds and rejects', '']
-    pending = r['pending']
+    reprocess = [v for v in r['pending'] if (v.get('policy') or {}).get('outcome') == 'reprocess']
+    pending = [v for v in r['pending'] if v not in reprocess]
     if pending:
         out.append('{} candidate(s) wait for a decision. `q promote show <id>`, then `q promote accept <id> '
                    '--reason "..." --apply` to promote, or `q promote reject <id> --reason "..."` to close '
                    'it.'.format(len(pending)))
         out.append('')
-        out.append('| Id | Verdict | Telescope | Night | Target | Since | Reasons |')
+        out.append('| Id | Verdict | Telescope | Night | Target | Since | Why |')
         out.append('|---|---|---|---|---|---|---|')
         for v in sorted(pending, key=lambda v: (v['verdict'] != 'HOLD', v['night'], v['telescope'], v['target'])):
             out.append('| {} | {} | {} | {} | {} | {} | {} |'.format(
                 v['id'], v['verdict'], v['telescope'], v['night'], v['target'], v['created_at'][:10],
-                (v['reasons'] or '').replace('|', '/')))
+                ((v.get('policy') or {}).get('why') or v['reasons'] or '').replace('|', '/')))
     else:
         out.append('Nothing waits for a decision.')
     out.append('')
+    if reprocess:
+        out.append('{} candidate(s) wait for reprocessing: the approval policy found the pipeline, not the data, at '
+                   'fault (`q promote list --needs reprocess`). v2 keeps what it has meanwhile.'.format(len(reprocess)))
+        out.append('')
+        out.append('| Id | Telescope | Night | Target | Rule | Why |')
+        out.append('|---|---|---|---|---|---|')
+        for v in sorted(reprocess, key=lambda v: (v['night'], v['telescope'], v['target'])):
+            out.append('| {} | {} | {} | {} | {} | {} |'.format(
+                v['id'], v['telescope'], v['night'], v['target'], v['policy']['rule'],
+                (v['policy']['why'] or '').replace('|', '/')[:200]))
+        out.append('')
+    if r.get('policy'):
+        counts = {}
+        for d in r['policy']:
+            counts[d['outcome']] = counts.get(d['outcome'], 0) + 1
+        out.append('The approval policy decided {} verdict(s) in the last {} days: {}.'.format(
+            len(r['policy']), days, ', '.join('{} {}'.format(n, k) for k, n in sorted(counts.items()))))
+        out.append('')
     for p in r['stuck']:
         out.append('- **Promotion {} did not finish** ({} {} {}, verdict {}, {}): {}. `q promote show {}`, then '
                    '`q promote resume --promotion {} --apply`, or `q promote abandon {} --reason "..."` once sorted '
@@ -183,9 +202,13 @@ def _promotion(cfg, days, now, out):
     if r['stuck']:
         out.append('')
     auto = sum(1 for v in r['promoted'] if v['state'] == 'promoted')
-    out.append('In the last {} days: {} promoted automatically, {} accepted, {} rejected.'.format(
-        days, auto, len(r['promoted']) - auto, len(r['rejected'])))
+    by_policy = sum(1 for v in r['promoted'] if (v['decided_by'] or '').startswith('policy:'))
+    out.append('In the last {} days: {} promoted automatically, {} by the policy, {} accepted by a person, '
+               '{} rejected.'.format(days, auto, by_policy, len(r['promoted']) - auto - by_policy,
+                                     len(r['rejected'])))
     for v in r['rejected']:
+        if (v['decided_by'] or '').startswith('policy:'):
+            continue            # counted above; `q promote list --all` has them
         out.append('- rejected {} {} {} (verdict {}) by {}: {}'.format(v['telescope'], v['night'], v['target'], v['id'],
                                                                    v['decided_by'], v['decision_reason']))
     out.append('')
