@@ -10,7 +10,8 @@ Delivery: every message is written to <queue_root>/notify/outbox as an .eml file
 'smtp' is it also sent, to the recipient list (notify.to, kept in the queue's config.json by
 `q notify recipients`), with EMAIL_ADDRESS / EMAIL_PASSWORD / SMTP_SERVER read from notify.env_file. If the SMTP
 settings are missing or sending fails, the message still lands in the outbox and the failure is recorded; an alert
-that failed is tried again on the next run.
+that failed is tried again on the next run, and the next digest that gets through lists what was not sent. (While
+appct cannot resolve names, as from 2026-10-18, the SMTP host does not resolve either.)
 """
 import datetime as dt
 import email.utils
@@ -200,7 +201,7 @@ class Delivery:
                 conn.login(s['user'], s['password'])
                 conn.send_message(msg, from_addr=s['user'], to_addrs=self.to)
         except (smtplib.SMTPException, OSError) as e:
-            return path, 'failed', str(e).replace(s['password'], '***')[:500]
+            return path, 'failed', '{}:{}: {}'.format(s['host'], s['port'], e).replace(s['password'], '***')[:500]
         return path, 'sent', None
 
 
@@ -224,8 +225,9 @@ class Notifier:
 
     # ------------------------------------------------------------------ evaluating
 
-    def evaluate(self, night=None, statuses=True):
-        ctx = D.Context(self.cfg, self.store, self.now)
+    def evaluate(self, night=None, statuses=True, record=True):
+        """record=False (dry runs): new job logs are read for their PWV counts but the counts are not kept."""
+        ctx = D.Context(self.cfg, self.store, self.now, record=record)
         night = night or night_str(last_night(self.now))
         st = [D.night_status(ctx, t, night) for t in self.cfg['telescopes']] if statuses else []
         q = D.queue_summary(ctx)
@@ -343,7 +345,7 @@ class Notifier:
 
     def check(self, dry_run=False):
         """Bring incidents up to date and deliver their alerts. dry_run: list the conditions, change nothing."""
-        _, _, _, _, conds = self.evaluate(statuses=False)
+        _, _, _, _, conds = self.evaluate(statuses=False, record=not dry_run)
         if dry_run:
             return ['{}  {}'.format(c['key'], c['title']) for c in conds] or ['no conditions']
         opened, resolved = self.sync(conds)
@@ -354,7 +356,7 @@ class Notifier:
     def digest(self, night=None, dry_run=False):
         """The morning digest of `night` (default last night), after bringing incidents up to date. dry_run: return
         the text only; no incident changes, nothing delivered."""
-        night, statuses, q, disk_list, conds = self.evaluate(night)
+        night, statuses, q, disk_list, conds = self.evaluate(night, record=not dry_run)
         lines = []
         if dry_run:
             known = {i['key']: i for i in self.incidents()}
@@ -368,8 +370,11 @@ class Notifier:
             resolved = [dict(r) for r in self.store.conn.execute(
                 "SELECT * FROM notify_incidents WHERE state = 'resolved' AND resolved_at > ? ORDER BY id", (since,))]
         report = os.path.join(queue_paths(self.cfg)['reports'], 'report_{}.md'.format(self.now.strftime('%Y%m%d')))
+        failed_since = self.store.kv_get('notify_last_digest') or iso(self.now - dt.timedelta(days=7))
         subject, body = D.render_digest(self.cfg, night, statuses, q, disk_list, open_now, resolved, self.now,
-                                        report_path=report if os.path.exists(report) else None)
+                                        report_path=report if os.path.exists(report) else None,
+                                        undelivered=self.undelivered(failed_since), undelivered_since=failed_since,
+                                        outbox=self.delivery.outbox)
         if dry_run:
             return subject + '\n\n' + body
         status, _ = self._deliver('digest', subject, body)
@@ -405,6 +410,19 @@ class Notifier:
         self.store.conn.execute('UPDATE notify_incidents SET ack_until = NULL, ack_note = NULL WHERE id = ?',
                                 (r['id'],))
         return r
+
+    def undelivered(self, since):
+        """Messages written after `since` that failed to send at least once, one per subject, oldest first:
+        {'subject', 'kind', 'failed' (attempts that failed), 'status' (of the latest attempt), 'error' and
+        'failed_at' (of the latest failure)}."""
+        out = {}
+        for r in self.store.conn.execute('SELECT * FROM notify_messages WHERE ts > ? ORDER BY id', (since,)):
+            m = out.setdefault(r['subject'], {'subject': r['subject'], 'kind': r['kind'], 'failed': 0})
+            if r['status'] == 'failed':
+                m['failed'] += 1
+                m['error'], m['failed_at'] = r['error'], r['ts']
+            m['status'] = r['status']
+        return [m for m in out.values() if m['failed']]
 
     def messages(self, last=20):
         return [dict(r) for r in self.store.conn.execute(

@@ -155,6 +155,11 @@ DEFAULTS = {
         'dispatcher_stale_minutes': 30,
         'disk_min_free_tb': 2.0,
         'disk_min_free_pct': 5.0,
+        'eso_fail_polls': 4,             # watcher polls (or look-back runs) in a row whose every ESO query failed
+        'eso_fail_hours': 2.0,           # or failing for this long in watcher time (its overnight break not counted)
+        'pwv_alert_jobs': 3,             # SSO pipeline jobs since the last PWV correction with no LHATPRO data
+        'pwv_scan_hours': 48,            # finished pipeline jobs this recent have their logs read, each once
+        'pwv_max_scans': 40,             # job logs read per notifier run at most (they reach 20 MB)
     },
 }
 

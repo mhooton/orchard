@@ -2,6 +2,7 @@
 import datetime as dt
 import os
 
+from jobqueue import esoreach
 from jobqueue.tests.fakes import PROGS, FakeEso, write_fits
 from jobqueue.watcher import Watcher
 
@@ -126,6 +127,65 @@ def test_eso_failure_changes_nothing(cfg, store):
     assert store.jobs() == [] and store.watch_get('Europa', NIGHT) is None
     assert any('failed' in line for line in out)
     assert store.events(kinds=['eso-error'])
+
+
+def test_each_poll_records_whether_eso_answered(cfg, store):
+    """One outcome per poll (not per query) in the queue database, for the notifier: 2026-10-18's day and a half
+    of failed polls only ever reached watch.log."""
+    cfg = only(cfg, 'Europa')
+    eso = FakeEso()
+    poll(cfg, store, eso, at(13, 30))
+    assert esoreach.get(store)['state'] == 'ok'
+    eso.fail = True
+    poll(cfg, store, eso, at(14))
+    out = poll(cfg, store, eso, at(14, 30))
+    s = esoreach.get(store)
+    assert (s['state'], s['failed_polls'], s['failing_since'], s['failing_minutes'], s['last_ok']) == \
+        ('failing', 2, '2026-10-09T14:00:00Z', 60.0, '2026-10-09T13:30:00Z')
+    assert s['error'] == 'HTTPSConnectionPool: Max retries exceeded'
+    assert out[-1] == 'ESO has not answered on 2 polls in a row, since 2026-10-09T14:00:00Z (60 min of watcher time)'
+    assert len(store.events(kinds=['eso-error'])) == 4          # one per night asked, as before
+    eso.fail = False
+    poll(cfg, store, eso, at(15))
+    s = esoreach.get(store)
+    assert (s['state'], s['failed_polls'], s['last_ok']) == ('ok', 0, '2026-10-09T15:00:00Z')
+    [ev] = store.events(kinds=['eso-recovered'])
+    assert ev['message'] == 'ESO answered the watcher at 2026-10-09T15:00:00Z after 2 failed polls since ' \
+                            '2026-10-09T14:00:00Z'
+
+
+def test_a_poll_that_asks_eso_nothing_records_nothing(cfg, store):
+    cfg = only(cfg, 'Europa')
+    for night in ('20261008', '20261007'):
+        store.watch_put({'telescope': 'Europa', 'night': night, 'state': 'enqueued', 'polls_unchanged': 0,
+                         'noted': 0, 'data': {}})
+    eso = FakeEso()
+    eso.fail = True
+    poll(cfg, store, eso, at(14))
+    assert eso.calls == [] and esoreach.get(store) == {}
+
+
+def test_watch_without_an_eso_client_is_a_failed_poll(tmp_path, monkeypatch, capsys):
+    from jobqueue import cli
+    from jobqueue.eso import EsoError
+    from jobqueue.store import Store
+    monkeypatch.setenv('ORCHARD_QUEUE_ROOT', str(tmp_path / 'q'))
+    monkeypatch.delenv('ORCHARD_QUEUE_CONFIG', raising=False)
+
+    def broken(cfg):
+        raise EsoError('cannot read ESO credentials file /opt/orchard/src/reporting/.env: Permission denied')
+
+    monkeypatch.setattr(cli, '_eso', broken)
+    assert cli.main(['watch']) == 1
+    assert 'cannot set up the ESO client' in capsys.readouterr().out
+    s = Store(str(tmp_path / 'q' / 'queue.sqlite'))
+    try:
+        st = esoreach.get(s)
+        assert st['state'] == 'failing' and st['last_source'] == 'watcher'
+        assert st['error'] == 'cannot set up the ESO client: cannot read ESO credentials file ' \
+                              '/opt/orchard/src/reporting/.env: Permission denied'
+    finally:
+        s.close()
 
 
 def test_artemis_manifest_queues_the_pipeline_without_a_download(cfg, store):

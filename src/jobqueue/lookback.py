@@ -15,7 +15,7 @@ import datetime as dt
 import json
 import os
 
-from . import jobspec
+from . import esoreach, jobspec
 from .config import eso_telescopes, queue_paths
 from .eso import group_by_night
 from .nights import (artemis_targets, diff_eso_disk, list_frames, night_dir, normalise_target, products_state,
@@ -41,15 +41,19 @@ class Lookback:
     def run(self):
         nights = self.nights()
         out = []
+        asked, answered, error = 0, 0, None
         for tel in eso_telescopes(self.cfg):
             prog = self.cfg['telescopes'][tel]['prog_id']
+            asked += 1
             try:
                 rows = self.eso.frames(prog, nights[-1], nights[0])
             except Exception as e:
                 msg = '{}: ESO query failed ({}); skipped today'.format(tel, e)
                 self.log(msg)
                 out.append({'telescope': tel, 'night': None, 'action': msg})
+                error = e
                 continue
+            answered += 1
             by_night = group_by_night(rows)
             for night in nights:
                 out.append(self.check_eso_night(tel, night, by_night.get(night, [])))
@@ -57,6 +61,8 @@ class Lookback:
             if tcfg.get('source') == 'raw_dir':
                 for night in nights:
                     out.append(self.check_raw_night(tel, night))
+        if asked and not self.dry_run:
+            esoreach.record(self.store, self.now, ok=answered > 0, error=error, source='look-back')
         return out
 
     # ------------------------------------------------------------------
