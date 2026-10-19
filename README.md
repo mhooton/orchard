@@ -1752,6 +1752,10 @@ Licensed under the MIT License. See LICENSE file for details.
 
 ## Version History
 
+Releases are git tags `vMAJOR.MINOR.PATCH` on `main`, and every product records the version that made it in its
+`ORCHVER` header keyword. See [docs/versioning.md](docs/versioning.md) for when each part of the number goes up and
+which products carry it.
+
 **v3.0** (Current - February 2025)
 - Complete Python 2.7 → 3.9 migration
 - Dockerised deployment

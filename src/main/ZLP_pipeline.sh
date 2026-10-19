@@ -1249,6 +1249,8 @@ main() {
     cd ${DATDIR}
     rm -f core.*
     date
+    # which orchard this is: the version its products carry as ORCHVER (utils/orchard_version.py)
+    echo "$(python ${SCRIPTDIR}/utils/orchard_version.py --line 2>/dev/null || echo 'orchard version unknown')"
     echo "Using ${CORES} cores"
 
     EXT="$(find_ext)"

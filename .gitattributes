@@ -1,0 +1,2 @@
+# git archive fills in the version placeholders (deploys stage `git archive <sha> src`); see docs/versioning.md
+src/utils/orchard_version.py export-subst

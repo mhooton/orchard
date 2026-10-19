@@ -467,7 +467,9 @@ days away, and on 16 October a Callisto night was killed to make one.
 
 ### Deploying main
 
-Stage the commit as before, then one command on appct does the rest:
+If the deploy changes products, tag the commit first (`git tag -a v3.2.0 -m ... <sha>; git push origin v3.2.0`)
+so its products carry a version number of their own; see [versioning.md](versioning.md). Stage the commit with
+`git archive`, which writes the version into the staged tree, then one command on appct does the rest:
 
 ```bash
 git archive <sha> src | ssh speculoos@appcs.ra.phy.cam.ac.uk \

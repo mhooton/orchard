@@ -32,6 +32,7 @@ rotated password reaches every release at once; neither a sync nor a rollback to
 into the live tree. Copied files keep their own read bits, so anything only its owner may read stays that way.
 """
 import fnmatch
+import importlib.util
 import json
 import os
 import shutil
@@ -46,6 +47,8 @@ RELEASE_JSON = 'RELEASE.json'
 TESTS_JSON = 'tests.json'
 SYNC_KEY = 'release_sync'          # kv: the live tree still has to be brought up to the current release
 HISTORY = 'history.jsonl'
+# the tree's own record of which orchard it is, filled in by `git archive` (utils/orchard_version.py)
+VERSION_MODULE = os.path.join('utils', 'orchard_version.py')
 
 # Processes that do pipeline work and so read code for as long as they run.
 WORK_MARKERS = ('ZLP_pipeline.sh', 'SSO_download.py', 'jobqueue.runner')
@@ -263,6 +266,8 @@ def build(cfg, stage=None, sha=None, now=None, log=print):
     sources = dict(live_files)
     sources.update(stage_files)
     sources.pop('VERSION', None)
+    if stage and VERSION_MODULE not in stage_files:
+        sources.pop(VERSION_MODULE, None)       # a commit from before versioning must not claim the live tree's
     # credentials: a symlink to the live file, not a copy (a staged one, if any, gives way to the live one)
     live_links = sorted(rel for rel in live_files if _linked(rel, links))
     for rel in live_links:
@@ -297,6 +302,13 @@ def build(cfg, stage=None, sha=None, now=None, log=print):
         with open(os.path.join(src, 'VERSION'), 'w') as f:
             f.write('{} {}\n'.format(rid, sha or 'live-snapshot'))
         _readonly(os.path.join(src, 'VERSION'))
+        version = tree_version(src)
+        if stage and version and version['source'] == 'archive' and not version['commit'].startswith(sha.lower()):
+            raise ReleaseError('{} is commit {} by its own {}, not --sha {}: stage `git archive {} src`'
+                               .format(stage, version['commit'][:12], VERSION_MODULE, sha, sha))
+        if stage and version and version['source'] != 'archive':
+            log('warning: {} in {} was not filled in by git archive, so this release cannot say which orchard it '
+                'is and its products are stamped {!r}'.format(VERSION_MODULE, stage, version['version']))
 
         # content only, as sync_live compares: the live tree's modes are its own (deploys never copied them)
         differs_from_live = sorted(rel for rel in stage_files if rel not in live_links and
@@ -306,6 +318,8 @@ def build(cfg, stage=None, sha=None, now=None, log=print):
             removed_since_prev = sorted(set(tree_files(prev_src, patterns)) - set(sources) - set(live_links) -
                                         {'VERSION'})
         info = {'id': rid, 'sha': sha, 'built_at': iso(now), 'stage': stage, 'live_src': live,
+                'version': version['version'] if version else None,
+                'commit': version['commit'] if version else None,
                 'previous': prev['id'] if prev else None, 'files': len(sources),
                 'linked_from_previous': linked, 'copied': copied, 'new_bytes': new_bytes,
                 'live_links': live_links,
@@ -319,12 +333,29 @@ def build(cfg, stage=None, sha=None, now=None, log=print):
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
-    log('built release {}: {} files ({} new or changed, {:.1f} MB; {} linked to {}); {} differ from the live tree{}'
-        .format(rid, len(sources), copied, new_bytes / 1e6, linked, prev['id'] if prev else '-',
+    log('built release {} (orchard {}): {} files ({} new or changed, {:.1f} MB; {} linked to {}); {} differ from '
+        'the live tree{}'
+        .format(rid, info['version'] or '-', len(sources), copied, new_bytes / 1e6, linked, prev['id'] if prev else '-',
                 len(differs_from_live),
                 '; {} point{} at the live tree'.format(', '.join(live_links), 's' if len(live_links) == 1 else '')
                 if live_links else ''))
     return read_release(cfg, rid)
+
+
+def tree_version(src):
+    """What a tree's own utils/orchard_version.py says it is ({'version', 'commit', 'source', ...}), or None for a
+    tree without one (a commit from before versioning). The tree's module answers, so a release reports itself
+    the way its jobs stamp their products."""
+    path = os.path.join(src, VERSION_MODULE)
+    if not os.path.isfile(path):
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location('_orchard_version_of_tree', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.compute(src=src)
+    except Exception:
+        return None
 
 
 # --------------------------------------------------------------------------- testing

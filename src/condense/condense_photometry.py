@@ -46,6 +46,7 @@ except ImportError:         # run as a bare script: put the source root on the p
     from utils import target_list
 from utils.shared_files import acquire
 from calibration import smear
+from utils import orchard_version
 
 logging.basicConfig(level='INFO', format='%(levelname)7s %(message)s')
 logger = logging.getLogger(__name__)
@@ -631,6 +632,7 @@ def main(args):
             hdulist[0].header['SP_ID'] = sp_id
             hdulist[0].header['TEFF'] = teff_header
             hdulist[0].header['history'] = args.date
+            orchard_version.stamp(hdulist[0].header)
 
             if args.sha:
                 key_length = 72
@@ -678,6 +680,8 @@ def main(args):
                         header['TARGET_ROLE'] = role
                         header['SP_ID'] = sp_id
                         header['TEFF'] = teff_header
+                    # this run rewrites its night's rows and columns whether or not the night was there before
+                    orchard_version.stamp(header, updated=True)
 
                     # extract existing column names
                     print('updating imagelist_data')

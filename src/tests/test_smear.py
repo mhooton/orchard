@@ -743,6 +743,8 @@ def test_t4_master_flat_from_shutterless_flats(tmp_path, fresh_warnings, capsys)
     with fits.open(reddir + 'run_MasterFlat_I+z.fits') as h:
         master, hdr = np.array(h[0].data), h[0].header
     assert hdr['NSMEARED'] == 2 and 'NSMRLEFT' not in hdr
+    from utils import orchard_version
+    assert hdr['ORCHVER'] == orchard_version.version()
     # the de-smeared flats carry no readout ramp along x
     left, right = np.median(master[:, 100:300]), np.median(master[:, -300:-100])
     assert abs(right / left - 1) < 2e-3
@@ -831,6 +833,7 @@ def _condense_night(tmp_path, night, jd0, nframes, trail_line=None, readout_card
                               ext='fits', version='v3', cat=str(cat), tlist=None)
     cp.main(args)
     with fits.open(str(night_dir / ('111_I+z_%s_output.fits' % night))) as h:
+        assert h[0].header['ORCHVER'] == cp.orchard_version.version() and h[0].header['VERSION'] == 'v3'
         nightly = {x.name: (x.data.copy() if x.data is not None else None) for x in h[1:]}
         last = h[-1].name
     return nightly, last, str(tmp_path / 'output' / '111_I+z_output.fits')
@@ -869,6 +872,10 @@ def test_condense_smear_ap_with_readout_columns_and_update(tmp_path):
         assert h['SMEAR_AP'].data.shape == h['JD'].data.shape == (3, 7)
         np.testing.assert_array_equal(h['SMEAR_AP'].data[:, 5:], c['SMEAR_AP'])
         np.testing.assert_array_equal(h['SMEAR_AP'].data[:, 3:5], b['SMEAR_AP'])
+        # a file every night adds to says which orchard updated it last
+        from utils import orchard_version
+        assert h[0].header['ORCHVER'] == orchard_version.version()
+        assert h[0].header.comments['ORCHVER'] == 'orchard version of the last update'
 
     # a job still pinned to an older release updates the global file: every HDU but SMEAR_AP gains its two
     # frames. The next update pads SMEAR_AP with "not assessed" for them, so it lines up with JD again.
