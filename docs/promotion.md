@@ -62,12 +62,13 @@ From `promote_check.assess()`, unchanged except R1 (thresholds as agreed; every 
 | R2 | p2p more than 1.2 times v2's: HOLD | `max_scatter_ratio` 1.2 |
 | R3 | v2 is the plan's star and the candidate is not, or v2 has the target's aperture 5 and the candidate none: REJECT | |
 
-The promotion step adds three:
+The promotion step adds four:
 
 | Check | Holds when |
 |---|---|
 | **S1** | a file in the candidate predates the run: its inode last changed before the run started. Reruns reuse v3 directories, so an earlier run's files can sit beside the new ones (a stale aperture-8 curve, an old `_output.fits` of another star, last run's lightcurve plots), or make up the whole directory when the latest run did not get as far as this target. It uses ctime, not mtime: T8 restores stacks from `v2/StackImages` with `shutil.copy2`, which keeps their old mtime, and on 2026-10-17 mtime would have held 16 more of the 169 v3 directories for that alone. The approval policy (below) tells clutter from stale products, and a promotion sets these files aside. |
 | **S2** | no run covering the target is found, so S1 cannot be checked. |
+| **P1** | the candidate's target curve has no PWV correction (T10 wrote an empty `PWV` table or an all-NaN `PWV_LIGHTCURVE`, as when the LHATPRO fetch fails: from 2026-10-18 no name resolved inside appct's containers) and v2's curve has one. A replacement must not lose it; a gap fill without PWV is still published, with a note. Artemis, SAINT-EX and targets without a usable Teff never get PWV, so only the comparison with v2 counts. |
 | **A3** (with `--identity table`) | the plan file names another star than the K1 target table `ml_40pc_v2.csv` (with both of its Gaia IDs) for an Sp target. |
 
 `--identity plan` (the default) is the checker's behaviour: plan file line 4, else the 40 pc list by name.
@@ -127,7 +128,7 @@ HOLD or REJECT, new ones and ones the journal already holds, once per policy ver
 |---|---|---|
 | **promote** | the PROMOTE steps, as `accept` would; the verdict becomes *accepted*, decided by `policy:v1:<rule>` | S1 found only clutter (plots, per-frame sidecars, frame lists and frames, stacks and catalogues, an SP-named `_output.fits` of the old naming, curves of other apertures) and the checks passed; or the candidate has at least v2's points and no more scatter, or is within 5% of v2 on both; or v2 has nothing usable and the curve is a short complete night, a partial night whose missing frames the sky explains (their plate solves found too few stars), or noisy on a night with most of its frames flagged bad weather |
 | **reject** | closed; v2 keeps what it has | no aperture-5 curve, no finite point, a degenerate curve, v2 the plan's star and the candidate not, v2 better on points and scatter, a few points of a long night, or scatter far beyond a light curve (p2p above 0.25) |
-| **reprocess** | stays pending, listed for a rerun, not for a person (`q promote list --needs reprocess`) | the processing is at fault: frames lost to plate-solve failures on frames with plenty of stars (more than 10% of the raw frames, and at least 5), a directory the latest science run (almost) did not write, or a curve the portal serves that predates the run beside its new one |
+| **reprocess** | stays pending, listed for a rerun, not for a person (`q promote list --needs reprocess`) | the processing is at fault: a replacement that lost v2's PWV correction (P1), frames lost to plate-solve failures on frames with plenty of stars (more than 10% of the raw frames, and at least 5), a directory the latest science run (almost) did not write, or a curve the portal serves that predates the run beside its new one |
 | **person** | stays pending for a person | mixed against v2 (fewer points but less scatter, or slightly worse on both), an identity disagreement (A3), no known run (S2), a partial night the log does not explain, or a noisy curve on a clear night |
 
 The deciding question for a partial or noisy curve is whether the data or the processing made it so: noisy is fine

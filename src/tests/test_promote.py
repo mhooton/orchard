@@ -711,3 +711,51 @@ def test_science_argv_tells_runs_that_make_light_curves_from_those_that_do_not()
     assert not promote.science_argv(['./main/ZLP_pipeline.sh', '--only_T12', '1', '/d', NIGHT])
     assert promote.science_argv(['./main/ZLP_pipeline.sh', '--only_T10', '1', '/d', NIGHT])
     assert not promote.science_argv(['./main/ZLP_pipeline.sh', '--no_T10', '1', '/d', NIGHT])
+
+
+def add_pwv(d, target, applied, ap=5):
+    """Give the target's aperture-ap curve in d T10's PWV HDUs: with data, or empty as when the LHATPRO fetch fails."""
+    import numpy as np
+    (path,) = [os.path.join(d, n) for n in os.listdir(d)
+               if n.startswith(gaia_id(target)) and n.endswith('_{}_diff.fits'.format(ap))]
+    with fits.open(path, mode='update') as h:
+        shape = h['LIGHTCURVE_{}'.format(ap)].data.shape
+        table = np.recarray(3 if applied else 0, dtype=[('JD', np.float64), ('PWV', np.float64)])
+        if applied:
+            table['JD'], table['PWV'] = [1.0, 2.0, 3.0], [2.0, 2.1, 2.2]
+        h.append(fits.BinTableHDU(table, name='PWV'))
+        h.append(fits.ImageHDU(np.full(shape, 1.0 if applied else np.nan), name='PWV_LIGHTCURVE_{}'.format(ap)))
+    return path
+
+
+def test_pwv_state_reads_the_pwv_table_and_curve(env):
+    d = env.toy.target_dir('v3', TEL, NIGHT, A)
+    plain = [os.path.join(d, n) for n in os.listdir(d) if n.endswith('_3_diff.fits')][0]
+    assert promote.pwv_state(plain) == 'missing'                   # no PWV HDUs at all
+    assert promote.pwv_state(add_pwv(d, A, applied=True)) == 'applied'
+    assert promote.pwv_state(add_pwv(d, A, applied=False, ap=4)) == 'missing'
+    assert promote.pwv_state(os.path.join(d, 'absent_diff.fits')) is None
+
+
+def test_p1_holds_a_replacement_that_lost_the_pwv_correction_v2_has(env):
+    env.toy.raw(TEL, NIGHT, A, 121)
+    env.toy.plan(TEL, NIGHT, A, gaia_id(A))
+    add_pwv(env.toy.target_dir('v2', TEL, NIGHT, A), A, applied=True)
+    env.toy.log('v3', TEL, NIGHT, now() - dt.timedelta(minutes=20), [A])
+    add_pwv(env.toy.target_dir('v3', TEL, NIGHT, A), A, applied=False)
+    env.toy.reduction('v3', TEL, NIGHT, [A])
+    before = snapshot(env.base)
+    assert apply_night(env) == 0
+    assert snapshot(env.base) == before                             # v2 keeps its PWV-corrected curve
+    (v,) = verdicts(env)
+    assert v['verdict'] == 'HOLD' and v['state'] == 'pending'
+    assert v['reasons'].startswith('P1 the candidate has no PWV correction')
+    assert [(d['outcome'], d['rule']) for d in policy_rows(env, v['id'])] == [('reprocess', 'pwv-lost')]
+
+
+def test_a_gap_fill_without_pwv_is_promoted_with_a_note(env):
+    env.toy.night(TEL, NIGHT, [A], now() - dt.timedelta(minutes=30))
+    add_pwv(env.v3('output', NIGHT, A), A, applied=False)
+    assert apply_night(env) == 0
+    (v,) = verdicts(env)
+    assert v['state'] == 'promoted' and 'no PWV correction in the candidate' in v['notes']

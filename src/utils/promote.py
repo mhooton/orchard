@@ -469,6 +469,25 @@ def scan_dir(path, since=None):
     return out
 
 
+def pwv_state(path):
+    """Whether a *_diff.fits carries T10's PWV correction: 'applied' (a PWV table with data and a finite
+    PWV_LIGHTCURVE), 'missing' (T10 wrote an empty table or an all-NaN curve, as when the LHATPRO fetch fails), or
+    None (no file, or unreadable). Artemis, SAINT-EX and targets without a usable Teff never get one."""
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        from astropy.io import fits
+        with fits.open(path, memmap=False) as h:
+            names = [x.name for x in h]
+            rows = len(h['PWV'].data) if 'PWV' in names and h['PWV'].data is not None else 0
+            curves = [x for x in names if x.startswith('PWV_LIGHTCURVE_')]
+            finite = bool(curves) and h[curves[0]].data is not None and \
+                bool(np.isfinite(np.asarray(h[curves[0]].data, dtype=float)).any())
+    except Exception:
+        return None
+    return 'applied' if rows and finite else 'missing'
+
+
 def stale_summary(stale, examples=3):
     """'12 in 1/, 2 in lightcurves/, 1 *_diff.fits (e.g. ...)'."""
     def kind(rel):
@@ -726,13 +745,24 @@ class Promoter(object):
         conflict = getattr(self.identity, 'conflicts', {}).get((tel, night, target))
         if conflict:
             hold.append('A3 ' + conflict)
+        # P1: a replacement must not lose the PWV correction v2 has (T10's fetch fails when appct's containers
+        # cannot resolve names, as from 2026-10-18); a gap fill without one is still better than nothing
+        notes = [row['notes']] if row['notes'] else []
+        c_pwv = pwv_state(os.path.join(cand, row['c_file'])) if row.get('c_file') else None
+        i_pwv = pwv_state(os.path.join(inc, row['i_file'])) if row.get('i_file') and i['fp'] is not None else None
+        if c_pwv == 'missing' and i_pwv == 'applied':
+            hold.append('P1 the candidate has no PWV correction ({} has an empty PWV table or curve) and v2\'s '
+                        'curve has one'.format(row['c_file']))
+        elif c_pwv == 'missing':
+            notes.append('no PWV correction in the candidate (nor in v2)' if i_pwv else
+                         'no PWV correction in the candidate')
         verdict = row['verdict']
         if hold and verdict == 'PROMOTE':
             verdict = 'HOLD'
         return {'telescope': tel, 'night': night, 'target': target, 'candidate': cand,
                 'incumbent': inc if i['fp'] is not None else '', 'verdict': verdict,
                 'checker_verdict': row['verdict'], 'reasons': '; '.join(x for x in [row['reasons']] + hold if x),
-                'notes': row['notes'] or '', 'metrics': jsonable(row), 'run': run, 'cand_fp': c['fp'],
+                'notes': '; '.join(notes), 'metrics': jsonable(row), 'run': run, 'cand_fp': c['fp'],
                 'inc_fp': i['fp'], 'cand_files': c['files'], 'stale_files': len(c['stale']), 'stale': c['stale']}
 
     # ------------------------------------------------------------------ the journal
