@@ -18,7 +18,7 @@ from astropy.io import fits
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
-from download.unpack_datacubes import missing_bzero  # noqa: E402
+from download.unpack_datacubes import missing_bzero, write_frame  # noqa: E402
 
 COUNTS = np.array([[265, 3052], [16128, 900]], dtype=np.int32)    # SPIRIT counts, 0..16383
 
@@ -43,10 +43,7 @@ def test_written_frame_reads_back_as_counts(tmp_path):
     for stored in ((COUNTS - 32768).astype(np.int16), COUNTS.astype(np.int16)):
         bzero = missing_bzero(fits.Header({'BITPIX': 16}), stored)
         path = str(tmp_path / 'frame_{}.fits'.format(bzero))
-        hdu = fits.PrimaryHDU(data=stored)
-        hdu._do_not_scale_image_data = True
-        hdu.writeto(path)
-        with fits.open(path, mode='update') as h:            # as unpack_datacube restores the keywords after writing
-            h[0].header['BZERO'] = bzero
-            h[0].header['BSCALE'] = 1
+        write_frame(path, stored, fits.Header([('BZERO', bzero), ('BSCALE', 1)]))   # as unpack_datacube writes it
         assert np.array_equal(fits.getdata(path).astype(np.int32), COUNTS)
+        with fits.open(path, do_not_scale_image_data=True) as h:
+            assert np.array_equal(h[0].data, stored) and h[0].header['BZERO'] == bzero

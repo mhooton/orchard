@@ -22,11 +22,12 @@ With --apply, per frame: the stored integers are turned with np.rot90(k) or flip
 BSCALE kept); the celestial WCS is removed (it belonged to the old orientation; T7 with --force-platesolve solves
 the frame again); for a turn ASTRAROT is set to 90 and IMAGEW/IMAGEH are swapped, for a flip ASTRAMIR stays 'Y', for a mirror
 it is set to 'Y' as astra_transform would have;
-HISTORY records the repair. The new file is written beside the old one under a hidden name and read back: the
-stored integers and the physical values must equal the operation applied to the old ones. Then the old file is
-hard-linked into --quarantine/<telescope>/<night>/ and the new file is renamed over the old name (atomic), and one
-manifest row (old and new md5, operation, quarantine path) is appended. The quarantine must be on the same
-filesystem as the frames.
+HISTORY records the repair, and so do ORCHMOD and a card 'orchard <version> repair_orientation: <operation>' (the
+edit record, docs/versioning.md). The new file is written with a fresh CHECKSUM/DATASUM beside the old one under a
+hidden name and read back: the stored integers and the physical values must equal the operation applied to the old
+ones. Then the old file is hard-linked into --quarantine/<telescope>/<night>/ and the new file is renamed over the
+old name (atomic), and one manifest row (old and new md5, operation, quarantine path) is appended. The quarantine
+must be on the same filesystem as the frames.
 
     python download/repair_orientation.py frames.csv
     python download/repair_orientation.py frames.csv --apply --quarantine DIR --manifest manifest.csv
@@ -41,6 +42,11 @@ import time
 
 import numpy as np
 from astropy.io import fits
+
+if __package__ in (None, ''):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from utils import orchard_version  # noqa: E402
 
 NATIVE_SHAPE = (2088, 2048)    # (NAXIS1, NAXIS2) as ESO delivers an Andor frame
 STORED_SHAPE = (2048, 2088)
@@ -126,6 +132,7 @@ def repaired_header(hdr, op, today):
         was = 'never rotated' if op == 1 else 'rotated twice'
         hdr.add_history(f'{today} {REPAIR_CARD}: rot90 k={op}; was {was}')
     hdr.add_history(f'{today} {REPAIR_CARD}: celestial WCS removed; re-solve')
+    orchard_version.record_edit(hdr, 'repair_orientation', 'fliplr' if op in ('flip', 'mirror') else f'rot90 k={op}')
     return hdr
 
 
@@ -145,7 +152,7 @@ def repair(path, op, quarantine, today=None):
         hdu.header['BSCALE'] = bscale
     directory, name = os.path.split(path)
     tmp = os.path.join(directory, f'.{name}.orient_repair.tmp')
-    hdu.writeto(tmp, overwrite=True, output_verify='silentfix')
+    hdu.writeto(tmp, overwrite=True, output_verify='silentfix', checksum=True)
     with fits.open(tmp, do_not_scale_image_data=True, memmap=False) as chk:
         h2 = chk[0].header
         stored_ok = (np.array_equal(chk[0].data, new) and h2.get('BITPIX') == bitpix and h2.get('BZERO') == bzero

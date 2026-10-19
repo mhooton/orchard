@@ -25,10 +25,14 @@ Nothing is written unless --apply is given. Only raw light frames are considered
 A PC matrix written with CDELTi = 1 is orchard's own plate solution (astropy writes it that way), made on the
 stored image, and is left alone; so is a CD matrix (astrometry.net's, rotated by the old CD formula, which is
 within ~1e-6 deg/px of right for these nearly skew-free matrices). Repaired frames get ASTRAWCS = 2 and a
-HISTORY line, so a second run finds nothing to do.
+HISTORY line, so a second run finds nothing to do, and the edit record of every in-place edit (ORCHMOD and a card
+'orchard <version> repair_astra_wcs: <signatures>', docs/versioning.md).
 
 Writing touches header bytes only: the data are never decoded, the original header of every changed frame is saved
-first (one tar per night), and file mode and timestamps are kept. --restore puts the saved headers back.
+first (one tar per night), and file mode and timestamps are kept. --restore puts the saved headers back. CHECKSUM
+is recomputed from the new header and the frame's DATASUM, which is trusted when the old CHECKSUM agrees with it
+and otherwise computed from the data bytes (absent, or stale since astra_transform rotated the image), so every
+repaired frame verifies.
 
 Usage:  python repair_astra_wcs.py NIGHT_DIR [NIGHT_DIR ...] [--apply --backup DIR] [--csv report.csv]
         python repair_astra_wcs.py --restore DIR/<telescope>_images_<night>.tar
@@ -51,6 +55,8 @@ if __package__ in (None, ''):
 
 from download.astra_transform import (MIRROR_X, ROT90_ACW, drop_singular_wcs, linear_matrix,  # noqa: E402
                                       plate_pa, set_linear_matrix, transform_wcs)
+from download.raw_provenance import claimed_datasum, data_sum, set_checksum  # noqa: E402
+from utils import orchard_version  # noqa: E402
 
 EXTS = ('*.fits', '*.fts', '*.fit')
 
@@ -154,6 +160,7 @@ def repair(header, found):
             header['PA'] = (plate_pa(m), '[deg, 0-360 CCW] Position angle of plate')
     header['ASTRAWCS'] = (2, 'WCS matrix transformed with the image')
     header.add_history('repair_astra_wcs: ' + ', '.join(sorted(kinds)))
+    orchard_version.record_edit(header, 'repair_astra_wcs', ', '.join(sorted(kinds)))
 
 
 def frames(night_dir):
@@ -229,7 +236,11 @@ def apply_to_file(path, backup):
     found = diagnose(header)
     if not found or any(k in ('image_not_rotated', 'ambiguous') for k, _ in found):
         return found
+    datasum = claimed_datasum(old_raw, header)
+    if datasum is None:
+        datasum = data_sum(path, len(old_raw), header)
     repair(header, found)
+    set_checksum(header, datasum)
     new_raw = header.tostring(padding=True).encode('ascii')
     info = tarfile.TarInfo(os.path.abspath(path).lstrip('/') + '.hdr')
     info.size = len(old_raw)
