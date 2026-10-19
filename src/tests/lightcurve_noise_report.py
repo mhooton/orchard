@@ -135,11 +135,7 @@ def analyse_night(base, version, tel, date, target, gaia_id, bin_minutes):
         ids3 = col(cat, 'GAIA_DR3_ID')
         ids2 = col(cat, 'GAIA_DR2_ID')
         flags = h['FLAGS'].data if 'FLAGS' in [x.name for x in h] else None
-        bw = None
-        if flags is not None:
-            # BAD_WEATHER_FLAG was called BW_FLAG before smear-trail flagging
-            bw = col(flags, 'BAD_WEATHER_FLAG')
-            bw = np.asarray(bw if bw is not None else col(flags, 'BW_FLAG'), float)
+        bw = np.asarray(col(flags, 'BW_FLAG'), float) if flags is not None else None
         bjd = np.asarray(col(il, 'BJD-TDB'), float)
         if bjd is None or not np.isfinite(bjd).any():
             bjd = np.asarray(col(il, 'BJD-OBS'), float)

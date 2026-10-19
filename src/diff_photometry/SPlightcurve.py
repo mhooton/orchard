@@ -793,17 +793,7 @@ def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
                                  dtype=[('ALC', np.float64)])
     alc_table['ALC'] = alc.nlc
 
-    # FLAG is the bad-weather flag under its original name, kept because the
-    # portal ingest reads it; BAD_WEATHER_FLAG (formerly BW_FLAG) is the same.
-    flag_table = np.recarray(ntimes,
-                                 dtype=[('FLAG', np.int64),
-                                        ('BAD_WEATHER_FLAG', np.int64),
-                                        ('SMEAR_FLAG', np.int64)])
-
-    flag_table['FLAG'] = [int("0b" + str(int(b)),2) for b in tel.bw_mask]#int("0b" + str(int(tel.bw_mask)),2)
-    flag_table['BAD_WEATHER_FLAG'] = tel.bw_mask
-    # the target's aperture reaches an under-corrected smear trail in this frame
-    flag_table['SMEAR_FLAG'] = targ.smear
+    flag_table = flags_table(tel.bw_mask, targ.smear)
 
     # FLAGS
     # IMAGE SPECIFIC
@@ -994,11 +984,7 @@ def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
         print('add alc')
         hdulist.append(fits.BinTableHDU(alc_table, name='ALC_' + str(ap)))
         print('add flags')
-        flags_hdu = fits.BinTableHDU(flag_table, name='FLAGS')
-        flags_hdu.header.comments['TTYPE1'] = 'bad weather, as BAD_WEATHER_FLAG (portal)'
-        flags_hdu.header.comments['TTYPE2'] = 'frame in bad weather (ALC variability)'
-        flags_hdu.header.comments['TTYPE3'] = 'target aperture on a saturated smear trail'
-        hdulist.append(flags_hdu)
+        hdulist.append(flags_hdu(flag_table))
         hdulist[0].header['DR2ID'] = header_id(targ.gaia_dr2_id)
         hdulist[0].header['DR3ID'] = header_id(targ.gaia_dr3_id)
         hdulist[0].header['PIPE_V'] = version
@@ -1117,6 +1103,32 @@ def get_all_data(lc):
         w3s.append(lc[i].w3)
 
     return ids, nfluxs,fluxs,jds,ras,decs,xs,ys,g_rps,bp_rps,teffs,gmags,izmags,ws,w1s,w2s,w3s
+
+def flags_table(bw_mask, smear):
+    """
+    The FLAGS table of a _diff.fits, one row per frame.
+
+    FLAG and BW_FLAG both hold the bad-weather flag and keep their names: the
+    portal ingest (update_environment_table.py) reads FLAG and the promotion
+    check (utils/promote_check.py) reads BW_FLAG. SMEAR_FLAG, added last, is 1
+    where the target's aperture reaches a saturated star's smear trail.
+    """
+    table = np.recarray(len(bw_mask), dtype=[('FLAG', np.int64),
+                                             ('BW_FLAG', np.int64),
+                                             ('SMEAR_FLAG', np.int64)])
+    table['FLAG'] = [int("0b" + str(int(b)), 2) for b in bw_mask]
+    table['BW_FLAG'] = bw_mask
+    table['SMEAR_FLAG'] = smear
+    return table
+
+
+def flags_hdu(table):
+    hdu = fits.BinTableHDU(table, name='FLAGS')
+    hdu.header.comments['TTYPE1'] = 'bad weather, as BW_FLAG (portal reads this)'
+    hdu.header.comments['TTYPE2'] = 'frame in bad weather (ALC variability)'
+    hdu.header.comments['TTYPE3'] = 'target aperture on a saturated smear trail'
+    return hdu
+
 
 def check_blended_stars(lcurves,ap,tel):
     ap_size = ap_size_pixels(ap, tel.rcore)[0]

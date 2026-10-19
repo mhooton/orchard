@@ -984,7 +984,7 @@ Generates final calibrated light curves through differential photometry. Selects
   - Individual comparison star light curves
   - Stellar catalogue (Gaia parameters, Teff, colours)
   - Image metadata (airmass, FWHM, seeing, etc.)
-  - Quality flags and weights (`FLAGS`: `BAD_WEATHER_FLAG` bad weather, called `BW_FLAG` before October 2026; `FLAG` the same bad-weather flag, kept because the portal ingest reads it; `SMEAR_FLAG` target aperture on a saturated smear trail. `WEIGHTS_{ap}`: `SATURATED`, `LOWFLUX`, `SMEARED`)
+  - Quality flags and weights (`FLAGS`: `BW_FLAG` bad weather, read by the promotion check; `FLAG` the same bad-weather flag, read by the portal ingest; `SMEAR_FLAG` target aperture on a saturated smear trail. `WEIGHTS_{ap}`: `SATURATED`, `LOWFLUX`, `SMEARED`)
 
 **ASCII Files:**
 - `{GAIA_ID}_{filter}_{aperture}_MCMC` - Light curve for transit modelling:

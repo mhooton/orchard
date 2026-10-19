@@ -390,11 +390,11 @@ def test_splightcurve_keeps_trail_stars_out_of_the_ensemble():
     jd = 2460774.5 + np.arange(6) / 1440
     flux = [np.full(6, 5e4) for _ in range(4)]
     nflux = [np.ones(6) for _ in range(4)]
-    peak = [np.full(6, 1e4) for _ in range(4)]
+    saturated = np.zeros(4, dtype=bool)          # saturated_stars() found none
     nan4 = [np.nan] * 4
-    lcurves = spl.init_all_lcurves(Tel(), ['SP0', 'SP1', 'SP2', 'SP3'], nan4, nan4, nflux, flux, peak, jd, jd, jd,
+    lcurves = spl.init_all_lcurves(Tel(), ['SP0', 'SP1', 'SP2', 'SP3'], nan4, nan4, nflux, flux, saturated, jd, jd, jd,
                                    nan4, nan4, nan4, nan4, nan4, [np.zeros(6)] * 4, [np.zeros(6)] * 4, nan4, nan4,
-                                   nan4, nan4, 5, 'I+z', '20250408', np.full(6, 20.0), 62000, smear_ap)
+                                   nan4, nan4, 5, 'I+z', '20250408', np.full(6, 20.0), smear_ap)
     assert [lc.smeared for lc in lcurves] == [False, True, False, False]
     assert [lc.weight for lc in lcurves] == [1, 0, 1, 1]
     assert lcurves[1].smear.tolist() == on[1].tolist()
