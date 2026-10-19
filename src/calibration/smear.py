@@ -43,11 +43,13 @@ A CAMSHUTT value that cannot be read is reported and taken as shutter used.
 The readout rate is not in the raw header either. Ganymede was read out in
 ~1.5 s, consistent with 3 MHz, for its last shutterless nights in
 February-March 2026. T6 now writes the readout mode it recognises in each
-frame's overscan as READMODE (calibration/readout.py), so t_read comes from an
-override window that sets one, else from the "readout_time" table under
-"smear" keyed by READMODE (NORMAL 4.33 s, FAST 1.5 s). A shutterless frame in
-a mode with no known readout time is left smeared, says so in SMEARERR, and a
-warning is printed: a wrong t_read would put a ramp into it instead.
+frame's overscan as READMODE (calibration/readout.py), and from 2026-10-18
+Astra writes the camera's own readout rate as READOUTM. So t_read comes from an
+override window that sets one, else from READOUTM ("readout_rate_time" under
+"smear": 1MHz 4.33 s, 3MHz 1.5 s), else from READMODE ("readout_time": NORMAL
+4.33 s, FAST 1.5 s). A shutterless frame with no known readout time is left
+smeared, says so in SMEARERR, and a warning is printed: a wrong t_read would
+put a ramp into it instead.
 
 A pixel counts as clipped at the frame's own saturation level, the SATURATE
 card T6 writes (relative to the overscan + master-bias pedestal), which in
@@ -445,18 +447,55 @@ def mode_readout_time(smear, mode):
     return float(times[mode])
 
 
+# Astra writes READOUTM on every Andor frame from 2026-10-18 (Astra 1.3; Peter
+# Pedersen's email of that day): the camera driver's readout mode, as an index
+# into this list. SPIRIT has no such card. The "readout_rate_time" table under
+# "smear" gives the readout time of each rate that has been measured: 1 MHz
+# 4.33 s (star trails) and 3 MHz 1.5 s (Ganymede 2026-02-27..03-01). The pixel
+# clock arithmetic that reproduces both, 2048 rows x (2088 px / f + ~40 us),
+# predicts ~0.94 s at 5 MHz and ~86 s at 0.05 MHz; neither has been measured,
+# so neither is in the table and such frames are not de-smeared.
+READOUTM_RATES = ('5MHz', '3MHz', '1MHz', '0.05MHz')
+
+
+def readoutm_rate(value):
+    """The readout rate a READOUTM index names, or None for anything else."""
+    if isinstance(value, (bool, np.bool_)):
+        return None
+    try:
+        index = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not index.is_integer() or not 0 <= index < len(READOUTM_RATES):
+        return None
+    return READOUTM_RATES[int(index)]
+
+
 def readout_time(header, smear, override_time=None):
     """
     The readout time to de-smear a shutterless frame with.
 
-    An override window's own readout_time wins; else the frame's READMODE
-    (written by T6, calibration/readout.py) is looked up in the smear config.
+    In order: an override window's own readout_time; Astra's READOUTM card
+    (the camera's readout rate, from 2026-10-18), looked up in the smear
+    config's "readout_rate_time"; T6's READMODE (inferred from the overscan,
+    calibration/readout.py), looked up in its "readout_time". A frame whose
+    READOUTM names a rate without a measured time, or cannot be read, gets
+    None rather than falling back to READMODE: the header says what the camera
+    did, the overscan only suggests it.
 
     Returns:
-        (seconds or None, source): source is 'override' or 'READMODE <mode>'
+        (seconds or None, source): source is 'override', 'READOUTM <i> (<rate>)'
+        or 'READMODE <mode>'
     """
     if override_time is not None:
         return float(override_time), 'override'
+    if 'READOUTM' in header:
+        value = header['READOUTM']
+        rate = readoutm_rate(value)
+        if rate is None:
+            return None, 'READOUTM %r' % (value,)
+        times = smear.get('readout_rate_time') or {}
+        return (float(times[rate]) if rate in times else None), 'READOUTM %s (%s)' % (value, rate)
     mode = str(header.get('READMODE', '') or '').strip()
     return mode_readout_time(smear, mode), 'READMODE ' + (mode or '(none)')
 
@@ -529,7 +568,7 @@ def correct_frame(signal, header, params, raw=None, overrides=None, pedestal=0.0
         header['SMEARSRC'] = (source, 'Where the shutter state came from')
         header['SMEARERR'] = (f'no readout time for {t_source}', 'why the smear was not removed')
         _warn(f'{telescope}: shutterless frames ({source}) with no known readout time for {t_source}; '
-              f'readout smear NOT removed (add the mode to "smear" in instrument_config.json, '
+              f'readout smear NOT removed (add a measured time to "smear" in instrument_config.json, '
               f'or a readout_time to the override window)')
         return signal
 

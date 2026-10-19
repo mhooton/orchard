@@ -14,7 +14,7 @@ Covers in particular:
   - the header record of clipped rows reproducing saturated_trail_mask exactly,
     and apertures_on_trail agreeing with a brute-force overlap test
   - SPlightcurve keeping stars on a smear trail out of the comparison ensemble
-  - t_read from an override window, else from T6's READMODE; a shutterless
+  - t_read from an override window, else Astra's READOUTM, else T6's READMODE; a shutterless
     frame in a mode with no known t_read left alone, flagged and warned about
   - clipped rows judged at the frame's own SATURATE (plus pedestal), falling
     back to the config's saturation_threshold
@@ -42,7 +42,8 @@ from calibration import smear_check                 # noqa: E402
 
 ANDOR = {
     'saturation_threshold': 62000,
-    'smear': {'axis': 1, 'direction': 1, 'readout_time': {'NORMAL': 4.33, 'FAST': 1.5}, 'n_shifts': 2048},
+    'smear': {'axis': 1, 'direction': 1, 'readout_time': {'NORMAL': 4.33, 'FAST': 1.5},
+              'readout_rate_time': {'1MHz': 4.33, '3MHz': 1.5}, 'n_shifts': 2048},
 }
 TAU_20S = smear.smear_tau(4.33, 2048, 20.0)        # ~1.06e-4, Ganymede 20250408
 
@@ -492,6 +493,43 @@ def test_unknown_readout_mode_is_left_alone_and_flagged(readmode, capsys, fresh_
     assert len(smear.read_trail_header(h)[0]) == 0
 
 
+@pytest.mark.parametrize('readoutm, t_read', [(2, 4.33), (1, 1.5)])
+def test_readoutm_gives_the_readout_time_and_beats_readmode(readoutm, t_read):
+    true = star_field()
+    # the overscan class says otherwise: the camera's own card wins
+    h = header(False, readmode='FAST' if readoutm == 2 else 'NORMAL')
+    h['READOUTM'] = readoutm
+    out = smear.correct_frame(smear.add_smear(true, smear.smear_tau(t_read, 2048, 20.0)), h, ANDOR, raw=true,
+                              overrides=[])
+    np.testing.assert_allclose(out, true, rtol=1e-10)
+    assert h['SMEARTRD'] == t_read and 'READOUTM %d (' % readoutm in h.comments['SMEARTRD']
+
+
+@pytest.mark.parametrize('readoutm', [0, 3, 4, -1, 'x', 2.5, True])
+def test_readoutm_without_a_measured_time_is_left_alone(readoutm, capsys, fresh_warnings):
+    img = star_field()
+    h = header(False, readmode='NORMAL')            # no fallback to the overscan class
+    h['READOUTM'] = readoutm
+    assert smear.correct_frame(img, h, ANDOR, raw=img, overrides=[]) is img
+    assert h['SMEARCOR'] is False and 'READOUTM' in h['SMEARERR']
+    assert 'readout smear NOT removed' in capsys.readouterr().out
+
+
+def test_override_readout_time_beats_readoutm():
+    rows = [{'telescope': 'SPECULOOS-GANYMEDE', 'start': datetime(2026, 10, 18, 12),
+             'end': datetime(2026, 10, 20, 12), 'camshutt': False, 'readout_time': 2.0, 'note': ''}]
+    h = header(None, date_obs='2026-10-19T03:00:00', telescope='SPECULOOS-GANYMEDE')
+    h['READOUTM'] = 2
+    smear.correct_frame(star_field(), h, ANDOR, overrides=rows)
+    assert h['SMEARTRD'] == 2.0 and '(override)' in h.comments['SMEARTRD']
+
+
+def test_readoutm_rates():
+    assert [smear.readoutm_rate(i) for i in range(4)] == ['5MHz', '3MHz', '1MHz', '0.05MHz']
+    assert smear.readoutm_rate('2') == '1MHz' and smear.readoutm_rate(2.0) == '1MHz'
+    assert smear.readoutm_rate(None) is None and smear.readoutm_rate(False) is None
+
+
 def test_shipped_config_gives_the_measured_readout_times():
     path = os.path.join(SRC, 'calibration', 'instrument_config.json')
     import json
@@ -502,6 +540,7 @@ def test_shipped_config_gives_the_measured_readout_times():
         assert smear.mode_readout_time(cfg, 'NORMAL') == 4.33
         assert smear.mode_readout_time(cfg, 'FAST') == 1.5
         assert smear.mode_readout_time(cfg, 'PED7500') is None
+        assert cfg['readout_rate_time'] == {'1MHz': 4.33, '3MHz': 1.5}     # 5 and 0.05 MHz never measured
     gany = config['SPECULOOS-GANYMEDE']['andor']
     rows = smear.load_shutter_overrides()
     # 1 MHz window: READMODE decides; 3 MHz window: the override's own 1.5 s
