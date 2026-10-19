@@ -129,6 +129,7 @@ class Telescope:
         t_orig = []
         water_orig = []
         tstart, tend = [], []
+        failures = []
 
         if multilc:
             times, times2, split = split_multilc(targ_jd, targ_jd)
@@ -148,11 +149,13 @@ class Telescope:
 
             try:
                 pwvdata = getLHATPROdata(tS.value, tE.value, format='jd')
-            except:
+            except Exception:
                 try:
                     pwvdata = getLHATPROdata(tS.value, tE.value, format='jd')
-                except:
-                    print("No PWV data for: " + str(tS.value) + " - " + str(tE.value))
+                except Exception as e:
+                    # Say why: an unreachable archive (DNS, network) must not read like an empty window.
+                    failures.append(type(e).__name__ + ": " + str(e)[:300])
+                    print("No PWV data for: " + str(tS.value) + " - " + str(tE.value) + " (" + failures[-1] + ")")
                     pwvdata = None
 
             if pwvdata is not None:
@@ -195,6 +198,11 @@ class Telescope:
         self.pwv_t_original = t_orig_clean
         self.pwv = water_clean
         self.pwv_t = t_clean
+
+        if not t_clean:
+            # find_nearest on an empty list fails as "All-NaN slice encountered", which hides the cause
+            raise ValueError("no LHATPRO PWV data" + (" (" + "; ".join(failures) + ")" if failures
+                                                      else " (the archive returned no valid rows)"))
 
         # Find PWV points that bracket the observation period (wider search)
         i_start = find_nearest(t_clean, targ_jd[0] - (120. / 1440.))  # 2 hours before

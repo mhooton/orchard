@@ -224,6 +224,12 @@ def deltaFluxPlot(coords, data, name=''):
 
     return fig, ax
 
+# archive.eso.org answers plain http with a 307 to https, so go there directly. Without a
+# timeout a stalled connection would hold up T10 indefinitely; (connect, read) seconds.
+LHATPRO_URL = 'https://archive.eso.org/wdb/wdb/asm/lhatpro_paranal/query'
+LHATPRO_TIMEOUT = (30, 120)
+
+
 def _lhatpro_text(col):
     """A wdb column as stripped strings, whatever pandas inferred it to be.
 
@@ -263,7 +269,8 @@ def getLHATPROdata(dateS, dateE, peakR=False, format='jd'):
         'order': 'start_date'
     }
     print(("Getting LHATPRO data for:", dateS, dateE))
-    response = requests.post('http://archive.eso.org/wdb/wdb/asm/lhatpro_paranal/query', data=data)
+    response = requests.post(LHATPRO_URL, data=data, timeout=LHATPRO_TIMEOUT)
+    response.raise_for_status()
 
     df = pd.read_csv(io.StringIO(response.text), delimiter='\t')
 
