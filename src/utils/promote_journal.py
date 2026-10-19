@@ -17,7 +17,8 @@ Tables
     promotions        one row per promotion (automatic, by accept, or by the policy), with every path decided up front
     steps             the intent and the outcome of each step of a promotion
     policy_decisions  each answer of the approval policy (promote_policy.py) about a HOLD or REJECT: promote, reject,
-                      reprocess or person, the rule that gave it, and the evidence
+                      reprocess or person, the rule that gave it, the evidence, and whether the night needs a rerun
+                      once the processing is fixed
 
 Verdict states
     pending    HOLD or REJECT, waiting: for reprocessing or for a person, as its latest policy decision says
@@ -121,6 +122,7 @@ CREATE TABLE IF NOT EXISTS policy_decisions (
     outcome TEXT NOT NULL,
     rule TEXT NOT NULL,
     why TEXT NOT NULL DEFAULT '',
+    rerun INTEGER NOT NULL DEFAULT 0,
     evidence TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS policy_verdict ON policy_decisions(verdict_id);
@@ -338,11 +340,11 @@ class Journal(object):
 
     # ------------------------------------------------------------------ the approval policy
 
-    def add_policy_decision(self, verdict_id, invocation_id, version, outcome, rule, why, evidence):
+    def add_policy_decision(self, verdict_id, invocation_id, version, outcome, rule, why, evidence, rerun=False):
         with self.tx() as c:
             return c.execute('INSERT INTO policy_decisions (verdict_id, invocation_id, decided_at, version, outcome, '
-                             'rule, why, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                             (verdict_id, invocation_id, iso(self.now()), version, outcome, rule, why,
+                             'rule, why, rerun, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                             (verdict_id, invocation_id, iso(self.now()), version, outcome, rule, why, int(bool(rerun)),
                               _dumps(evidence))).lastrowid
 
     def _policy_rows(self, q, args=()):

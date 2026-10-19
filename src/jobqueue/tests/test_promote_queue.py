@@ -151,6 +151,11 @@ def test_the_daily_report_lists_reprocessing_apart_from_decisions(cfg, store):
                           'R1 444 finite points against 483 in v2', '', {}, {}, 'fp', 'fp', 'pending')
     j.add_policy_decision(mixed, None, 1, 'person', 'mixed-against-v2', 'mixed against v2: x0.92 the points, x1.16 '
                           'the scatter', {})
+    partial = j.add_verdict(None, 'Ganymede', '20250825', 'Sp1954+1801', '/v3/p', '', 'HOLD',
+                            'A4 light curve has 112 of 446 raw science frames (25%)', '', {}, {}, 'fp', None, 'pending')
+    j.add_policy_decision(partial, None, 1, 'promote', 'partial-pipeline', 'published as it is', {}, rerun=True)
+    j.set_verdict_state(partial, 'accepted', decided_by='policy:v1:partial-pipeline',
+                        decided_at='2026-10-18T06:00:00Z', decision_reason='published as it is')
     gone = j.add_verdict(None, 'Europa', '20260523', 'Sp1746-3214', '/v3/z', '', 'REJECT',
                          'A1 no aperture-5 light curve', '', {}, {}, 'fp', None, 'pending')
     j.add_policy_decision(gone, None, 1, 'reject', 'no-aperture-5', 'no aperture-5 light curve', {})
@@ -162,8 +167,10 @@ def test_the_daily_report_lists_reprocessing_apart_from_decisions(cfg, store):
     assert '| {} | HOLD | Callisto | 20250202 | TOI-6714 | 2026-10-18 | mixed against v2'.format(mixed) in text
     assert '1 candidate(s) wait for reprocessing' in text
     assert '| {} | Callisto | 20241117 | Sp0409-0605 | frames-lost-to-pipeline | 162 of 243'.format(lost) in text
-    assert 'The approval policy decided 3 verdict(s) in the last 3 days: 1 person, 1 reject, 1 reprocess.' in text
-    assert '0 by the policy, 0 accepted by a person, 1 rejected' in text
+    assert 'The approval policy decided 4 verdict(s) in the last 3 days: 1 person, 1 promote, 1 reject, ' \
+        '1 reprocess.' in text
+    assert '1 of them were published although the pipeline lost frames' in text
+    assert '1 by the policy, 0 accepted by a person, 1 rejected' in text
     assert 'Sp1746-3214 (verdict' not in text            # policy rejects are counted, not listed one by one
 
 

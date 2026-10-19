@@ -640,22 +640,22 @@ def test_policy_rejects_a_candidate_without_aperture_5_and_v2_keeps_its_own(env)
     assert apply_night(env) == 0 and len(policy_rows(env, v['id'])) == 1     # left alone from then on
 
 
-def test_policy_sends_frames_the_pipeline_lost_to_reprocessing(env, capsys):
+def test_policy_publishes_a_night_the_pipeline_lost_frames_of_and_marks_it_for_a_rerun(env, capsys):
     partial_night(env, 250, 'Plate scale sanity check failed: solved=25.674 arcsec/px, expected=0.348 arcsec/px, '
                             'deviation=7277.6%')
     assert apply_night(env) == 0
     (v,) = verdicts(env)
-    assert v['verdict'] == 'HOLD' and v['state'] == 'pending' and 'A4' in v['reasons']
+    assert v['verdict'] == 'HOLD' and 'A4' in v['reasons']
+    assert (v['state'], v['decided_by']) == ('accepted', 'policy:v1:partial-pipeline')    # nothing in v2: publish
     (d,) = policy_rows(env, v['id'])
-    assert (d['outcome'], d['rule']) == ('reprocess', 'frames-lost-to-pipeline')
+    assert (d['outcome'], d['rule'], d['rerun']) == ('promote', 'partial-pipeline', 1)
     assert d['evidence']['losses']['processing'] == 61 and d['evidence']['losses']['solved'] == 60
-    assert os.path.isdir(env.v3('output', NIGHT, A)) and not os.path.exists(env.v2('output', NIGHT, A))
+    assert os.path.isdir(env.v2('output', NIGHT, A)) and not os.path.exists(env.v3('output', NIGHT, A))
     capsys.readouterr()
-    assert run(env, 'list', '--needs', 'reprocess') == 0
+    assert run(env, 'list', '--needs', 'rerun') == 0
     assert '1 verdict(s)' in capsys.readouterr().out
     assert run(env, 'list', '--needs', 'person') == 0
     assert '0 verdict(s)' in capsys.readouterr().out
-    assert apply_night(env) == 0 and len(policy_rows(env, v['id'])) == 1     # not asked again while unchanged
 
 
 def test_policy_promotes_a_partial_night_the_sky_explains(env):

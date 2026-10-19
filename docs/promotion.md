@@ -124,12 +124,18 @@ has `--no-policy`) decides it, so that a person sees only what the evidence cann
 HOLD or REJECT, new ones and ones the journal already holds, once per policy version, and journals each answer in
 `policy_decisions` with its rule and evidence:
 
+The philosophy (Matthew Hooton, 2026-10-19): do not judge what should be on the portal; process everything we can
+and put it there, ideally with tools that show users when the conditions, not the pipeline, make data poor. So a
+candidate is withheld only when it is broken, when v2 already serves something better, when its directory mixes runs,
+or when its identity is in doubt. Any outcome can also mark the night **rerun**: the processing, not the data, lost
+frames, so the night is rerun once the cause is fixed at source (`q promote list --needs rerun`).
+
 | Outcome | What happens | When |
 |---|---|---|
-| **promote** | the PROMOTE steps, as `accept` would; the verdict becomes *accepted*, decided by `policy:v1:<rule>` | S1 found only clutter (plots, per-frame sidecars, frame lists and frames, stacks and catalogues, an SP-named `_output.fits` of the old naming, curves of other apertures) and the checks passed; or the candidate has at least v2's points and no more scatter, or is within 5% of v2 on both; or v2 has nothing usable and the curve is a short complete night, a partial night whose missing frames the sky explains (their plate solves found too few stars), or noisy on a night with most of its frames flagged bad weather |
-| **reject** | closed; v2 keeps what it has | no aperture-5 curve, no finite point, a degenerate curve, v2 the plan's star and the candidate not, v2 better on points and scatter, a few points of a long night, or scatter far beyond a light curve (p2p above 0.25) |
-| **reprocess** | stays pending, listed for a rerun, not for a person (`q promote list --needs reprocess`) | the processing is at fault: a replacement that lost v2's PWV correction (P1), frames lost to plate-solve failures on frames with plenty of stars (more than 10% of the raw frames, and at least 5), a directory the latest science run (almost) did not write, or a curve the portal serves that predates the run beside its new one |
-| **person** | stays pending for a person | mixed against v2 (fewer points but less scatter, or slightly worse on both), an identity disagreement (A3), no known run (S2), a partial night the log does not explain, or a noisy curve on a clear night |
+| **promote** | the PROMOTE steps, as `accept` would; the verdict becomes *accepted*, decided by `policy:v1:<rule>` | S1 found only clutter (plots, per-frame sidecars, frame lists and frames, stacks and catalogues, an SP-named `_output.fits` of the old naming, curves of other apertures) and the checks passed; or the candidate has at least v2's points and no more scatter, or is within 5% of v2 on both; or v2 has nothing usable: then every light curve with finite points is published, with a rule that says what made it poor (`partial-pipeline` and rerun when the pipeline lost frames, `partial-night-data` when the sky did, `partial`, `noisy-night-data` on a bad-weather night, `noisy`, `short-night`, `few-points`) |
+| **reject** | closed; v2 keeps what it has | broken (no aperture-5 curve, no finite point, a degenerate curve), v2 the plan's star and the candidate not, or v2 better on points and scatter |
+| **reprocess** | stays pending, listed for a rerun (`q promote list --needs reprocess`) | not publishable as it is: a replacement that lost v2's PWV correction (P1), one worse than v2 because the pipeline lost frames, a directory the latest science run (almost) did not write, or a curve the portal serves that predates the run beside its new one |
+| **person** | stays pending for a person | an identity disagreement (A3), no known run (S2), or better and worse than v2 at once (fewer points but less scatter, or slightly worse on both) |
 
 The deciding question for a partial or noisy curve is whether the data or the processing made it so: noisy is fine
 when the target is right and the data are genuinely noisy, not when the pipeline processed them poorly. The run's
@@ -138,9 +144,8 @@ too few stars is the sky; one rejected, for instance by the plate-scale check, o
 the pipeline), and the curve's bad-weather flags say the same for noise. Thresholds are in
 `promote_policy.THRESHOLDS` and can be overridden in `promote.policy_thresholds`.
 
-On the 127 verdicts pending on 2026-10-19 it gave 56 promote, 20 reject, 49 reprocess and 2 person
-(`mh_scratch/promote_v3_20261019/policy_dev/`). Nearly all the reprocess answers are "Plate scale sanity check
-failed" on frames with hundreds of stars, from the `--force-platesolve` reruns.
+Pipeline losses were "Plate scale sanity check failed" on frames with hundreds of stars, in the
+`--force-platesolve` reruns of October 2026; that is being fixed at source, and the affected nights are rerun after.
 
 A policy reject is left alone while the candidate's files are unchanged, like a person's. What waits, and the
 commands for a person:

@@ -943,9 +943,9 @@ class Promoter(object):
         evidence = {'losses': losses, 'stale': promote_policy.stale_summary(j['stale']) if run else None,
                     'files': j['cand_files']}
         if not self.apply:
-            return 'policy would {} ({}): {}'.format(d.outcome, d.rule, d.why)
+            return 'policy would {} ({}{}): {}'.format(d.outcome, d.rule, ', rerun' if d.rerun else '', d.why)
         self.journal.add_policy_decision(v['id'], self.invocation, promote_policy.VERSION, d.outcome, d.rule, d.why,
-                                         evidence)
+                                         evidence, rerun=d.rerun)
         if d.outcome == promote_policy.PROMOTE:
             state, err = self.promote(v, 'policy', by=d.by, reason=d.why)
             p = self.journal.promotion(self.journal.verdict(v['id'])['promotion_id'] or 0)
@@ -1517,12 +1517,15 @@ def cmd_list(a, cfg, paths):
     j = _journal_or_none(a, False)
     if j is None:
         return 0
-    rows = j.verdicts(states=None if a.all else ['pending', 'promoting'], telescope=a.telescope,
-                      night=a.night)
+    rows = j.verdicts(states=None if a.all or a.needs == 'rerun' else ['pending', 'promoting'],
+                      telescope=a.telescope, night=a.night)
     if a.grep:
         rows = [v for v in rows if a.grep.lower() in (v['reasons'] or '').lower()]
     policy = j.latest_policy_decisions([v['id'] for v in rows])
-    if a.needs:
+    if a.needs == 'rerun':
+        # published or not: the nights whose processing, not data, the policy found at fault
+        rows = [v for v in rows if v['state'] not in ('outdated',) and (policy.get(v['id']) or {}).get('rerun')]
+    elif a.needs:
         rows = [v for v in rows if v['state'] == 'pending' and
                 (policy.get(v['id']) or {}).get('outcome', promote_policy.PERSON) == a.needs]
     for v in rows:
@@ -1749,8 +1752,9 @@ def build_parser():
     common(s)
     s.add_argument('--all', action='store_true', help='every verdict, decided ones included')
     s.add_argument('--grep', help='only verdicts whose reasons contain this text, e.g. S1')
-    s.add_argument('--needs', choices=(promote_policy.PERSON, promote_policy.REPROCESS),
-                   help='only pending verdicts the policy left for a person, or for reprocessing')
+    s.add_argument('--needs', choices=(promote_policy.PERSON, promote_policy.REPROCESS, 'rerun'),
+                   help='only pending verdicts the policy left for a person, or for reprocessing; rerun: every '
+                        'verdict, published or not, whose night the policy found the processing at fault for')
     s.set_defaults(fn=cmd_list)
 
     s = sub.add_parser('show', help='one verdict, its reasons, and its promotion step by step')

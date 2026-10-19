@@ -193,6 +193,11 @@ def _promotion(cfg, days, now, out):
             counts[d['outcome']] = counts.get(d['outcome'], 0) + 1
         out.append('The approval policy decided {} verdict(s) in the last {} days: {}.'.format(
             len(r['policy']), days, ', '.join('{} {}'.format(n, k) for k, n in sorted(counts.items()))))
+        published = sum(1 for d in r['policy'] if d['outcome'] == 'promote' and d.get('rerun'))
+        if published:
+            out.append('{} of them were published although the pipeline lost frames (plate-solve failures on frames '
+                       'with stars): rerun those nights once the cause is fixed (`q promote list --needs '
+                       'rerun`).'.format(published))
         out.append('')
     for p in r['stuck']:
         out.append('- **Promotion {} did not finish** ({} {} {}, verdict {}, {}): {}. `q promote show {}`, then '

@@ -7,23 +7,27 @@ rejected, so that a person sees only what the evidence cannot settle. promote.py
 or REJECT when it runs with --apply, and journals each answer with the rule that gave it
 (decided_by = policy:v<VERSION>:<rule>).
 
+The philosophy (Matthew Hooton, 2026-10-19): do not judge what should and should not be on the portal; process
+everything we can and put it there, ideally with the tools that show users when the conditions, not the pipeline,
+make data poor. So a candidate is withheld only when it is broken (no aperture-5 curve, no finite point, a
+degenerate curve), when v2 already serves something better, when its directory mixes runs, or when its identity is
+in doubt. Where the pipeline lost frames (plate-solve failures on frames full of stars) the curve is still published
+when v2 has nothing better, and the decision carries `rerun`, so the night is rerun once the cause is fixed at
+source.
+
 Outcomes
     promote    publish the candidate as `accept` would; the files the run did not write are set aside first
     reject     close the verdict; v2 keeps what it has
-    reprocess  the processing, not the data, is at fault: frames lost to plate-solve failures on frames full of
-               stars, or a directory the latest science run did not write. The verdict stays pending and is
-               listed for a rerun, not for a person
-    person     the evidence is mixed; the verdict stays pending for a person
+    reprocess  not publishable as it is (a directory that mixes runs' served products, or a replacement that lost
+               v2's PWV correction or is worse than v2 because the pipeline lost frames): pending, for a rerun
+    person     the evidence is mixed (identity, no known run, better and worse than v2 at once): pending
+Any outcome can carry `rerun`: the processing, not the data, is at fault.
 
-The deciding question for a partial or noisy curve is whether the data or the processing made it so: noisy is fine
-when the target is right and the data are genuinely noisy, not when the pipeline processed them poorly (Matthew
-Hooton, 2026-10-19). The run's log says why each missing frame dropped out: a plate solve that found too few stars is
-the sky; a solution rejected on a frame with plenty of stars is the pipeline. Bad-weather flags on the curve's own
-frames say the same for noise.
-
-Measured on the 122 verdicts pending on 2026-10-19 (mh_scratch/promote_v3_20261019/triage.jsonl): S1 was
-almost always clutter (plots, per-frame sidecars, backup stacks, SP-named _output.fits left from the old naming);
-the partial curves had lost their frames to "Plate scale sanity check failed" on frames with 130-3,100 sources.
+The run's log says why each frame missing from a curve dropped out: a plate solve that found too few stars is the
+sky; one rejected on a frame with plenty of stars is the pipeline. Bad-weather flags on the curve's own frames say the
+same for noise. Measured on the 122 verdicts pending on 2026-10-19 (mh_scratch/promote_v3_20261019/triage.jsonl): S1
+was almost always clutter, and the partial curves had lost their frames to "Plate scale sanity check failed" on
+frames with 130-3,100 sources.
 """
 import os
 import re
@@ -37,14 +41,11 @@ THRESHOLDS = {
     'equal_scatter': 1.05,           # ... and on scatter counts as the same
     'worse_points': 0.9,             # against v2: fewer points than this, and no less scatter, is worse
     'worse_scatter': 1.2,            # against v2: more scatter than this, and no more points, is worse
-    'processing_loss_fraction': 0.1,  # raw frames lost to the pipeline above this share: reprocess
+    'processing_loss_fraction': 0.1,  # raw frames lost to the pipeline above this share: rerun the night
     'processing_loss_min': 5,        # ... and at least this many
     'stars_for_processing': 20,      # a solve that failed on a frame with this many sources was the pipeline's
     'weather_fraction': 0.5,         # this share of the curve's frames flagged bad weather: the night, not the pipeline
-    'short_night_fraction': 0.9,     # a short night with nearly every frame in the curve ...
-    'short_night_points': 10,        # ... and at least this many points is published
-    'sound_noise_low': 0.3,          # a sound curve: p2p / pipeline error between these
-    'sound_noise_high': 3.0,
+    'short_night_fraction': 0.9,     # a night with nearly every frame in the curve, however few, is complete
 }
 
 PROMOTE, REJECT, REPROCESS, PERSON = 'promote', 'reject', 'reprocess', 'person'
@@ -63,18 +64,18 @@ DATA_ERRORS = ('Not enough stars detected', 'too few stars')
 
 
 class Decision(object):
-    def __init__(self, outcome, rule, why):
-        self.outcome, self.rule, self.why = outcome, rule, why
+    def __init__(self, outcome, rule, why, rerun=False):
+        self.outcome, self.rule, self.why, self.rerun = outcome, rule, why, bool(rerun)
 
     @property
     def by(self):
         return 'policy:v{}:{}'.format(VERSION, self.rule)
 
     def as_dict(self):
-        return {'outcome': self.outcome, 'rule': self.rule, 'why': self.why, 'version': VERSION}
+        return {'outcome': self.outcome, 'rule': self.rule, 'why': self.why, 'version': VERSION, 'rerun': self.rerun}
 
     def __repr__(self):
-        return 'Decision({!r}, {!r}, {!r})'.format(self.outcome, self.rule, self.why)
+        return 'Decision({!r}, {!r}, {!r}, rerun={!r})'.format(self.outcome, self.rule, self.why, self.rerun)
 
 
 def codes(reasons):
@@ -192,100 +193,95 @@ def decide(verdict, metrics, reasons, incumbent, stale, files, losses, th=THRESH
     bw = _num(m.get('c_bw')) or 0
     usable_v2 = bool(incumbent) and (_num(m.get('i_valid')) or 0) >= 20
 
+    lost = (losses or {}).get('processing', 0)
+    by_pipeline = bool(raw) and lost >= max(th['processing_loss_min'], th['processing_loss_fraction'] * raw)
+    lost_text = '{} of {:.0f} raw frames lost to plate-solve failures on frames with stars ({})'.format(
+        lost, raw or 0, ', '.join('{} {}'.format(n, c) for c, n in sorted((losses or {}).get('causes', {}).items(),
+                                                                          key=lambda kv: -kv[1])[:3]))
+    rerun_text = '; rerun once the cause is fixed: ' + lost_text if by_pipeline else ''
+
     if 'S2' in cs:
         return Decision(PERSON, 'no-run', 'no pipeline run of the night covering the target was found, so its '
                         'files cannot be checked against the run')
     if 'P1' in cs:
-        return Decision(REPROCESS, 'pwv-lost', 'the run made no PWV correction and v2\'s curve has one: v2 stays '
-                        'until a rerun gets PWV')
+        return Decision(REPROCESS, 'pwv-lost', "the run made no PWV correction and v2's curve has one: v2 stays "
+                        'until a rerun gets PWV', rerun=True)
     if 'S1' in cs:
         if stale is None:
             return Decision(PERSON, 'stale-unknown', 'S1 held it, but the run is not known to recheck its files')
         kinds = stale_summary(stale)
         if files and len(stale) >= th['stale_rerun_fraction'] * files:
             return Decision(REPROCESS, 'run-did-not-write', '{} of the {} files predate the latest science run: it '
-                            'did not make this directory'.format(len(stale), files))
+                            'did not make this directory'.format(len(stale), files), rerun=True)
         served = sorted(k for k in kinds if k in SERVED)
         if served:
             return Decision(REPROCESS, 'stale-product', 'files the portal serves ({}) predate the latest science '
-                            'run, beside its new ones'.format(', '.join(served)))
+                            'run, beside its new ones'.format(', '.join(served)), rerun=True)
         if not checks:
             # the checks themselves passed, against v2 too: S1 was the only objection, and it is clutter
             return Decision(PROMOTE, 'clutter-only', 'only files the portal does not serve predate the run ({}); '
                             'they are set aside'.format(', '.join('{} {}'.format(n, k) for k, n in
-                                                                  sorted(kinds.items()))))
+                                                                  sorted(kinds.items()))) + rerun_text,
+                            rerun=by_pipeline)
 
     # identity: never settled by numbers
     if 'R3' in checks:
-        return Decision(REJECT, 'v2-right-star', 'v2 is the plan\'s star and the candidate is not, or v2 has the '
-                        'target\'s aperture 5 and the candidate none')
+        return Decision(REJECT, 'v2-right-star', "v2 is the plan's star and the candidate is not, or v2 has the "
+                        "target's aperture 5 and the candidate none")
     if 'A3' in checks and 'A1' not in checks:
         return Decision(PERSON, 'identity', 'the curve is not of the star the plan or the target table names')
 
-    # nothing to publish
+    # broken: nothing to publish
     if 'A1' in checks:
         return Decision(REJECT, 'no-aperture-5', 'no aperture-5 light curve' +
-                        ('; v2 keeps its own' if usable_v2 else ''))
+                        ('; v2 keeps its own' if usable_v2 else ''), rerun=by_pipeline)
     if valid == 0:
-        return Decision(REJECT, 'no-points', 'no finite target point')
+        return Decision(REJECT, 'no-points', 'no finite target point' + rerun_text, rerun=by_pipeline)
     if noise is not None and noise < th.get('min_noise_ratio', 0.05):
-        return Decision(REJECT, 'degenerate', 'degenerate curve: p2p {:.2g} of the pipeline error'.format(noise))
+        return Decision(REJECT, 'degenerate', 'degenerate curve: p2p {:.2g} of the pipeline error'.format(noise),
+                        rerun=by_pipeline)
 
-    lost = (losses or {}).get('processing', 0)
-    by_pipeline = bool(raw) and lost >= max(th['processing_loss_min'], th['processing_loss_fraction'] * raw)
-    lost_text = '{} of {:.0f} raw frames lost to plate-solve failures on frames with stars ({})'.format(
-        lost, raw or 0, ', '.join('{} {}'.format(n, c) for c, n in sorted((losses or {}).get('causes', {}).items(),
-                                                                          key=lambda kv: -kv[1])[:3]))
-
-    # against what v2 serves
+    # against what v2 serves: never replace it with something worse
     if usable_v2 and pr is not None:
+        ratios = 'x{:.2f} the points of v2, x{} its scatter'.format(pr, '{:.2f}'.format(sr) if sr is not None else '-')
         if pr >= 1.0 and (sr is None or sr <= 1.0):
-            return Decision(PROMOTE, 'better-than-v2', 'x{:.2f} the points of v2 and x{} its scatter'.format(
-                pr, '{:.2f}'.format(sr) if sr is not None else '-'))
+            return Decision(PROMOTE, 'better-than-v2', ratios + rerun_text, rerun=by_pipeline)
         if pr >= th['equal_points'] and sr is not None and sr <= th['equal_scatter']:
-            return Decision(PROMOTE, 'same-as-v2', 'within {:.0%} of v2: x{:.2f} the points, x{:.2f} the scatter'.format(
-                1 - th['equal_points'], pr, sr))
+            return Decision(PROMOTE, 'same-as-v2', 'within {:.0%} of v2: '.format(1 - th['equal_points']) + ratios +
+                            rerun_text, rerun=by_pipeline)
         worse = (pr < th['worse_points'] and (sr is None or sr >= 1.0)) or \
             (sr is not None and sr > th['worse_scatter'] and pr <= 1.0)
         if worse and by_pipeline:
-            return Decision(REPROCESS, 'worse-than-v2-pipeline', 'v2 is better (x{:.2f} points, x{} scatter) and '
-                            'stays; {}'.format(pr, '{:.2f}'.format(sr) if sr is not None else '-', lost_text))
+            return Decision(REPROCESS, 'worse-than-v2-pipeline', 'v2 is better and stays (' + ratios + ')' +
+                            rerun_text, rerun=True)
         if worse:
-            return Decision(REJECT, 'worse-than-v2', 'v2 is better and stays: x{:.2f} the points, x{} the '
-                            'scatter'.format(pr, '{:.2f}'.format(sr) if sr is not None else '-'))
-        return Decision(PERSON, 'mixed-against-v2', 'mixed against v2: x{:.2f} the points, x{} the scatter'.format(
-            pr, '{:.2f}'.format(sr) if sr is not None else '-'))
+            return Decision(REJECT, 'worse-than-v2', 'v2 is better and stays: ' + ratios)
+        return Decision(PERSON, 'mixed-against-v2', 'mixed against v2: ' + ratios + rerun_text, rerun=by_pipeline)
 
-    # nothing usable in v2: publish what the data allow, reprocess what the pipeline lost
+    # nothing usable in v2: publish every light curve there is, saying what made it poor
     if by_pipeline:
-        return Decision(REPROCESS, 'frames-lost-to-pipeline', lost_text)
-    sound = p2p is not None and p2p <= th.get('max_p2p', 0.05) and noise is not None and \
-        th['sound_noise_low'] <= noise <= th['sound_noise_high']
+        return Decision(PROMOTE, 'partial-pipeline', 'published as it is (nothing usable in v2); ' + lost_text +
+                        ': rerun once plate solving is fixed', rerun=True)
     weather = bool(frames) and bw >= th['weather_fraction'] * frames
-    if checks <= {'A2'} and frac is not None and frac >= th['short_night_fraction'] and \
-            valid >= th['short_night_points'] and valid >= th['short_night_fraction'] * frames:
-        return Decision(PROMOTE, 'short-night', 'a short night: {:.0f} points on {:.0%} of its frames'.format(
-            valid, frac))
-    if valid < th.get('min_valid_points', 20) and (frac is None or frac < 0.5):
-        return Decision(REJECT, 'too-few-points', '{:.0f} points on {} of the frames'.format(
-            valid, '{:.0%}'.format(frac) if frac is not None else '?'))
-    if checks <= {'A4'} and sound:
+    weather_text = '; {:.0%} of its frames flagged bad weather'.format(bw / frames) if frames and bw else ''
+    if 'A5' in checks:
+        return Decision(PROMOTE, 'noisy-night-data' if weather else 'noisy',
+                        'noisy (p2p {}, x{} the pipeline error){}'.format(
+                            '{:.3f}'.format(p2p) if p2p is not None else '?',
+                            '{:.1f}'.format(noise) if noise is not None else '?', weather_text))
+    if 'A2' in checks:
+        complete = frac is not None and frac >= th['short_night_fraction'] and \
+            valid >= th['short_night_fraction'] * frames
+        return Decision(PROMOTE, 'short-night' if complete else 'few-points', '{:.0f} points on {} of the '
+                        'frames'.format(valid, '{:.0%}'.format(frac) if frac is not None else '?') + weather_text)
+    if 'A4' in checks:
         missing = max(0.0, (raw or 0) - frames)
         by_data = (losses or {}).get('data', 0)
-        if losses is not None and missing > 0 and by_data >= 0.5 * missing:
-            return Decision(PROMOTE, 'partial-night-data', 'a partial night ({:.0%} of the frames): {} of the {:.0f} '
-                            'missing frames had too few stars to solve (the sky, not the pipeline)'.format(
-                                frac or 0, by_data, missing))
-        return Decision(PERSON, 'partial-night-unexplained', 'a partial night ({:.0%} of the frames) the log does '
-                        'not explain'.format(frac or 0))
-    if checks <= {'A4', 'A5'} and 'A5' in checks:
-        if weather and (frac is None or frac >= 0.5):
-            return Decision(PROMOTE, 'noisy-night-data', 'noisy (p2p {}) on a night with {:.0%} of its frames '
-                            'flagged bad weather'.format('{:.3f}'.format(p2p) if p2p is not None else '?',
-                                                         bw / frames))
-        if p2p is not None and p2p > 0.25:
-            return Decision(REJECT, 'noise-not-signal', 'p2p {:.2f}: noise, not a light curve'.format(p2p))
-        return Decision(PERSON, 'noisy-clear-night', 'noisy (p2p {}, x{} the pipeline error) without a bad-weather '
-                        'night to explain it'.format('{:.3f}'.format(p2p) if p2p is not None else '?',
-                                                     '{:.1f}'.format(noise) if noise is not None else '?'))
-    return Decision(PERSON, 'unsettled', 'checks {} with nothing usable in v2'.format(' '.join(sorted(checks))))
+        sky = losses is not None and missing > 0 and by_data >= 0.5 * missing
+        return Decision(PROMOTE, 'partial-night-data' if sky else 'partial',
+                        'a partial night ({:.0%} of the frames){}'.format(frac or 0, ': {} of the {:.0f} missing '
+                        'frames had too few stars to solve (the sky)'.format(by_data, missing) if sky else
+                        ', not explained by the log' if losses is None or missing == 0 else
+                        ': {} of the {:.0f} missing frames had too few stars to solve'.format(by_data, missing)) +
+                        weather_text)
+    return Decision(PROMOTE, 'published', 'checks {} with nothing usable in v2'.format(' '.join(sorted(checks))))

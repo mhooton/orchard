@@ -1,6 +1,8 @@
 """
 Tests for the approval policy (utils/promote_policy.py): one case per kind of verdict found among the 122 pending on
 2026-10-19 (mh_scratch/promote_v3_20261019/triage.jsonl), with the metrics of a real one, and the kinds of stale file.
+Where v2 has nothing usable, every light curve is published (Matthew Hooton, 2026-10-19: process everything we can
+and put it on the portal); what the pipeline lost is marked for a rerun.
 """
 import os
 import sys
@@ -75,28 +77,27 @@ CASES = [
     ('fewer points but cleaner (v333)', 'HOLD', 'A4 light curve has 29 of 44 raw science frames (66%); R1 29 finite',
      m(**V2, points_ratio=0.67, scatter_ratio=0.83), True, [], 50, None, pp.PERSON, 'mixed-against-v2'),
     ('partial: the pipeline lost the frames (v120)', 'HOLD', 'A4 light curve has 80 of 243 raw science frames (33%)',
-     m(c_valid=80, c_frames=80, raw_frames=243, c_frame_frac=0.33), False, [], 50, PIPELINE, pp.REPROCESS,
-     'frames-lost-to-pipeline'),
+     m(c_valid=80, c_frames=80, raw_frames=243, c_frame_frac=0.33), False, [], 50, PIPELINE, pp.PROMOTE,
+     'partial-pipeline'),
     ('partial: the sky lost the frames (v219)', 'HOLD', 'A4 light curve has 60 of 121 raw science frames (50%)',
      m(c_valid=60, c_frames=60, raw_frames=121, c_frame_frac=0.5), False, [], 50, SKY, pp.PROMOTE,
      'partial-night-data'),
     ('partial: no log to say why', 'HOLD', 'A4 light curve has 60 of 121 raw science frames (50%)',
-     m(c_valid=60, c_frames=60, raw_frames=121, c_frame_frac=0.5), False, [], 50, None, pp.PERSON,
-     'partial-night-unexplained'),
+     m(c_valid=60, c_frames=60, raw_frames=121, c_frame_frac=0.5), False, [], 50, None, pp.PROMOTE, 'partial'),
     ('noisy on a cloudy night (v72)', 'HOLD', 'A5 p2p 0.076 above 0.050',
      m(c_valid=588, c_frames=588, raw_frames=625, c_frame_frac=0.94, c_p2p=0.076, c_noise_ratio=3.58, c_bw=493),
      False, [], 50, {'solved': 588, 'data': 34, 'processing': 1, 'causes': {}}, pp.PROMOTE, 'noisy-night-data'),
     ('noisy on a clear night', 'HOLD', 'A5 p2p 0.076 above 0.050',
      m(c_p2p=0.076, c_noise_ratio=3.58, c_bw=0), False, [], 50, {'solved': 120, 'data': 0, 'processing': 1,
-                                                                 'causes': {}}, pp.PERSON, 'noisy-clear-night'),
-    ('noise, not a light curve, on a clear night', 'HOLD', 'A4 light curve has 25 of 278 raw (9%); A5 p2p 2.784',
+                                                                 'causes': {}}, pp.PROMOTE, 'noisy'),
+    ('very noisy on a clear night: still published', 'HOLD', 'A4 light curve has 25 of 278 raw (9%); A5 p2p 2.784',
      m(c_valid=152, c_frames=152, raw_frames=272, c_frame_frac=0.56, c_p2p=2.78, c_noise_ratio=367.0), False, [],
-     50, {'solved': 152, 'data': 0, 'processing': 2, 'causes': {}}, pp.REJECT, 'noise-not-signal'),
+     50, {'solved': 152, 'data': 0, 'processing': 2, 'causes': {}}, pp.PROMOTE, 'noisy'),
     ('a short complete night (v420)', 'HOLD', 'A2 only 19 finite target points',
      m(c_valid=19, c_frames=19, raw_frames=20, c_frame_frac=0.95), False, [], 50, None, pp.PROMOTE, 'short-night'),
-    ('a few points of a long night', 'HOLD', 'A2 only 14 finite target points; A4 light curve has 14 of 290 (5%)',
+    ('a few points of a long night: still published', 'HOLD', 'A2 only 14 finite target points; A4 light curve has 14 of 290 (5%)',
      m(c_valid=14, c_frames=14, raw_frames=290, c_frame_frac=0.05), False, [], 50,
-     {'solved': 14, 'data': 3, 'processing': 2, 'causes': {}}, pp.REJECT, 'too-few-points'),
+     {'solved': 14, 'data': 3, 'processing': 2, 'causes': {}}, pp.PROMOTE, 'few-points'),
 ]
 
 
@@ -106,6 +107,20 @@ def test_decide(case):
     d = pp.decide(verdict, metrics, reasons, incumbent, stale, files, losses)
     assert (d.outcome, d.rule) == (outcome, rule), d.why
     assert d.by == 'policy:v{}:{}'.format(pp.VERSION, rule) and d.why
+
+
+@pytest.mark.parametrize('name,rerun', [
+    ('partial: the pipeline lost the frames (v120)', True),
+    ('worse than v2 because the pipeline lost frames (v84)', True),
+    ('S1 the run wrote none of the directory (v276)', True),
+    ('partial: the sky lost the frames (v219)', False),
+    ('noisy on a cloudy night (v72)', False),
+    ('better than v2 though partial (v182)', False),
+])
+def test_rerun_marks_what_the_processing_lost(name, rerun):
+    (case,) = [c for c in CASES if c[0] == name]
+    _, verdict, reasons, metrics, incumbent, stale, files, losses = case[:8]
+    assert pp.decide(verdict, metrics, reasons, incumbent, stale, files, losses).rerun is rerun
 
 
 def test_stale_kinds():
