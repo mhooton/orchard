@@ -435,6 +435,8 @@ def test_reduce_file_writes_the_readout_keywords(tmp_path):
     assert h['OSNOISE'] == pytest.approx(2.45, rel=0.08)
     assert h['RDNOISE'] == pytest.approx(h['OSNOISE'] * 3.83) and h['RON'] == h['RDNOISE']
     assert h['SATURATE'] == pytest.approx(37300.0 - h['OVERSCAN'] - 7.0, abs=1.0)
+    from utils import orchard_version
+    assert h['ORCHVER'] == orchard_version.version() and h['PV'] == 'v3'
 
 
 # ------------------------------------------------- T10 saturation and products

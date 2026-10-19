@@ -7,6 +7,7 @@ import photometry.casutools as casutools
 from photometry.vector_plot import wcsf_QCheck
 from photometry.wcs_status import set_wcs_status
 from calibration.pipeutils import get_instrument_parameters, resolve_plate_scale
+from utils import orchard_version
 from multiprocessing import Pool
 from functools import partial
 from astropy.io import fits
@@ -150,6 +151,9 @@ def initialise_wcs_cache(fname, outdir, catsrc, thresh, verbose, force=False):
         make_localfits_table(fname, localfits_path)
         casutools.wcsfit(fname, catalogue_name, catsrc=catsrc, verbose=verbose,
                          wcsref=localfits_path)
+        # wcsfit rewrote the frame's WCS; the catalogue is new (imcore copies the frame's header into it)
+        orchard_version.edit_file(fname, 'wcsfit', 'WCS refit')
+        orchard_version.stamp_file(catalogue_name)
     finally:
         if os.path.exists(localfits_path):
             os.remove(localfits_path)
@@ -439,6 +443,9 @@ def casu_solve(casuin, thresh=2, verbose=False, catsrc='vizgaia3', rcore=4, ipix
 
     casutools.imcore(casuin, catfile_name, threshold=thresh, verbose=verbose,
                      ipix=ipix, rcore=rcore)
+    # imcore copied the frame's header into the new catalogue, ORCHVER included; it is this run's file, whether or
+    # not the fit below succeeds
+    orchard_version.stamp_file(catfile_name)
 
     # Now we're ready to solve wcs
     localfits_path = catfile_name.replace('.cat', '_localfits_ref.fits')

@@ -318,6 +318,10 @@ def test_make_pdf_with_readout_values(tmp_path):
     rep.make_pdf(imgs, outname, _Args(datdir), [], vals, jdstart, jdend, nimages,
                  newap, flags, ellip, order, targs, gaia)
     assert _page_count(outname) == 3 + 3 * 2
+    if rep.orchard_version:                                 # the version is on the first page and in the metadata
+        assert rep.version_line().startswith('orchard ')
+        with open(outname, 'rb') as f:
+            assert b'/Creator (orchard ' in f.read()
 
 
 # ----------------------------------------- two nights of a telescope at once

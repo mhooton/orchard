@@ -62,9 +62,10 @@ def cmd_status(cfg, store, a):
         print('dispatcher NOT RUNNING (last heartbeat {})'.format(info.get('heartbeat', 'never')))
     paused = sorted(store.paused())
     print('drain      {}   paused: {}'.format('ON' if store.draining() else 'off', ', '.join(paused) or 'none'))
-    from .releases import current_id
-    release = current_id(cfg)
-    print('code       {}'.format('release ' + release if release else 'live tree (no release)'))
+    from .releases import current, current_id
+    release, rel = current_id(cfg), current(cfg)
+    print('code       {}'.format('release {} (orchard {})'.format(release, (rel or {}).get('version') or '-')
+                                 if release else 'live tree (no release)'))
     if a.resources:
         from .resources import ProcResources
         s = ProcResources(cfg['disk_devices']).snapshot()
@@ -513,8 +514,9 @@ def cmd_release(cfg, store, a):
             print('current: {}'.format(cur or 'none (jobs run from the live tree)'))
             releases = list_releases(cfg)
             for r in releases[-a.limit:]:
-                print('{} {:28} {:>8}  built {}  {:>3} changed  {:>3} differed from live{}{}'.format(
-                    '*' if r['id'] == cur else ' ', r['id'], (r.get('sha') or '-')[:8], r['built_at'],
+                print('{} {:28} {:>8}  orchard {:18} built {}  {:>3} changed  {:>3} differed from live{}{}'.format(
+                    '*' if r['id'] == cur else ' ', r['id'], (r.get('sha') or '-')[:8], r.get('version') or '-',
+                    r['built_at'],
                     len(r.get('changed_since_previous') or []), len(r.get('differs_from_live') or []),
                     '  running jobs {}'.format(running[r['id']]) if r['id'] in running else '',
                     '  tests {}'.format(r['tests']) if r.get('tests') else ''))

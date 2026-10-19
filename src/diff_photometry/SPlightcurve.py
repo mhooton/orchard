@@ -23,6 +23,7 @@ from scipy.optimize import least_squares
 import warnings
 import matplotlib
 from calibration.pipeutils import get_instrument_parameters, open_fits_file
+from utils import orchard_version
 matplotlib.use('Agg')
 
 # Suppress specific numpy warnings that clutter output during large aperture processing
@@ -988,6 +989,7 @@ def outputfits(lcurves,targ, alc,bw,tel,outname,ap,version):
         hdulist[0].header['DR2ID'] = header_id(targ.gaia_dr2_id)
         hdulist[0].header['DR3ID'] = header_id(targ.gaia_dr3_id)
         hdulist[0].header['PIPE_V'] = version
+        orchard_version.stamp(hdulist[0].header)
         for key, value, comment in readout_summary_cards(tel):
             hdulist[0].header[key] = (value, comment)
 
@@ -1311,6 +1313,7 @@ def save_pwv_fits(timestamps, pwv_values, filename, description, gaia_id, filt, 
     phdu.header['NPOINTS'] = len(timestamps)
     phdu.header['TELESCOP'] = telname
     phdu.header['PIPE_V'] = 'v2'
+    orchard_version.stamp(phdu.header)
     hdulist.append(phdu)
 
     # PWV data table

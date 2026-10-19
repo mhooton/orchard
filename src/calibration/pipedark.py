@@ -8,6 +8,7 @@ from astropy.io import fits as pyfits
 from astropy.stats import sigma_clip
 from calibration.pipeutils import get_instrument_parameters, apply_image_slice, open_fits_file, frame_telescope
 from calibration import readout
+from utils import orchard_version
 from reporting.QC import main as QC
 import pipeutils
 import fnmatch
@@ -196,6 +197,7 @@ def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ
             phdu.header.add_history(f'Exposure times ranged from {min(exp_times)}s to {max(exp_times)}s')
             phdu.header['EXPTIME'] = 1.0
         phdu.header['DARKUNIT'] = 'ADU/s'
+        orchard_version.stamp(phdu.header)
         phdu.writeto(outname)
 
         output_files.append(outname)

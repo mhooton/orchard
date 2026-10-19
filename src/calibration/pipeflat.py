@@ -33,6 +33,7 @@ from calibration.pipeutils import (apply_image_slice, open_fits_file, get_jd_hea
                                    frame_telescope)
 from calibration import readout
 from calibration.smear import correct_frame, shutterless
+from utils import orchard_version
 import warnings
 from astropy.io.fits.verify import VerifyWarning
 warnings.filterwarnings('ignore', category=VerifyWarning)
@@ -254,6 +255,7 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
             flat_hdu.header['NSMRLEFT'] = (n_left_smeared, 'Shutterless input flats NOT de-smeared')
             print(f"WARNING: {n_left_smeared} shutterless flats in {filt} could not be de-smeared "
                   f"(readout time unknown); the master flat carries their readout ramp")
+        orchard_version.stamp(flat_hdu.header)
         flat_hdu.writeto(outname, overwrite=True)
         print('flat done')
 
