@@ -466,15 +466,15 @@ def main(args):
 
         # Stars whose apertures reach an under-corrected smear trail. imcore's
         # coordinates are 1-based; the trail record in the frame header is not.
+        # A frame whose record cannot be read is not assessed, never fatal.
         try:
-            frame_header = fits.getheader(image_filename)
-        except OSError as err:
-            logger.warning('Cannot read %s for smear trails, not assessed: %s', image_filename, err)
-            image_map['SMEAR_AP'].set_data(i, smear.SMEAR_NOT_ASSESSED)
-        else:
-            image_map['SMEAR_AP'].set_data(i, smear.apertures_on_trail(
-                frame_header, source.data['X_coordinate'] - 1, source.data['Y_coordinate'] - 1,
-                APERTURE_RCORE * source.header['rcore']))
+            on_trail = smear.apertures_on_trail(
+                fits.getheader(image_filename), source.data['X_coordinate'] - 1, source.data['Y_coordinate'] - 1,
+                APERTURE_RCORE * source.header['rcore'])
+        except Exception as err:
+            logger.warning('Smear trails not assessed for %s: %s', image_filename, err)
+            on_trail = smear.SMEAR_NOT_ASSESSED
+        image_map['SMEAR_AP'].set_data(i, on_trail)
 
         del source
 

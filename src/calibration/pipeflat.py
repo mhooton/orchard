@@ -29,8 +29,10 @@ import glob
 import numpy as np
 from astropy.io import fits as pyfits
 from astropy.stats import sigma_clip
-from calibration.pipeutils import apply_image_slice, open_fits_file, get_jd_header_name, get_instrument_parameters
-from calibration.smear import correct_frame
+from calibration.pipeutils import (apply_image_slice, open_fits_file, get_jd_header_name, get_instrument_parameters,
+                                   frame_telescope)
+from calibration import readout
+from calibration.smear import correct_frame, shutterless
 import warnings
 from astropy.io.fits.verify import VerifyWarning
 warnings.filterwarnings('ignore', category=VerifyWarning)
@@ -91,6 +93,11 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
     if os.path.exists(outdir + 'processed.dat'):
         os.remove(outdir + 'processed.dat')
 
+    # the night's readout record (T2), read only if a flat was taken shutterless
+    runname = os.path.basename(biasname).split('_MasterBias')[0]
+    readout_record = None
+    bias_median = None
+
     # start counter
     frameno = 1
 
@@ -106,6 +113,7 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
         print("Create Master Flat in " + filt)
         datamatrix = []
         n_desmeared = 0
+        n_left_smeared = 0
         # loop through each flat image
         for line in open(i):  # open(inlist):
             stripped = line.strip()
@@ -121,6 +129,15 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
                 exposure = hdulist[0].header['exptime']
                 header = hdulist[0].header.copy()
                 params = get_instrument_parameters(hdulist)
+                # A shutterless flat is de-smeared with the readout time of its
+                # readout mode, and its clipped rows judged against its own
+                # saturation level, as T6 does for science frames.
+                frame_readout = None
+                if shutterless(header, params):
+                    if readout_record is None:
+                        readout_record = readout.load_or_measure(outdir, runname, params, frame_telescope(hdulist))
+                    os_level, os_noise = readout.overscan_signature(hdulist[0].data, params)
+                    frame_readout = readout.frame_values(readout_record, os_level, os_noise)
                 # SPECULOOS data doesn't have modified julian date, it uses UTC or julian date
                 jd_header = get_jd_header_name(hdulist)
                 jd = hdulist[0].header[jd_header.lower()]  # or however the header key formatting works
@@ -151,11 +168,24 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
 
             # A flat taken shutterless carries a large readout ramp (43% on a
             # 7.75 s Ganymede twilight flat); remove it before normalising.
-            corrected1 = correct_frame(corrected1, header, params, raw=data)
+            pedestal = 0.0
+            if frame_readout is not None:
+                if np.shape(bias) == np.shape(data):
+                    if bias_median is None:
+                        bias_median = float(np.median(bias))
+                    pedestal = float(overscan) + bias_median
+                else:
+                    pedestal = float(overscan)
+                for key, value, comment in readout.header_cards(frame_readout, pedestal=pedestal):
+                    header[key] = (value, comment)
+            corrected1 = correct_frame(corrected1, header, params, raw=data, pedestal=pedestal)
             if header.get('SMEARCOR'):
                 n_desmeared += 1
                 print(f"De-smeared shutterless flat {os.path.basename(stripped)} "
-                      f"(tau {header['SMEARTAU']:.3g}, shutter state from {header['SMEARSRC']})")
+                      f"(tau {header['SMEARTAU']:.3g}, {header.comments['SMEARTRD']}, "
+                      f"shutter state from {header['SMEARSRC']})")
+            elif 'SMEARERR' in header:
+                n_left_smeared += 1
 
             nflat_files += 1
 
@@ -220,6 +250,10 @@ def reducer(inlist, biasname, darkname, flatname, usedark, usebias, outdir, repo
         outname = outdir + flname + '_' + filt + ext
         flat_hdu = pyfits.PrimaryHDU(normflat)
         flat_hdu.header['NSMEARED'] = (n_desmeared, 'Input flats de-smeared (taken shutterless)')
+        if n_left_smeared:
+            flat_hdu.header['NSMRLEFT'] = (n_left_smeared, 'Shutterless input flats NOT de-smeared')
+            print(f"WARNING: {n_left_smeared} shutterless flats in {filt} could not be de-smeared "
+                  f"(readout time unknown); the master flat carries their readout ramp")
         flat_hdu.writeto(outname, overwrite=True)
         print('flat done')
 

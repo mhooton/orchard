@@ -38,12 +38,25 @@ exposure times would settle.
 Whether a frame was taken without the shutter comes from the CAMSHUTT header
 (written by Astra on all ANDORs since 2026-07-17, but set by hand, so it can be
 wrong) unless shutter_overrides.csv says otherwise for that telescope and time.
-The readout rate is not in the header either: Ganymede was read out in ~1.5 s,
-consistent with 3 MHz, for its last shutterless nights in February-March 2026,
-so an override window can carry its own readout time.
+A CAMSHUTT value that cannot be read is reported and taken as shutter used.
+
+The readout rate is not in the raw header either. Ganymede was read out in
+~1.5 s, consistent with 3 MHz, for its last shutterless nights in
+February-March 2026. T6 now writes the readout mode it recognises in each
+frame's overscan as READMODE (calibration/readout.py), so t_read comes from an
+override window that sets one, else from the "readout_time" table under
+"smear" keyed by READMODE (NORMAL 4.33 s, FAST 1.5 s). A shutterless frame in
+a mode with no known readout time is left smeared, says so in SMEARERR, and a
+warning is printed: a wrong t_read would put a ramp into it instead.
+
+A pixel counts as clipped at the frame's own saturation level, the SATURATE
+card T6 writes (relative to the overscan + master-bias pedestal), which in
+Ganymede's fast and 7,500-pedestal modes sits far below the instrument
+config's 62,000 ADU; frames without it fall back to saturation_threshold.
 """
 
 import csv
+import functools
 import os
 from datetime import datetime
 
@@ -51,6 +64,15 @@ import numpy as np
 from scipy.signal import lfilter
 
 OVERRIDES_PATH = os.path.join(os.path.dirname(__file__), 'shutter_overrides.csv')
+
+_warned = set()
+
+
+def _warn(message):
+    """Print a warning once per process: correct_frame runs once per frame."""
+    if message not in _warned:
+        _warned.add(message)
+        print('WARNING: ' + message, flush=True)
 
 
 def smear_tau(readout_time, n_shifts, exptime):
@@ -312,17 +334,22 @@ def apertures_on_trail(header, x, y, radii):
 
 
 def _parse_camshutt(value):
-    """CAMSHUTT is a FITS bool, but it is set by hand, so accept 0/1 and strings too."""
+    """
+    CAMSHUTT is a FITS bool, but it is set by hand, so accept 0/1 and strings too.
+
+    Returns True (shutter used), False (shutterless), or None for a value it
+    cannot read; the callers then assume the shutter was used.
+    """
     if isinstance(value, (bool, np.bool_)):
         return bool(value)
     if isinstance(value, (int, float, np.integer, np.floating)):
-        return bool(value)
+        return None if np.isnan(value) else bool(value)
     text = str(value).strip().upper()
     if text in ('T', 'TRUE', '1', 'Y', 'YES'):
         return True
     if text in ('F', 'FALSE', '0', 'N', 'NO'):
         return False
-    raise ValueError(f'unrecognised CAMSHUTT value {value!r}')
+    return None
 
 
 def _parse_utc(text):
@@ -338,15 +365,26 @@ def load_shutter_overrides(path=OVERRIDES_PATH):
     rows = []
     for row in csv.DictReader(lines):
         readout_time = (row.get('readout_time') or '').strip()
+        camshutt = _parse_camshutt(row['camshutt'])
+        if camshutt is None:
+            _warn(f'{path}: unrecognised camshutt {row["camshutt"]!r} for {row["telescope"].strip()} '
+                  f'from {row["start_utc"].strip()}; shutter assumed used in that window')
+            camshutt = True
         rows.append({
             'telescope': row['telescope'].strip(),
             'start': _parse_utc(row['start_utc']),
             'end': _parse_utc(row['end_utc']),
-            'camshutt': _parse_camshutt(row['camshutt']),
+            'camshutt': camshutt,
             'readout_time': float(readout_time) if readout_time else None,
             'note': (row.get('note') or '').strip(),
         })
     return rows
+
+
+@functools.lru_cache(maxsize=1)
+def _shipped_overrides():
+    """shutter_overrides.csv, read once per process rather than once per frame."""
+    return tuple(load_shutter_overrides())
 
 
 def shutter_state(header, overrides=None):
@@ -360,12 +398,16 @@ def shutter_state(header, overrides=None):
     An override row can also give the readout time, for windows where the
     camera was read out at a different rate (nothing in the header says so).
 
+    A CAMSHUTT value that cannot be read is reported and taken as shutter
+    used, with source 'CAMSHUTT?'.
+
     Returns:
         (shutter_used, source, readout_time) with source one of 'override',
-        'CAMSHUTT', 'default', and readout_time None unless an override sets it
+        'CAMSHUTT', 'CAMSHUTT?', 'default', and readout_time None unless an
+        override sets it
     """
     if overrides is None:
-        overrides = load_shutter_overrides()
+        overrides = _shipped_overrides()
     telescope = str(header.get('TELESCOP', '')).strip()
     date_obs = header.get('DATE-OBS')
     if overrides and date_obs:
@@ -374,17 +416,86 @@ def shutter_state(header, overrides=None):
             if row['telescope'] == telescope and row['start'] <= when < row['end']:
                 return row['camshutt'], 'override', row.get('readout_time')
     if 'CAMSHUTT' in header:
-        return _parse_camshutt(header['CAMSHUTT']), 'CAMSHUTT', None
+        used = _parse_camshutt(header['CAMSHUTT'])
+        if used is None:
+            _warn(f'{telescope}: unrecognised CAMSHUTT {header["CAMSHUTT"]!r}; '
+                  f'shutter assumed used, readout smear not removed')
+            return True, 'CAMSHUTT?', None
+        return used, 'CAMSHUTT', None
     return True, 'default', None
 
 
-def correct_frame(signal, header, params, raw=None, overrides=None):
+def shutterless(header, params, overrides=None):
+    """Will correct_frame() treat this frame as shutterless (and has the instrument smear parameters)?"""
+    if not params or not params.get('smear'):
+        return False
+    return not shutter_state(header, overrides)[0]
+
+
+def mode_readout_time(smear, mode):
+    """
+    Full-frame readout time in seconds for a READMODE, from the "readout_time"
+    table under "smear" in instrument_config.json; None when the mode (or the
+    mode itself) is not known.
+    """
+    times = smear.get('readout_time') or {}
+    mode = str(mode or '').strip()
+    if not mode or mode not in times:
+        return None
+    return float(times[mode])
+
+
+def readout_time(header, smear, override_time=None):
+    """
+    The readout time to de-smear a shutterless frame with.
+
+    An override window's own readout_time wins; else the frame's READMODE
+    (written by T6, calibration/readout.py) is looked up in the smear config.
+
+    Returns:
+        (seconds or None, source): source is 'override' or 'READMODE <mode>'
+    """
+    if override_time is not None:
+        return float(override_time), 'override'
+    mode = str(header.get('READMODE', '') or '').strip()
+    return mode_readout_time(smear, mode), 'READMODE ' + (mode or '(none)')
+
+
+def clip_threshold(header, params, pedestal=0.0):
+    """
+    The raw-ADU level at or above which a pixel counts as clipped.
+
+    T6 writes the frame's own saturation level as SATURATE, relative to the
+    pedestal it subtracts (overscan + master-bias median), so the raw level is
+    SATURATE + pedestal. A frame without SATURATE falls back to the instrument
+    config's saturation_threshold, compared with the raw pixels as before.
+
+    Returns:
+        (level or None, source): source is 'SATURATE' or 'config'
+    """
+    level = header.get('SATURATE')
+    try:
+        level = float(level)
+    except (TypeError, ValueError):
+        level = None
+    if level is not None and np.isfinite(level):
+        return level + float(pedestal), 'SATURATE'
+    if params and params.get('saturation_threshold') is not None:
+        return float(params['saturation_threshold']), 'config'
+    return None, None
+
+
+def correct_frame(signal, header, params, raw=None, overrides=None, pedestal=0.0):
     """
     De-smear one bias- and dark-subtracted frame if it was taken shutterless.
 
     Writes the decision into header either way (SMEARCOR), so every product
     records whether it was corrected. Does nothing for instruments without a
-    "smear" entry in instrument_config.json.
+    "smear" entry in instrument_config.json. The readout time comes from
+    readout_time(), so header should already carry T6's READMODE (and
+    SATURATE, for the clipped rows). A shutterless frame whose readout time is
+    not known is returned unchanged, with SMEARCOR = F and the reason in
+    SMEARERR.
 
     Args:
         signal: bias/dark-subtracted, trimmed frame, not yet flat-fielded
@@ -392,7 +503,9 @@ def correct_frame(signal, header, params, raw=None, overrides=None):
         params: instrument parameters from get_instrument_parameters()
         raw: trimmed raw frame, used only to record the rows with clipped
             pixels (write_trail_header) so the photometry can flag stars on them
-        overrides: shutter override rows (loaded from disk if None)
+        overrides: shutter override rows (shutter_overrides.csv if None)
+        pedestal: what was subtracted from raw to make signal's zero
+            (overscan + master-bias median), the zero of the SATURATE card
 
     Returns:
         the de-smeared frame, or signal unchanged
@@ -401,26 +514,41 @@ def correct_frame(signal, header, params, raw=None, overrides=None):
     if not smear:
         return signal
 
-    shutter_used, source, readout_time = shutter_state(header, overrides)
+    shutter_used, source, override_time = shutter_state(header, overrides)
     if shutter_used:
-        header['SMEARCOR'] = (False, 'Readout smear not removed (shutter used)')
+        if source == 'CAMSHUTT?':
+            header['SMEARCOR'] = (False, 'Not removed: CAMSHUTT unreadable, shutter used')
+        else:
+            header['SMEARCOR'] = (False, 'Readout smear not removed (shutter used)')
         return signal
 
-    if readout_time is None:
-        readout_time = smear['readout_time']
+    t_read, t_source = readout_time(header, smear, override_time)
+    if t_read is None:
+        telescope = str(header.get('TELESCOP', '')).strip()
+        header['SMEARCOR'] = (False, 'Shutterless, but readout smear NOT removed')
+        header['SMEARSRC'] = (source, 'Where the shutter state came from')
+        header['SMEARERR'] = (f'no readout time for {t_source}', 'why the smear was not removed')
+        _warn(f'{telescope}: shutterless frames ({source}) with no known readout time for {t_source}; '
+              f'readout smear NOT removed (add the mode to "smear" in instrument_config.json, '
+              f'or a readout_time to the override window)')
+        return signal
+
     exptime = float(header['EXPTIME'])
     axis = smear.get('axis', 1)
     direction = smear.get('direction', 1)
-    tau = smear_tau(readout_time, smear['n_shifts'], exptime)
+    tau = smear_tau(t_read, smear['n_shifts'], exptime)
     corrected = desmear(signal, tau, axis=axis, direction=direction)
 
     header['SMEARCOR'] = (True, 'Readout smear removed (shutterless frame)')
-    header['SMEARTRD'] = (float(readout_time), '[s] Readout time used for smear correction')
+    header['SMEARTRD'] = (float(t_read), f'[s] Readout time used ({t_source})')
     header['SMEARTAU'] = (float(tau), 'Smear per pixel crossed, t_read/(N t_exp)')
     header['SMEARSRC'] = (source, 'Where the shutter state came from')
-    if raw is not None and 'saturation_threshold' in params:
-        lines, first = clipped_lines(raw, params['saturation_threshold'], axis=axis, direction=direction)
-        write_trail_header(header, lines, first, axis, direction)
-    header.add_history(f'Readout smear removed: t_read {readout_time} s, '
+    if raw is not None:
+        level, level_source = clip_threshold(header, params, pedestal)
+        if level is not None:
+            lines, first = clipped_lines(raw, level, axis=axis, direction=direction)
+            header['SMSATLEV'] = (float(level), f'[ADU] raw level counted as clipped ({level_source})')
+            write_trail_header(header, lines, first, axis, direction)
+    header.add_history(f'Readout smear removed: t_read {t_read} s ({t_source}), '
                        f'tau {tau:.4g}, shutter state from {source}')
     return corrected

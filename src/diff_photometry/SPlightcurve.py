@@ -1753,7 +1753,7 @@ def stable_weights(lcurves, targ, faint=STABLE_FAINT_LIMIT, kernel_arcmin=STABLE
     """Weights for the comparison stars without any discontinuous step. Returns (lcurves, num_comp).
 
     W1 is the leave-one-out inverse variance, W2 the distance kernel and W3 eligibility (magnitude
-    range and preclean); SATURATED/LOWFLUX stars keep W1 = 0 from init_weights. num_comp is the
+    range and preclean); SATURATED/LOWFLUX/SMEARED stars keep W1 = 0 from init_weights. num_comp is the
     number of stars that carry 95% of the weight, as iter_algorithm reports it."""
     min_mag = np.nanmedian(targ.izmag) + faint
     mags = np.nanmedian(extract(lcurves, 'izmag'), axis=1)

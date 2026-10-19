@@ -47,7 +47,7 @@ from astropy.stats import sigma_clip
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from calibration.pipeutils import apply_image_slice, get_instrument_parameters, open_fits_file
-from calibration.smear import _along_axis, desmear, smear_tau
+from calibration.smear import _along_axis, desmear, mode_readout_time, readout_time, shutter_state, smear_tau
 
 BOX = 10            # star flux box half-width (pixels, both axes)
 GAP = 40            # windows start this far from the star along the readout axis,
@@ -204,17 +204,20 @@ def check(path, apply_desmear, reduced=False):
         raise ValueError('no smear parameters for this instrument')
     axis, direction = smear.get('axis', 1), smear.get('direction', 1)
     n, exptime = smear['n_shifts'], float(header['EXPTIME'])
+    # the t_read the pipeline would use: an override window's, else the
+    # frame's READMODE (T6 products), else the normal 1 MHz readout
+    t_read = readout_time(header, smear, shutter_state(header)[2])[0] or mode_readout_time(smear, 'NORMAL')
     oriented = _along_axis(s, axis, direction)
     if 'flat' in str(header.get('IMAGETYP', '')).lower():
-        return ramp_t_read(oriented, n, exptime), None, n, exptime, smear['readout_time'], header
+        return ramp_t_read(oriented, n, exptime), None, n, exptime, t_read, header
     stars = find_stars(oriented, _along_axis(raw, axis, direction), params['saturation_threshold'])
     _, _, pairs = measure(oriented, stars)
     pairs_after = []
     if apply_desmear and pairs:
-        corrected = _along_axis(desmear(s, smear_tau(smear['readout_time'], n, exptime),
+        corrected = _along_axis(desmear(s, smear_tau(t_read, n, exptime),
                                         axis=axis, direction=direction), axis, direction)
         _, _, pairs_after = measure(corrected, stars)
-    return pairs, pairs_after, n, exptime, smear['readout_time'], header
+    return pairs, pairs_after, n, exptime, t_read, header
 
 
 def main():

@@ -14,6 +14,14 @@ Covers in particular:
   - the header record of clipped rows reproducing saturated_trail_mask exactly,
     and apertures_on_trail agreeing with a brute-force overlap test
   - SPlightcurve keeping stars on a smear trail out of the comparison ensemble
+  - t_read from an override window, else from T6's READMODE; a shutterless
+    frame in a mode with no known t_read left alone, flagged and warned about
+  - clipped rows judged at the frame's own SATURATE (plus pedestal), falling
+    back to the config's saturation_threshold
+  - an unreadable CAMSHUTT taken as shutter used, never an exception
+  - T6 (pipered.reduce_file) and T4 (pipeflat.reducer) end to end: a shuttered
+    frame calibrated exactly as before, shutterless ones by readout mode
+  - FLAGS keeping BW_FLAG, which the promotion check reads
 
 Run:  pytest src/tests/test_smear.py -q
 """
@@ -34,7 +42,7 @@ from calibration import smear_check                 # noqa: E402
 
 ANDOR = {
     'saturation_threshold': 62000,
-    'smear': {'axis': 1, 'direction': 1, 'readout_time': 4.33, 'n_shifts': 2048},
+    'smear': {'axis': 1, 'direction': 1, 'readout_time': {'NORMAL': 4.33, 'FAST': 1.5}, 'n_shifts': 2048},
 }
 TAU_20S = smear.smear_tau(4.33, 2048, 20.0)        # ~1.06e-4, Ganymede 20250408
 
@@ -104,13 +112,17 @@ def test_saturated_trail_mask_marks_downstream_only():
     assert flipped[1, :4].all() and not flipped[1, 4:].any()
 
 
-def header(camshutt=None, date_obs='2026-08-01T03:00:00', telescope='SPECULOOS-EUROPA', exptime=20.0):
+def header(camshutt=None, date_obs='2026-08-01T03:00:00', telescope='SPECULOOS-EUROPA', exptime=20.0,
+           readmode='NORMAL'):
+    """A frame header as correct_frame sees it in T6: READMODE is already written."""
     h = fits.Header()
     h['TELESCOP'] = telescope
     h['DATE-OBS'] = date_obs
     h['EXPTIME'] = exptime
     if camshutt is not None:
         h['CAMSHUTT'] = camshutt
+    if readmode is not None:
+        h['READMODE'] = readmode
     return h
 
 
@@ -425,3 +437,440 @@ def test_best_aperture_avoids_smear_trails():
     # files written before the flag have two fields and count as clear
     assert spl.replaces_best_ap('6 4.2e-06', 1e-6, False)
     assert not spl.replaces_best_ap('6 4.2e-06', 1e-6, True)
+
+
+# ------------------------------------------- readout mode, saturation, CAMSHUTT
+
+@pytest.fixture
+def fresh_warnings():
+    smear._warned.clear()
+    yield
+    smear._warned.clear()
+
+
+@pytest.mark.parametrize('mode, t_read', [('NORMAL', 4.33), ('FAST', 1.5)])
+def test_readout_time_follows_readmode(mode, t_read):
+    true = star_field()
+    h = header(False, readmode=mode)
+    out = smear.correct_frame(smear.add_smear(true, smear.smear_tau(t_read, 2048, 20.0)), h, ANDOR, raw=true,
+                              overrides=[])
+    np.testing.assert_allclose(out, true, rtol=1e-10)
+    assert h['SMEARCOR'] is True and h['SMEARTRD'] == t_read
+    assert ('READMODE ' + mode) in h.comments['SMEARTRD']
+
+
+def test_override_readout_time_beats_readmode():
+    rows = [{'telescope': 'SPECULOOS-GANYMEDE', 'start': datetime(2026, 2, 27, 16),
+             'end': datetime(2026, 3, 2, 16), 'camshutt': False, 'readout_time': 1.5, 'note': ''}]
+    h = header(None, date_obs='2026-02-28T03:00:00', telescope='SPECULOOS-GANYMEDE', readmode='NORMAL')
+    smear.correct_frame(star_field(), h, ANDOR, overrides=rows)
+    assert h['SMEARTRD'] == 1.5 and '(override)' in h.comments['SMEARTRD']
+
+
+def test_override_without_readout_time_uses_readmode():
+    rows = [{'telescope': 'SPECULOOS-GANYMEDE', 'start': datetime(2026, 2, 15, 12),
+             'end': datetime(2026, 2, 27, 16), 'camshutt': False, 'readout_time': None, 'note': ''}]
+    h = header(None, date_obs='2026-02-21T03:00:00', telescope='SPECULOOS-GANYMEDE', readmode='FAST')
+    smear.correct_frame(star_field(), h, ANDOR, overrides=rows)
+    assert h['SMEARTRD'] == 1.5 and h['SMEARSRC'] == 'override'
+
+
+@pytest.mark.parametrize('readmode', ['PED7500', 'GAIN3.8', 'PED2900', 'UNKNOWN', 'DEFAULT', '', None])
+def test_unknown_readout_mode_is_left_alone_and_flagged(readmode, capsys, fresh_warnings):
+    img = star_field()
+    h = header(False, readmode=readmode)
+    out = smear.correct_frame(img, h, ANDOR, raw=img, overrides=[])
+    assert out is img
+    assert h['SMEARCOR'] is False and h['SMEARSRC'] == 'CAMSHUTT'
+    assert h['SMEARERR'].startswith('no readout time for READMODE')
+    assert not any(k in h for k in ('SMEARTRD', 'SMEARTAU', 'SMTRAXIS', 'SMSATROW'))
+    assert 'readout smear NOT removed' in capsys.readouterr().out
+    # once per process, not once per frame
+    smear.correct_frame(img, header(False, readmode=readmode), ANDOR, overrides=[])
+    assert capsys.readouterr().out == ''
+    # and the photometry treats it as it did before the correction existed: no trail record
+    assert len(smear.read_trail_header(h)[0]) == 0
+
+
+def test_shipped_config_gives_the_measured_readout_times():
+    path = os.path.join(SRC, 'calibration', 'instrument_config.json')
+    import json
+    with open(path) as f:
+        config = json.load(f)['telescopes']
+    for tel in ('SPECULOOS-IO', 'SPECULOOS-EUROPA', 'SPECULOOS-GANYMEDE', 'SPECULOOS-CALLISTO'):
+        cfg = config[tel]['andor']['smear']
+        assert smear.mode_readout_time(cfg, 'NORMAL') == 4.33
+        assert smear.mode_readout_time(cfg, 'FAST') == 1.5
+        assert smear.mode_readout_time(cfg, 'PED7500') is None
+    gany = config['SPECULOOS-GANYMEDE']['andor']
+    rows = smear.load_shutter_overrides()
+    # 1 MHz window: READMODE decides; 3 MHz window: the override's own 1.5 s
+    for date_obs, mode, expected in (('2026-02-21T03:00:00', 'NORMAL', 4.33), ('2026-02-28T03:00:00', 'FAST', 1.5),
+                                     ('2026-02-28T03:00:00', 'NORMAL', 1.5), ('2025-04-08T23:00:00', 'NORMAL', 4.33)):
+        h = header(None, date_obs=date_obs, telescope='SPECULOOS-GANYMEDE', readmode=mode)
+        smear.correct_frame(star_field(shape=(60, 80), n=2), h, gany, overrides=rows)
+        assert h['SMEARCOR'] is True and h['SMEARTRD'] == expected, date_obs
+
+
+def _saturating_star(pedestal, peak):
+    true = star_field(n=0, sky=500.0)
+    yy, xx = np.mgrid[:true.shape[0], :true.shape[1]]
+    true += peak * np.exp(-((yy - 200) ** 2 + (xx - 150) ** 2) / (2 * 2.4 ** 2))
+    raw = smear.add_smear(true, TAU_20S) + pedestal
+    return raw - pedestal, raw
+
+
+def test_clipped_rows_use_the_frames_own_saturation():
+    # Ganymede 2026-03-03 (7,546 pedestal mode): saturates ~36,400 ADU above the pedestal
+    pedestal, saturate = 7546.0 + 7.0, 36400.0
+    signal, raw = _saturating_star(pedestal, 45000.0)
+    assert raw.max() < 62000                       # the config level would never call it clipped
+    h = header(False)
+    h['SATURATE'] = saturate
+    smear.correct_frame(signal, h, ANDOR, raw=raw, overrides=[], pedestal=pedestal)
+    assert h['SMSATLEV'] == pytest.approx(saturate + pedestal) and 'SATURATE' in h.comments['SMSATLEV']
+    assert h['SMSATROW'] > 0 and 'SMTR0001' in h
+    lines, first, _, _ = smear.read_trail_header(h)
+    want_lines, want_first = smear.clipped_lines(raw, saturate + pedestal)
+    assert list(lines) == list(want_lines) and list(first) == list(want_first)
+
+
+def test_clipped_rows_fall_back_to_the_config_level():
+    signal, raw = _saturating_star(300.0, 45000.0)
+    h = header(False)                               # calibrated before SATURATE existed
+    smear.correct_frame(signal, h, ANDOR, raw=raw, overrides=[], pedestal=300.0)
+    assert h['SMSATLEV'] == 62000 and 'config' in h.comments['SMSATLEV']
+    assert h['SMSATROW'] == 0
+    signal, raw = _saturating_star(300.0, 70000.0)
+    h = header(False)
+    h['SATURATE'] = 'N'                             # the pipeline's 'absent' value: also the config level
+    smear.correct_frame(signal, h, ANDOR, raw=raw, overrides=[], pedestal=300.0)
+    assert h['SMSATLEV'] == 62000 and h['SMSATROW'] > 0
+
+
+@pytest.mark.parametrize('value', ['open', 'UNKNOWN', '', 'shutterless', 'T?'])
+def test_unreadable_camshutt_is_taken_as_shuttered(value, capsys, fresh_warnings):
+    h = header(value)
+    assert smear.shutter_state(h, overrides=[]) == (True, 'CAMSHUTT?', None)
+    assert 'unrecognised CAMSHUTT' in capsys.readouterr().out
+    img = star_field()
+    assert smear.correct_frame(img, h, ANDOR, overrides=[]) is img
+    assert h['SMEARCOR'] is False and 'CAMSHUTT' in h.comments['SMEARCOR']
+    assert not smear.shutterless(h, ANDOR, overrides=[])
+
+
+def test_unreadable_override_camshutt_is_taken_as_shuttered(tmp_path, capsys, fresh_warnings):
+    path = tmp_path / 'overrides.csv'
+    path.write_text('telescope,start_utc,end_utc,camshutt,readout_time,note\n'
+                    'SPECULOOS-GANYMEDE,2025-04-08T12:00:00,2025-04-09T12:00:00,maybe,,typo\n')
+    rows = smear.load_shutter_overrides(str(path))
+    assert rows[0]['camshutt'] is True
+    assert 'unrecognised camshutt' in capsys.readouterr().out
+
+
+def test_shipped_override_file_has_only_readable_camshutt_values():
+    import csv
+    with open(smear.OVERRIDES_PATH) as f:
+        lines = [line for line in f if line.strip() and not line.lstrip().startswith('#')]
+    for row in csv.DictReader(lines):
+        assert smear._parse_camshutt(row['camshutt']) is not None, row
+
+
+def test_shutterless_needs_smear_parameters():
+    assert smear.shutterless(header(False), ANDOR, overrides=[])
+    assert not smear.shutterless(header(True), ANDOR, overrides=[])
+    assert not smear.shutterless(header(False), {'saturation_threshold': 11000}, overrides=[])
+
+
+# --------------------------------------------------------------- T6 and T4 end to end
+
+def _andor_raw(rng, pedestal, noise, signal=None):
+    """A full-size SSO ANDOR raw frame: 2088 x 2048, overscan in the last 15 rows."""
+    raw = np.full((2088, 2048), pedestal)
+    raw[:-15] += 7.0                                 # bias structure above the overscan
+    if signal is not None:
+        raw[22:2066, 2:2048] += signal
+    raw += rng.normal(0, noise, raw.shape)
+    return np.round(raw)
+
+
+def _write_raw(path, raw, date_obs, camshutt=None, exptime=20.0, imagetyp='Light Frame',
+               telescope='SPECULOOS-GANYMEDE'):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    hdu = fits.PrimaryHDU(raw.astype(np.float32))
+    hdu.header['TELESCOP'] = telescope
+    hdu.header['EXPTIME'] = exptime
+    hdu.header['FILTER'] = 'I+z'
+    hdu.header['DATE-OBS'] = date_obs
+    hdu.header['JD'] = 2460000.5
+    hdu.header['IMAGETYP'] = imagetyp
+    if camshutt is not None:
+        hdu.header['CAMSHUTT'] = camshutt
+    hdu.writeto(path, overwrite=True)
+    return path
+
+
+def _reduce(tmp_path, path, night, telescope='SPECULOOS-GANYMEDE'):
+    from calibration import pipered
+    from calibration import readout as ro
+    trimmed = (2066 - 22, 2048 - 2)
+    bias = np.full(trimmed, 7.0, dtype=np.float32)
+    flat = {'I+z': np.ones(trimmed, dtype=np.float32)}
+    dark = {'combined': np.zeros(trimmed, dtype=np.float32)}
+    with fits.open(path) as hdul:
+        params = pipered.get_instrument_parameters(hdul)
+    record = ro.measure_night([], [], night, telescope, params)
+    outdir = str(tmp_path) + '/out/'
+    os.makedirs(outdir, exist_ok=True)
+    pipered.reduce_file(path, outdir, params, 'bias.fits', bias, dark, flat, None, '6.2', 0.0, 'v3',
+                        readout_record=record)
+    out = outdir + 'proc' + os.path.basename(path).replace('.fts', '.fits')
+    with fits.open(out) as h:
+        return h[0].header.copy(), np.array(h[0].data)
+
+
+def test_t6_shuttered_frame_is_calibrated_as_before(tmp_path):
+    rng = np.random.default_rng(3)
+    signal = smear.add_smear(star_field(shape=(2044, 2046), n=30, sky=600.0), 0.0)
+    raw = _andor_raw(rng, 320.0, 6.2, signal)
+    path = _write_raw(os.path.join(str(tmp_path), 'images', '20260810', 'a.fts'), raw, '2026-08-11T03:00:00',
+                      camshutt=True)
+    h, data = _reduce(tmp_path, path, '20260810')
+    # what main's T6 computes: (raw - overscan - bias - dark * t) / flat, as float32
+    expected = np.float32((raw[22:2066, 2:2048] - h['OVERSCAN'] - 7.0 - 0.0) / 1.0)
+    assert np.array_equal(data, expected)
+    assert h['SMEARCOR'] is False
+    assert [k for k in h if k.startswith('SM')] == ['SMEARCOR']
+    assert h['READMODE'] == 'NORMAL'
+
+
+def test_t6_desmears_by_readout_mode_and_uses_the_frames_saturation(tmp_path):
+    rng = np.random.default_rng(4)
+    true = star_field(shape=(2044, 2046), n=30, sky=600.0)
+    tau = smear.smear_tau(4.33, 2048, 20.0)
+    raw = _andor_raw(rng, 320.0, 6.2, smear.add_smear(true, tau))
+    # shutterless outside every override window: CAMSHUTT and READMODE decide
+    path = _write_raw(os.path.join(str(tmp_path), 'images', '20260810', 'b.fts'), raw, '2026-08-11T03:00:00',
+                      camshutt=False)
+    h, data = _reduce(tmp_path, path, '20260810')
+    assert h['SMEARCOR'] is True and h['SMEARTRD'] == 4.33 and h['READMODE'] == 'NORMAL'
+    assert h['SMSATLEV'] == pytest.approx(h['SATURATE'] + h['OVERSCAN'] + 7.0)
+    resid = data - (true + 7.0 + 320.0 - h['OVERSCAN'] - 7.0)
+    assert np.abs(np.median(resid)) < 1.0 and np.std(resid) < 10.0
+
+
+def test_t6_fast_readout_window_and_unknown_mode(tmp_path, fresh_warnings, capsys):
+    rng = np.random.default_rng(5)
+    true = star_field(shape=(2044, 2046), n=30, sky=600.0)
+    # 2026-02-28, 3 MHz: the override window gives 1.5 s; the overscan says FAST
+    raw = _andor_raw(rng, 319.0, 9.8, smear.add_smear(true, smear.smear_tau(1.5, 2048, 20.0)))
+    path = _write_raw(os.path.join(str(tmp_path), 'images', '20260227', 'c.fts'), raw, '2026-02-28T03:00:00')
+    h, _ = _reduce(tmp_path, path, '20260227')
+    assert h['READMODE'] == 'FAST' and h['SMEARCOR'] is True and h['SMEARTRD'] == 1.5
+    assert h['SMEARSRC'] == 'override'
+    assert h['SMSATLEV'] == pytest.approx(59500.0)      # FAST's level, not the config's 62,000
+    # 2026-03-03, 7,546 pedestal mode, CAMSHUTT F: no readout time known, so left as it is
+    raw = _andor_raw(rng, 7546.0, 18.2, true)
+    path = _write_raw(os.path.join(str(tmp_path), 'images', '20260302', 'd.fts'), raw, '2026-03-03T03:00:00',
+                      camshutt=False)
+    h, data = _reduce(tmp_path, path, '20260302')
+    assert h['READMODE'] == 'PED7500' and h['SMEARCOR'] is False and 'PED7500' in h['SMEARERR']
+    assert np.array_equal(data, np.float32(raw[22:2066, 2:2048] - h['OVERSCAN'] - 7.0))
+    assert 'readout smear NOT removed' in capsys.readouterr().out
+
+
+def test_t4_master_flat_from_shutterless_flats(tmp_path, fresh_warnings, capsys):
+    from calibration import pipeflat
+    rng = np.random.default_rng(6)
+    reddir = os.path.join(str(tmp_path), 'output', '20260810', 'reduction') + '/'
+    os.makedirs(reddir)
+    trimmed = (2044, 2046)
+    fits.PrimaryHDU(np.full(trimmed, 7.0, dtype=np.float32)).writeto(reddir + 'run_MasterBias.fits')
+    fits.PrimaryHDU(np.zeros(trimmed, dtype=np.float32)).writeto(reddir + 'run_MasterDark.fits')
+    illum = np.ones(trimmed) * 20000.0
+    names = []
+    for i, (camshutt, date_obs) in enumerate([(False, '2026-08-10T23:00:%02d'), (True, '2026-08-10T23:01:%02d')]):
+        for j in range(2):
+            exptime = 6.0 + j
+            flat = smear.add_smear(illum, smear.smear_tau(4.33, 2048, exptime)) if not camshutt else illum
+            names.append(_write_raw(os.path.join(str(tmp_path), 'images', '20260810', 'f%d%d.fts' % (i, j)),
+                                    _andor_raw(rng, 320.0, 6.2, flat), date_obs % j, camshutt=camshutt,
+                                    exptime=exptime, imagetyp='Flat Field'))
+    flist = reddir + 'run_flat_I+z.list'
+    with open(flist, 'w') as f:
+        f.write('\n'.join(names) + '\n')
+    pipeflat.reducer([flist], 'run_MasterBias.fits', 'run_MasterDark.fits', 'run_MasterFlat.fits', '1', '1',
+                     reddir, reddir)
+    with fits.open(reddir + 'run_MasterFlat_I+z.fits') as h:
+        master, hdr = np.array(h[0].data), h[0].header
+    assert hdr['NSMEARED'] == 2 and 'NSMRLEFT' not in hdr
+    # the de-smeared flats carry no readout ramp along x
+    left, right = np.median(master[:, 100:300]), np.median(master[:, -300:-100])
+    assert abs(right / left - 1) < 2e-3
+    assert 'De-smeared shutterless flat' in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ FLAGS readers
+
+def test_flags_keep_bw_flag_for_the_promotion_check(tmp_path):
+    pytest.importorskip('fitsio')
+    pytest.importorskip('matplotlib')
+    from diff_photometry import SPlightcurve as spl
+    from utils import promote_check
+
+    bw = np.array([0, 1, 1, 0, 0, 1])
+    table = spl.flags_table(bw, np.array([0, 0, 1, 1, 0, 0], dtype=bool))
+    assert list(table.dtype.names) == ['FLAG', 'BW_FLAG', 'SMEAR_FLAG']
+    assert list(table['FLAG']) == list(bw) and list(table['BW_FLAG']) == list(bw)
+
+    cat = fits.BinTableHDU.from_columns([fits.Column('TARGET', 'K', array=np.array([1, 0])),
+                                         fits.Column('GAIA_DR3_ID', '19A', array=np.array(['123', '456']))],
+                                        name='CATALOGUE')
+    lc = fits.ImageHDU(np.vstack([1 + 1e-3 * np.arange(6), np.ones(6)]).T, name='LIGHTCURVE_5')
+    path = str(tmp_path / '123_I+z_20260810_5_diff.fits')
+    fits.HDUList([fits.PrimaryHDU(), cat, lc, spl.flags_hdu(table)]).writeto(path)
+    assert promote_check.read_light_curve(path)['bw'] == 3
+
+
+# ------------------------------------------------- T9 condense: SMEAR_AP and --update
+
+def _condense_night(tmp_path, night, jd0, nframes, trail_line=None, readout_cards=True):
+    """Fake T8 products for one night of a 3-star field, then condense_photometry.main()."""
+    pytest.importorskip('fitsio')
+    import argparse
+    from condense import condense_photometry as cp
+
+    night_dir = tmp_path / 'output' / night / 'TARG'
+    night_dir.mkdir(parents=True, exist_ok=True)
+    xs, ys = np.array([301.0, 101.0, 501.0]), np.array([301.0, 51.0, 151.0])   # imcore, 1-based
+    nstars = len(xs)
+    cat = tmp_path / 'stack_catalogue.fits'
+    if not cat.exists():
+        cols = [fits.Column(n, 'D', array=np.zeros(nstars)) for n in ('pmra', 'pmdec', 'g_rp', 'bp_rp', 'parallax',
+                                                                       'teff', 'gmag')]
+        cols += [fits.Column('gaia_dr2_id', '19A', array=np.array(['111', '222', '333'])),
+                 fits.Column('gaia_dr3_id', '19A', array=np.array(['111', '222', '333'])),
+                 fits.Column('target_role', '10A', array=np.array(['primary', '', '']))]
+        fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU.from_columns(cols, name='Gaia_Crossmatch')]).writeto(cat)
+    phots = []
+    for k in range(nframes):
+        jd = jd0 + k / 1440.
+        frame = night_dir / ('proc%s_%03d.fits' % (night, k))
+        h = fits.Header()
+        h['SMEARCOR'] = trail_line is not None
+        if trail_line is not None:
+            smear.write_trail_header(h, np.array([trail_line]), np.array([9]), 1, 1)
+        fits.PrimaryHDU(np.zeros((8, 8), dtype=np.float32), header=h).writeto(frame)
+        cols = [fits.Column('dummy%02d' % i, 'E', array=np.zeros(nstars)) for i in range(1, 20)]
+        for a in range(1, 14):
+            cols += [fits.Column('Aper_flux_%d' % a, 'E', array=np.full(nstars, 1e4 * a)),
+                     fits.Column('Aper_flux_%d_err' % a, 'E', array=np.full(nstars, 10.0))]
+        cols += [fits.Column('X_coordinate', 'E', array=xs), fits.Column('Y_coordinate', 'E', array=ys),
+                 fits.Column('Sky_level', 'E', array=np.full(nstars, 500.0)),
+                 fits.Column('Peak_height', 'E', array=np.full(nstars, 3e3)),
+                 fits.Column('ra', 'D', array=np.radians([10.0, 10.01, 10.02])),
+                 fits.Column('dec', 'D', array=np.radians([-20.0, -20.01, -20.02]))]
+        table = fits.BinTableHDU.from_columns(cols)
+        for key, value in (('jd-obs', jd), ('bjd-obs', jd), ('hjd-obs', jd), ('exptime', 20.0), ('rcore', 4.0),
+                           ('TCTYP3', 'RA---ZPN'), ('TCTYP5', 'DEC--ZPN'), ('TCRPX3', 1.0), ('TCRPX5', 1.0),
+                           ('TCRVL3', 10.0), ('TCRVL5', -20.0), ('TC3_3', 1e-4), ('TC3_5', 0.0), ('TC5_3', 0.0),
+                           ('TC5_5', 1e-4)):
+            table.header[key] = value
+        if readout_cards:
+            for key, value in (('RDNOISE', 6.5), ('SATURATE', 61500.0), ('OSNOISE', 6.2), ('READMODE', 'NORMAL'),
+                               ('GAINSRC', 'night')):
+                table.header[key] = value
+        primary = fits.PrimaryHDU()
+        primary.header['jd-obs'] = jd
+        phot = str(frame) + '.phot'
+        fits.HDUList([primary, table]).writeto(phot)
+        fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU.from_columns(cols[:1])]).writeto(
+            str(frame).replace('.fits', '.cat'))
+        phots.append(phot)
+    args = argparse.Namespace(filename=phots, outputdir=str(tmp_path / 'output'), update=False, verbose=False,
+                              sha=None, date=night, targname='TARG', outname='output.fits', filter='I+z',
+                              ext='fits', version='v3', cat=str(cat), tlist=None)
+    cp.main(args)
+    with fits.open(str(night_dir / ('111_I+z_%s_output.fits' % night))) as h:
+        nightly = {x.name: (x.data.copy() if x.data is not None else None) for x in h[1:]}
+        last = h[-1].name
+    return nightly, last, str(tmp_path / 'output' / '111_I+z_output.fits')
+
+
+def test_condense_smear_ap_with_readout_columns_and_update(tmp_path):
+    # night A, shuttered: SMEAR_AP all 0, the last HDU; the readout columns last in the IMAGELIST
+    a, last, glob_path = _condense_night(tmp_path, '20260810', 2461263.5, 3)
+    assert last == 'SMEAR_AP' and a['SMEAR_AP'].shape == (3, 3) and not a['SMEAR_AP'].any()
+    assert list(a['IMAGELIST'].dtype.names[-5:]) == ['RDNOISE', 'SATURATE', 'OSNOISE', 'READMODE', 'GAINSRC']
+
+    # make the global file what one condensed before #32 and the smear flag looks like
+    with fits.open(glob_path) as h:
+        old_cols = [c for c in h['IMAGELIST'].columns if c.name not in ('RDNOISE', 'SATURATE', 'OSNOISE',
+                                                                          'READMODE', 'GAINSRC')]
+        hdus = [h[0].copy(), fits.BinTableHDU.from_columns(old_cols, name='IMAGELIST')]
+        hdus += [x.copy() for x in h[1:] if x.name not in ('IMAGELIST', 'SMEAR_AP')]
+        fits.HDUList(hdus).writeto(glob_path, overwrite=True)
+
+    # night B, shutterless with star 1 (0-based y = 50) on a trail row: updates that old global file
+    b, _, _ = _condense_night(tmp_path, '20260811', 2461264.5, 2, trail_line=50)
+    assert b['SMEAR_AP'][:, 0].tolist() == [0, 1, 0]
+    with fits.open(glob_path) as h:
+        assert h['SMEAR_AP'].data.shape == h['JD'].data.shape == (3, 5)
+        assert (h['SMEAR_AP'].data[:, :3] == smear.SMEAR_NOT_ASSESSED).all()     # never assessed
+        np.testing.assert_array_equal(h['SMEAR_AP'].data[:, 3:], b['SMEAR_AP'])
+        il = h['IMAGELIST'].data
+        assert 'READMODE' not in il.dtype.names and len(il) == 5
+        np.testing.assert_allclose(il['JD-OBS'][3:], b['IMAGELIST']['JD-OBS'])   # positional zip kept the rows
+        np.testing.assert_allclose(il['EXPTIME'], 20.0)
+
+    # night C on the now current-format global file: appended, no second backfill
+    c, _, _ = _condense_night(tmp_path, '20260812', 2461265.5, 2)
+    with fits.open(glob_path) as h:
+        assert [x.name for x in h].count('SMEAR_AP') == 1
+        assert h['SMEAR_AP'].data.shape == h['JD'].data.shape == (3, 7)
+        np.testing.assert_array_equal(h['SMEAR_AP'].data[:, 5:], c['SMEAR_AP'])
+        np.testing.assert_array_equal(h['SMEAR_AP'].data[:, 3:5], b['SMEAR_AP'])
+
+
+def test_stable_weights_leave_smeared_stars_out(tmp_path):
+    """#28's stable weights: a star on a trail gets no weight, and SMEAR_AP all 0 changes nothing."""
+    pytest.importorskip('fitsio')
+    pytest.importorskip('matplotlib')
+    from diff_photometry import SPlightcurve as spl
+
+    rng = np.random.RandomState(2)
+    n, nf = 30, 200
+    t = np.linspace(0, 1, nf)
+    transparency = 1 - 0.1 * np.exp(-((t - 0.5) / 0.05) ** 2)
+    base = np.geomspace(2e5, 5e3, n)
+    flux = base[:, None] * transparency[None, :] * (1 + 0.003 * rng.randn(n, nf))
+    ra = 150.0 + rng.uniform(-0.05, 0.05, n)
+    dec = -30.0 + rng.uniform(-0.05, 0.05, n)
+
+    class Tel:
+        rcore = np.full(nf, 4.0)
+        exposure = np.full(nf, 20.0)
+        gain = np.full(nf, 1.0)
+
+    def weights(smear_ap):
+        jd = 2461095.5 + np.arange(nf) / 1440.
+        nan = [np.nan] * n
+        lcurves = spl.init_all_lcurves(Tel(), ['SP%03d' % i for i in range(n)], nan, nan,
+                                       [spl.normalise(f) for f in flux], [f.copy() for f in flux],
+                                       np.zeros(n, dtype=bool), jd, jd, jd, list(ra), list(dec), nan, nan, nan,
+                                       [np.zeros(nf)] * n, [np.zeros(nf)] * n, nan, nan, nan, nan, 5, 'I+z',
+                                       '20260810', np.full(nf, 20.0), smear_ap)
+        lcurves[0].set_as_target('SP000')
+        comp, _ = spl.stable_weights(spl.set_all_weights(np.delete(lcurves, 0)), lcurves[0])
+        return np.array(spl.extract(comp, 'weight'), dtype=float), comp
+
+    w_none, _ = weights(None)
+    w_zero, _ = weights(np.zeros((n, nf), dtype=np.int16))
+    assert np.array_equal(w_none, w_zero)                 # a shuttered night: bit-identical weights
+    smear_ap = np.zeros((n, nf), dtype=np.int16)
+    smear_ap[3, 50] = 2                                   # star 3 (comparison 2) on a trail at ap 2+, one frame
+    smear_ap[4, :] = 8                                    # star 4 only from ap 8: clear at ap 5
+    w_trail, comp = weights(smear_ap)
+    assert w_none[2] > 0 and w_trail[2] == 0 and comp[2].smeared
+    assert w_trail[3] > 0 and not comp[3].smeared
+    assert abs(w_trail.sum() - 1) < 1e-9

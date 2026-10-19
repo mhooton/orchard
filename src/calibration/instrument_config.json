@@ -22,7 +22,7 @@
         "smear": {
           "axis": 1,
           "direction": 1,
-          "readout_time": 4.33,
+          "readout_time": {"NORMAL": 4.33, "FAST": 1.5},
           "n_shifts": 2048
         }
       }
@@ -49,7 +49,7 @@
         "smear": {
           "axis": 1,
           "direction": 1,
-          "readout_time": 4.33,
+          "readout_time": {"NORMAL": 4.33, "FAST": 1.5},
           "n_shifts": 2048
         }
       }
@@ -76,7 +76,7 @@
         "smear": {
           "axis": 1,
           "direction": 1,
-          "readout_time": 4.33,
+          "readout_time": {"NORMAL": 4.33, "FAST": 1.5},
           "n_shifts": 2048
         }
       }
@@ -103,7 +103,7 @@
         "smear": {
           "axis": 1,
           "direction": 1,
-          "readout_time": 4.33,
+          "readout_time": {"NORMAL": 4.33, "FAST": 1.5},
           "n_shifts": 2048
         }
       },
