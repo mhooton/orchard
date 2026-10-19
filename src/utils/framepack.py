@@ -244,8 +244,11 @@ def _image(path, verify_checksum=False):
 
 
 def _cards(header):
+    # Blank cards are padding: astropy leaves them where it drops BSCALE/BZERO/BLANK as T6 turns an integer raw
+    # frame into float32, and reuses them for the next keyword it appends, so the output never has the same number
     return [str(c).rstrip() for c in header.cards
-            if c.keyword not in NOT_COMPARED and not str(c.value).startswith(HISTORY_TAG)]
+            if c.keyword not in NOT_COMPARED and not str(c.value).startswith(HISTORY_TAG)
+            and not (c.keyword == '' and not str(c.value).strip())]
 
 
 def _scaling(header):

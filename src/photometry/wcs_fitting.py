@@ -443,6 +443,9 @@ def casu_solve(casuin, thresh=2, verbose=False, catsrc='vizgaia3', rcore=4, ipix
 
     casutools.imcore(casuin, catfile_name, threshold=thresh, verbose=verbose,
                      ipix=ipix, rcore=rcore)
+    # imcore copied the frame's header into the new catalogue, ORCHVER included; it is this run's file, whether or
+    # not the fit below succeeds
+    orchard_version.stamp_file(catfile_name)
 
     # Now we're ready to solve wcs
     localfits_path = catfile_name.replace('.cat', '_localfits_ref.fits')
@@ -454,8 +457,6 @@ def casu_solve(casuin, thresh=2, verbose=False, catsrc='vizgaia3', rcore=4, ipix
         # presumably, T8's imstack) would otherwise use a stale PC matrix over
         # the fitted CD.
         drop_stale_pc_matrix(casuin)
-        # imcore copied the frame's header into the new catalogue, ORCHVER included; it is this run's file
-        orchard_version.stamp_file(catfile_name)
 
         # The WCS fit has succeeded. Everything below is a diagnostic, so a
         # failure in it must not mark the frame as unsolved. It used to:

@@ -328,3 +328,18 @@ def test_framepack_converts_a_frame_earlier_stages_edited(released, tmp_path):
     h = fits.getheader(f, 1)
     assert h['ORCHMOD'] == '1.2.0-3-gab12cd3' and 'orchard 1.2.0-3-gab12cd3 T7: WCS solved' in [
         str(c) for c in h['HISTORY']]
+
+
+def test_framepack_ignores_blank_padding_cards(released, tmp_path):
+    """Frames whose header ends in blank cards (as T6 copies them from some raw frames): appending ORCHMOD reuses
+    those blanks, which must not count as a header difference (Callisto 20261012, two frames left float32)."""
+    from utils import framepack as fp
+    raw, f = str(tmp_path / 'raw.fits'), str(tmp_path / 'proc.fits')
+    fits.PrimaryHDU(data=(1000 + np.arange(32 * 48).reshape(32, 48)).astype(np.uint16)).writeto(raw)   # BZERO
+    with fits.open(raw) as hdul:                            # as T6 does: float32 pixels, the raw header
+        hdul[0].data = np.float32(hdul[0].data.astype(float) - 5)
+        hdul.writeto(f)
+    assert [c.keyword for c in fits.getheader(f).cards][-1] == ''
+    rep = fp.convert_in_place(f, 'int16')
+    assert rep.status == 'done', rep
+    assert fits.getheader(f)['BITPIX'] == 16
