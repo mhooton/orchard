@@ -727,12 +727,17 @@ def main(args):
 
                         cntr = 0
 
-                        # A global file written before SMEAR_AP existed: its
-                        # earlier nights were never assessed for smear trails.
-                        if 'SMEAR_AP' not in hdulist_update:
+                        # A global file written before SMEAR_AP existed, or updated
+                        # since by code that does not write it (a job still pinned
+                        # to an older release, a rollback): the nights it lacks were
+                        # never assessed for smear trails. Those nights were appended
+                        # to the other HDUs, so SMEAR_AP is padded at the end to match.
+                        if 'SMEAR_AP' in hdulist_update:
+                            hdulist_update['SMEAR_AP'].data = pad_smear_ap(
+                                hdulist_update['SMEAR_AP'].data, hdulist_update['JD'].data.shape)
+                        else:
                             hdulist_update.append(fits.ImageHDU(
-                                np.full(hdulist_update['JD'].data.shape, smear.SMEAR_NOT_ASSESSED, dtype=np.int16),
-                                name='SMEAR_AP'))
+                                pad_smear_ap(None, hdulist_update['JD'].data.shape), name='SMEAR_AP'))
 
                         to_del_night = find_dups(np.transpose(hdulist_update['JD'].data),
                                                  np.transpose(image_map['JD'].data))
@@ -795,6 +800,28 @@ def main(args):
             print("Global LC FAILED, " + str(e))
         finally:
             os.close(output_lock)
+
+
+def pad_smear_ap(smear_ap, shape):
+    """
+    A global file's SMEAR_AP brought to the JD HDU's shape (stars x frames).
+
+    Frames it lacks are the last ones (every update appends), so they are added
+    at the end as not assessed. One whose number of stars differs cannot be lined
+    up, so it starts again as not assessed throughout. None (no SMEAR_AP yet)
+    gives not assessed everywhere.
+    """
+    shape = tuple(shape)
+    if smear_ap is not None and np.shape(smear_ap) == shape:
+        return np.asarray(smear_ap, dtype=np.int16)
+    out = np.full(shape, smear.SMEAR_NOT_ASSESSED, dtype=np.int16)
+    if smear_ap is not None:
+        smear_ap = np.asarray(smear_ap)
+        if smear_ap.ndim == 2 and smear_ap.shape[0] == shape[0] and smear_ap.shape[1] <= shape[1]:
+            out[:, :smear_ap.shape[1]] = smear_ap
+        else:
+            logger.warning('SMEAR_AP %s does not line up with JD %s; marked not assessed', smear_ap.shape, shape)
+    return out
 
 
 def find_dups(prev_arr,new_arr):

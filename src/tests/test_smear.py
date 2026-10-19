@@ -870,6 +870,32 @@ def test_condense_smear_ap_with_readout_columns_and_update(tmp_path):
         np.testing.assert_array_equal(h['SMEAR_AP'].data[:, 5:], c['SMEAR_AP'])
         np.testing.assert_array_equal(h['SMEAR_AP'].data[:, 3:5], b['SMEAR_AP'])
 
+    # a job still pinned to an older release updates the global file: every HDU but SMEAR_AP gains its two
+    # frames. The next update pads SMEAR_AP with "not assessed" for them, so it lines up with JD again.
+    with fits.open(glob_path, mode='update') as h:
+        for x in h:
+            if isinstance(x, fits.ImageHDU) and x.name != 'SMEAR_AP':
+                x.data = np.append(x.data, x.data[:, -2:] + (1.0 if x.name in ('JD', 'HJD', 'BJD') else 0.0), axis=1)
+    e, _, _ = _condense_night(tmp_path, '20260814', 2461267.5, 2, trail_line=50)
+    with fits.open(glob_path) as h:
+        sa, jd = h['SMEAR_AP'].data, h['JD'].data
+        assert sa.shape == jd.shape == (3, 11)
+        assert (sa[:, 7:9] == smear.SMEAR_NOT_ASSESSED).all()
+        np.testing.assert_array_equal(sa[:, 9:], e['SMEAR_AP'])
+        np.testing.assert_array_equal(sa[:, 3:5], b['SMEAR_AP'])
+
+
+def test_pad_smear_ap():
+    pytest.importorskip('fitsio')
+    from condense import condense_photometry as cp
+    na = smear.SMEAR_NOT_ASSESSED
+    assert (cp.pad_smear_ap(None, (2, 3)) == na).all()
+    got = cp.pad_smear_ap(np.array([[1, 0], [0, 2]], dtype=np.int16), (2, 4))
+    assert got.tolist() == [[1, 0, na, na], [0, 2, na, na]] and got.dtype == np.int16
+    assert (cp.pad_smear_ap(np.zeros((3, 2), dtype=np.int16), (2, 4)) == na).all()      # stars differ
+    same = np.array([[4, 0]], dtype=np.int16)
+    assert cp.pad_smear_ap(same, (1, 2)).tolist() == [[4, 0]]
+
 
 def test_stable_weights_leave_smeared_stars_out(tmp_path):
     """#28's stable weights: a star on a trail gets no weight, and SMEAR_AP all 0 changes nothing."""
