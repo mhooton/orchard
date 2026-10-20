@@ -437,7 +437,7 @@ After a clean week of shadow reports. On appct as `speculoos`, in the daytime:
 2. **Crontab**: save it (`crontab -l > ~/crontab.backup.<date>`), add the four queue lines from
    `src/jobqueue/cron/crontab.live` (watchdog, watcher, look-back, daily report), remove any shadow lines, and
    comment out the five nightly lines (19:00 Io … 23:00 Artemis). Leave the 05:00 and 06:00 lines.
-   `crontab.live` is the whole proposed crontab, for reference.
+   `crontab.live` is now a copy of the whole crontab installed on appct, for reference.
 3. **Watch the first day**: `q status`, `queue/logs/watcher.log`, the P0 jobs' logs, `ESO_logs/`, and the usual
    pipeline emails, which now arrive in the afternoon. Io's nightly INCOMPLETE email stops. Every morning
    `queue/reports/report_<date>.md` lists, per telescope-night, when it was ready at ESO, when its download and
