@@ -582,6 +582,8 @@ check_astrometry(){
 
     printf "For Target = ${i}\n"
     IMAGELISTS=${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}/*_processed.dat
+    # the night's plate-solve cache, outside the raw and product trees (docs/wcs-cache.md); T7 never writes raw frames
+    WCS_CACHE=${WCS_CACHE_DIR:-${BASEDIR}/PipelineOutput/wcs_cache}/${TEL}/${DATE}.ecsv
 
     if $(any_filelists ${IMAGELISTS}); then
         for IMAGELIST in ${IMAGELISTS}
@@ -593,7 +595,8 @@ check_astrometry(){
                     --nproc=${CORES}\
                     --ext=${OUTEXT}\
                     --db_path=${DATABASEPATH}\
-                    --raw-list ${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_image_${i}.list"
+                    --raw-list ${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_image_${i}.list\
+                    --wcs-cache ${WCS_CACHE}"
 
                 if [ "${FORCE_PLATESOLVE:-}" = "1" ]; then
                     CMD="${CMD} --force-platesolve"

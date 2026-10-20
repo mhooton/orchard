@@ -5,9 +5,10 @@ import os
 import numpy as np
 from astropy.io import fits as pyfits
 from calibration.pipeutils import (get_instrument_parameters, apply_image_slice, clean_bad_pixels, open_fits_file,
-                                   create_dark_dict, create_flat_dict, frame_telescope)
+                                   create_dark_dict, create_flat_dict, frame_telescope, proc_name)
 from calibration import readout
 from calibration.smear import correct_frame
+from calibration.shutter_detect import NightRecords
 from utils import orchard_version
 from functools import partial
 from multiprocessing.dummy import Pool as ThreadPool
@@ -20,10 +21,10 @@ from astropy.io.fits.verify import VerifyWarning
 warnings.filterwarnings('ignore', category=VerifyWarning)
 
 def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, bpm, ron, darkcur, version,
-                readout_record=None):
+                readout_record=None, shutter_record=None):
 
     path, fname = os.path.split(filename)
-    outname = outdir + 'proc' + fname.replace("'", "").replace(" ", "--").replace(".fts", ".fits")
+    outname = outdir + proc_name(fname)
 
     # try:
     with open_fits_file(filename) as hdulist:
@@ -108,7 +109,8 @@ def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, 
             # was collected by the upstream pixels, not the one it lands in. Its
             # readout time follows READMODE and its clipped rows SATURATE, so
             # the readout cards above are written first.
-            signal = correct_frame(signal, hdulist[0].header, params, raw=data, pedestal=pedestal)
+            signal = correct_frame(signal, hdulist[0].header, params, raw=data, pedestal=pedestal,
+                                   detection=shutter_record)
             corrected = signal / flat_dict[filter]
 
             # print("BPM type:", type(bpm))
@@ -165,6 +167,8 @@ def reducer(inlist, outdir, biasname, darknames, flatnames, bpmname, reddir, ver
     runname = os.path.basename(biasname).split('_MasterBias')[0]
     readout_record = readout.load_or_measure(reddir, runname, params, telescope)
     print(readout.summary(readout_record))
+    # the night's measured shutter state (T2's shutter.json)
+    shutter_record = NightRecords(reddir, runname).own(telescope) if params.get('smear') else None
 
     # Import master bias
     if usebias == "1":
@@ -227,7 +231,7 @@ def reducer(inlist, outdir, biasname, darknames, flatnames, bpmname, reddir, ver
     pool = ThreadPool()
     fn = partial(reduce_file, outdir=outdir, params=params, biasname=biasname, bias=bias,
                  dark_dict=dark_dict, flat_dict=flat_dict, bpm=bpm, ron=ron, darkcur=darkcur, version=version,
-                 readout_record=readout_record)
+                 readout_record=readout_record, shutter_record=shutter_record)
 
     with open(inlist) as infile:
         filenames = [line.strip() for line in infile]
@@ -256,11 +260,9 @@ def reducer(inlist, outdir, biasname, darknames, flatnames, bpmname, reddir, ver
         # if we have a flat for this filter
         if filters[f] in flat_dict.keys():
             if filters[f] in procfarr.keys():
-                procfarr[filters[f]].append(outdir + 'proc' + os.path.basename(
-                    filenames[f].replace("'", "").replace(" ", "--").replace(".fts", ".fits")))
+                procfarr[filters[f]].append(outdir + proc_name(filenames[f]))
             else:
-                procfarr[filters[f]] = [outdir + 'proc' + os.path.basename(
-                    filenames[f].replace("'", "").replace(" ", "--").replace(".fts", ".fits"))]
+                procfarr[filters[f]] = [outdir + proc_name(filenames[f])]
 
     procfarr = dict((k, v) for k, v in procfarr.items() if v)
 

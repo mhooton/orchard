@@ -444,7 +444,7 @@ After a clean week of shadow reports. On appct as `speculoos`, in the daytime:
 2. **Crontab**: save it (`crontab -l > ~/crontab.backup.<date>`), add the four queue lines from
    `src/jobqueue/cron/crontab.live` (watchdog, watcher, look-back, daily report), remove any shadow lines, and
    comment out the five nightly lines (19:00 Io … 23:00 Artemis). Leave the 05:00 and 06:00 lines.
-   `crontab.live` is the whole proposed crontab, for reference.
+   `crontab.live` is now a copy of the whole crontab installed on appct, for reference.
 3. **Watch the first day**: `q status`, `queue/logs/watcher.log`, the P0 jobs' logs, `ESO_logs/`, and the usual
    pipeline emails, which now arrive in the afternoon. Io's nightly INCOMPLETE email stops. Every morning
    `queue/reports/report_<date>.md` lists, per telescope-night, when it was ready at ESO, when its download and
@@ -510,7 +510,9 @@ q release deploy --from /gaia_database/deploy_staging/main_<sha>/src --sha <sha>
 fails, and `--skip-tests` skips it), activates it, and brings the live tree up to it straight away if nothing
 runs from the live tree, else says what it is waiting for and leaves the update to the dispatcher. If the
 queue's own code changed it restarts the dispatcher (`q stop`; the watchdog starts the new one within 5
-minutes; running jobs carry on). The steps also run one at a time:
+minutes; running jobs carry on). The suite's temporary files (pytest's `--basetemp` and `TMPDIR`) go to
+`<release>/pytest-tmp` on the data disk and are removed when it ends, pass or fail; `tests.log` and `tests.json`
+stay in the release. The steps also run one at a time:
 
 ```bash
 q release build --from <stage>/src --sha <sha>   # or no --from: a snapshot of the live tree as it is
@@ -530,6 +532,28 @@ layout two runs would both write, say) still needs `q drain`, waiting for the ru
 **Data files in the tree** (`calibration/*.csv`, `utils/ml_40pc_v2.csv`) reach jobs with the next release. If
 one is edited in the live tree, snapshot it with `q release deploy` (no `--from`). The same goes for any
 hand edit in the live tree: until the next release, jobs do not see it.
+
+### Running the suite in orchard-server yourself
+
+**Always give pytest `--basetemp` and `TMPDIR` on `/data`, and delete them afterwards.** The container's root,
+`/tmp` included, is the overlay on appct's 20 GB `/var`, and `df` inside the container shows `/var`, not the data
+disk. A full suite leaves about 1.1 GB in `/tmp/pytest-of-unknown` and pytest keeps the last three runs. On
+2026-10-19 such runs filled `/var` twice, and production jobs 1877 and 1891 died with `Errno 28` in T9 and T10.
+The container has no pytest of its own: use the pylib, and run from the tree under test (`python -m` puts the
+working directory first on `sys.path`, and the container's default is the live tree). On appct, for a
+`git archive` stage in `mh_scratch/<dir>`:
+
+```bash
+docker exec orchard-server bash -c '
+  T=/data/SPECULOOSPipeline/mh_scratch/<dir>; P=$T/pytmp
+  mkdir -p $P/tmp && cd $T/src &&
+  TMPDIR=$P/tmp PYTHONPATH=/data/SPECULOOSPipeline/mh_scratch/k1-deploy-check/pylib:$T/src PYTHONDONTWRITEBYTECODE=1 \
+    nice -n 15 python -m pytest -q -p no:cacheprovider --basetemp=$P/basetemp tests jobqueue/tests
+  rm -rf $P'
+```
+
+`--basetemp` must be a directory of its own: pytest empties it when it starts. `q release test` and
+`q release deploy` do all of this themselves.
 
 ## Configuration
 
@@ -553,7 +577,9 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `releases_dir` | `<queue_root>/releases` | code releases; `current` is the one new jobs get |
 | `release_exclude` | see file | caches, logs, core dumps left out of a release (`/x` anchors at the tree's root) |
 | `test_pylib`, `test_paths` | `mh_scratch/k1-deploy-check/pylib`, `tests`, `jobqueue/tests` | `q release test` |
+| `test_tmp` | `<release>/pytest-tmp` | the suite's `--basetemp` and `TMPDIR` (`<test_tmp>/<release id>` if set), removed after each run; never the container's `/tmp` |
 | `minutes_per_1000_frames` | ANDOR 69, SPIRIT 22 | estimates (2026 production medians) |
+| `telescopes.<TEL>.force_platesolve` | true for Io, Europa, Ganymede, Callisto; false for Artemis | pipeline jobs pass `--force-platesolve`: T7 ignores the night's WCS cache, re-solves every frame and refreshes the cache rows ([wcs-cache.md](wcs-cache.md)). SSO stays forced until the cache is validated |
 | `watcher.*` | see file | stability, deadlines, `recent_days` = 5 |
 | `lookback.*` | 30 nights, 2 reruns/night | |
 | `notify.transport`, `notify.env_file`, `notify.to` | `outbox`, none, none | `smtp` also sends each message (see Notifications) |
@@ -588,7 +614,7 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `src/jobqueue/cli.py` | `q` |
 | `src/utils/promote.py`, `src/utils/promote_journal.py` | the promotion step and its journal ([promotion.md](promotion.md)) |
 | `src/jobqueue/cron/` | `queue-cron.sh`, `q`, `crontab.shadow`, `crontab.live` |
-| `src/jobqueue/tests/` | `pytest src/jobqueue/tests` |
+| `src/jobqueue/tests/` | `pytest src/jobqueue/tests`; in orchard-server, see [Running the suite in orchard-server yourself](#running-the-suite-in-orchard-server-yourself) |
 
 ## Limits and next steps
 

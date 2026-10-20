@@ -4,53 +4,26 @@ from astropy.io import fits
 import os
 from functools import partial
 import argparse
+import multiprocessing
 import timeit
 import astrom.find_pa
-from calibration.pipeutils import detect_instrument, get_instrument_parameters, open_fits_file
+from calibration.pipeutils import detect_instrument, get_instrument_parameters, open_fits_file, proc_name
 import fnmatch
 import shutil
 from astrom.twirl_speculoos import twirl_wcs
 from astrom.pointer_wcs import pointer_wcs
+from astrom import wcs_cache
 import warnings
 from astropy.io.fits.verify import VerifyWarning
 warnings.filterwarnings('ignore', category=VerifyWarning)
 
-def has_valid_wcs(header):
-    """
-    Check if header contains valid WCS data, not just WCS keywords.
-
-    Parameters
-    ----------
-    header : astropy.io.fits.Header
-        FITS header to check
-
-    Returns
-    -------
-    bool
-        True if header contains valid WCS data, False otherwise
-    """
-    # Check if CTYPE1 exists and has valid value
-    ctype1 = header.get('CTYPE1', '')
-    if ctype1 in ['nan', '', None] or str(ctype1).lower() == 'nan':
-        return False
-
-    # Check if reference values are reasonable (not zero/nan)
-    crval1 = header.get('CRVAL1', 0.0)
-    crval2 = header.get('CRVAL2', 0.0)
-    if crval1 == 0.0 or crval2 == 0.0:
-        return False
-
-    # Check if reference pixels are reasonable (not zero)
-    crpix1 = header.get('CRPIX1', 0.0)
-    crpix2 = header.get('CRPIX2', 0.0)
-    if crpix1 == 0.0 or crpix2 == 0.0:
-        return False
-
-    return True
+# The plate solver's generation, recorded in every WCS cache row (astrom/wcs_cache.py, docs/wcs-cache.md). Bump it
+# in any change that alters the solutions T7 writes (pointer_wcs's detection, catalogue query, matching or
+# acceptance, the twirl call), so cached solutions from the old solver are no longer used.
+SOLVER_EPOCH = 1
 
 
-def add_astrometry_with_timeout(infile, timeout, ext, db_path, raw_images, trim_offsets,
-                                total_files, file_num=None):
+def add_astrometry_with_timeout(infile, timeout, ext, db_path, total_files, file_num=None):
     """
     Wrapper that runs add_astrometry with a signal-based timeout.
 
@@ -64,10 +37,6 @@ def add_astrometry_with_timeout(infile, timeout, ext, db_path, raw_images, trim_
         File extension
     db_path : str
         Path to Gaia database
-    raw_images : list
-        List of raw image paths
-    trim_offsets : tuple
-        Trim offsets for CRPIX adjustment
     total_files : int
         Total number of files being processed
     file_num : int, optional
@@ -97,7 +66,7 @@ def add_astrometry_with_timeout(infile, timeout, ext, db_path, raw_images, trim_
     signal.alarm(timeout)
 
     try:
-        result = add_astrometry(infile, ext, db_path, raw_images, trim_offsets,
+        result = add_astrometry(infile, ext, db_path,
                                 file_num=file_num, total_files=total_files,
                                 progress=progress)
         signal.alarm(0)  # Cancel the alarm
@@ -158,6 +127,90 @@ def _partial_result(progress, error):
     return result
 
 
+def _read_list(path):
+    """The non-blank lines of a file list."""
+    with open(path) as f:
+        return [line.strip() for line in f if line.strip()]
+
+
+def raw_frames_by_proc(raw_list):
+    """{calibrated frame name: raw frame path} from T1's image list, by T6's naming rule (pipeutils.proc_name).
+    Read only: T7 never writes a raw frame."""
+    if not raw_list or not os.path.exists(raw_list):
+        return {}
+    by_proc = {}
+    for raw in _read_list(raw_list):
+        by_proc.setdefault(proc_name(raw), raw)
+    return by_proc
+
+
+def apply_cached_solutions(infiles, cache_path, raw_by_proc, run, force):
+    """Apply the night's cached solutions to the frames that have a usable one.
+
+    Returns (frames to solve, number applied, {frame: (raw name, validity fields)}). The fields are taken before
+    anything is solved and are what a new solve's cache row is keyed on. A failure of any kind costs only the
+    cache: the frame is solved instead."""
+    code = wcs_cache.code_identity()
+    entries = {}
+    if not force:
+        try:
+            entries = wcs_cache.load(cache_path)
+        except Exception as e:
+            print(f"WARNING: WCS cache not used: {e}", flush=True)
+    print(f"WCS cache: {cache_path} ({len(entries)} rows" +
+          (", ignored: --force-platesolve re-solves every frame and refreshes its row)" if force else ")"),
+          flush=True)
+
+    to_solve, frames, misses, applied = [], {}, {}, 0
+    for f in infiles:
+        try:
+            raw = raw_by_proc.get(os.path.basename(f))
+            if raw is None:
+                why = 'no raw frame'
+            else:
+                raw_name = os.path.basename(raw)
+                fields = dict(run, **wcs_cache.frame_fields(raw, fits.getheader(f)))
+                frames[f] = (raw_name, fields)
+                why = 'forced' if force else wcs_cache.check(entries.get(raw_name), fields, code)
+                if why is None:
+                    wcs_cache.apply(f, entries[raw_name][wcs_cache.CARDS], WCS_KEYWORDS)
+                    applied += 1
+                    continue
+        except Exception as e:
+            print(f"WARNING: WCS cache not used for {os.path.basename(f)}: {e}", flush=True)
+            why = 'unusable'
+        misses[why] = misses.get(why, 0) + 1
+        to_solve.append(f)
+
+    tally = ', '.join(f"{why} {n}" for why, n in sorted(misses.items(), key=lambda kv: -kv[1]))
+    print(f"WCS cache: {applied} frames from the cache, {len(to_solve)} to solve" +
+          (f" ({tally})" if tally else ""), flush=True)
+    return to_solve, applied, frames
+
+
+def store_new_solutions(cache_path, solved, frames, results):
+    """Write a cache row for every frame this run solved, from its header as now on disk: one read-change-write
+    of the night's table. Failed and timed-out frames get no row. Never raises."""
+    new = {}
+    for f, result in zip(solved, results):
+        if not (result and result.get('success', False)) or f not in frames:
+            continue
+        raw_name, fields = frames[f]
+        try:
+            cards = wcs_cache.cards_from_header(fits.getheader(f), WCS_KEYWORDS)
+            new[raw_name] = wcs_cache.make_entry(raw_name, fields, cards, matches=result.get('matches'),
+                                                 proc=os.path.abspath(f))
+        except Exception as e:
+            print(f"WARNING: no WCS cache row for {os.path.basename(f)}: {e}", flush=True)
+    if not new:
+        return
+    try:
+        written = wcs_cache.store(cache_path, new)
+        print(f"WCS cache: {written} rows written to {cache_path}", flush=True)
+    except Exception as e:
+        print(f"WARNING: WCS cache not updated ({cache_path}): {e}", flush=True)
+
+
 def main(args):
     import sys
     sys.stdout.flush()
@@ -169,64 +222,24 @@ def main(args):
     print(f"Extension: {args.ext}", flush=True)
     print(f"Force plate solve: {args.force_platesolve}", flush=True)
 
-    # Before the try block
-    infiles = []
-    print("About to process filelist...", flush=True)
-
-    total_files = 0
-    already_solved = 0
     newly_solved = 0
     failed_solve = 0
 
+    # A WCS already in a frame's header (Astra's, PinPoint's, ESO's, or orchard's copied into the raw frame by
+    # older code) never counts as solved: every frame is solved, or takes its own solution from the WCS cache.
     try:
-        with open(args.filelist) as filel:
-            # print("File opened successfully", flush=True)
-            for line in filel:
-                f = line.strip()
-                total_files += 1
-                # print(f"Found file in list: {f}", flush=True)
-                # print(f)
-                hdulist = fits.open(f)
-                # print(f"FITS file opened: {f}", flush=True)
-
-                has_wcs = has_valid_wcs(hdulist[0].header)
-
-                if args.force_platesolve:
-                    # Force mode: process all Light Frames
-                    infiles.append(f)
-                    # print(f"Added to infiles: {f}", flush=True)
-                    if has_wcs:
-                        already_solved += 1
-                else:
-                    # Normal mode: only process files without WCS
-                    if has_wcs:
-                        already_solved += 1
-                    else:
-                        infiles.append(f)
-                        # print(f"Added to infiles: {f}", flush=True)
-
-                hdulist.close()  # Add this to close the file properly
+        infiles = _read_list(args.filelist)
     except Exception as e:
         print("Importing Astrometry failed: " + str(e), flush=True)
-
+        infiles = []
+    total_files = len(infiles)
     print(f"Total files: {total_files}", flush=True)
-    print(f"Files to process: {len(infiles)}", flush=True)
-    if args.force_platesolve:
-        print(f"Files with existing WCS (will be overwritten): {already_solved}", flush=True)
-    else:
-        print(f"Files already solved (skipped): {already_solved}", flush=True)
-
-    # Read raw image list if provided
-    raw_images = []
-    if args.raw_list and os.path.exists(args.raw_list):
-        with open(args.raw_list) as f:
-            raw_images = [line.strip() for line in f if line.strip()]
+    if not infiles:
+        print("No frames to plate solve", flush=True)
+        return
 
     # Get parameters once from the first file in the list
-    with open(args.filelist) as filel:
-        first_filename = filel.readline().strip()
-
-    with open_fits_file(first_filename) as hdul:
+    with open_fits_file(infiles[0]) as hdul:
         params = get_instrument_parameters(hdul, trimmed=True)  # <-- Add trimmed=True
 
     # Extract trim offsets once
@@ -235,54 +248,70 @@ def main(args):
         trim_config = params['trim']
         trim_offsets = (trim_config.get('left_col', 0), trim_config.get('top_row', 0))
 
-    files_to_process = len(infiles)
+    # Solutions from earlier runs on this night (astrom/wcs_cache.py)
+    to_solve, from_cache, frames = infiles, 0, {}
+    use_cache = False
+    if args.wcs_cache:
+        raw_by_proc = raw_frames_by_proc(args.raw_list)
+        try:
+            run = wcs_cache.run_fields(args.db_path, trim_offsets, SOLVER_EPOCH)
+        except Exception as e:
+            print(f"WARNING: WCS cache not used: {e}", flush=True)
+        else:
+            if raw_by_proc:
+                use_cache = True
+                cache_start = timeit.default_timer()
+                to_solve, from_cache, frames = apply_cached_solutions(infiles, args.wcs_cache, raw_by_proc, run,
+                                                                      args.force_platesolve)
+                print(f"WCS cache: applied in {timeit.default_timer() - cache_start:.1f} s", flush=True)
+            else:
+                print(f"WARNING: WCS cache not used: no raw frames listed in {args.raw_list}", flush=True)
+    else:
+        print("WCS cache: none given", flush=True)
 
-    if int(args.nproc) > 1:
+    files_to_process = len(to_solve)
+    print(f"Files to process: {files_to_process}", flush=True)
+
+    if not to_solve:
+        results = []
+    elif int(args.nproc) > 1:
         # Parallel processing with timeout
-        from multiprocessing import Pool
-        from functools import partial
-
         print(f"Running in parallel mode with {args.nproc} processes", flush=True)
-        pool = Pool(processes=int(args.nproc))
+        pool = multiprocessing.Pool(processes=int(args.nproc))
 
         worker_func = partial(add_astrometry_with_timeout,
                               timeout=args.timeout,
                               ext=args.ext,
                               db_path=args.db_path,
-                              raw_images=raw_images,
-                              trim_offsets=trim_offsets,
                               total_files=files_to_process)
 
-        results = pool.map(worker_func, infiles)
+        results = pool.map(worker_func, to_solve)
         pool.close()
         pool.join()
-
-        # Count successes and failures
-        for result in results:
-            if result and result.get('success', False):
-                newly_solved += 1
-            else:
-                failed_solve += 1
     else:
         # Sequential processing with timeout
         print(f"Running in serial mode (nproc={args.nproc})", flush=True)
-        for i, infile in enumerate(infiles, 1):
-            result = add_astrometry_with_timeout(infile,
-                                                 timeout=args.timeout,
-                                                 ext=args.ext,
-                                                 db_path=args.db_path,
-                                                 raw_images=raw_images,
-                                                 trim_offsets=trim_offsets,
-                                                 total_files=files_to_process,
-                                                 file_num=i)
+        results = []
+        for i, infile in enumerate(to_solve, 1):
+            results.append(add_astrometry_with_timeout(infile,
+                                                       timeout=args.timeout,
+                                                       ext=args.ext,
+                                                       db_path=args.db_path,
+                                                       total_files=files_to_process,
+                                                       file_num=i))
 
-            if result and result.get('success', False):
-                newly_solved += 1
-            else:
-                failed_solve += 1
+    # Count successes and failures
+    for result in results:
+        if result and result.get('success', False):
+            newly_solved += 1
+        else:
+            failed_solve += 1
+
+    if use_cache:
+        store_new_solutions(args.wcs_cache, to_solve, frames, results)
 
     try:
-        for f in infiles:
+        for f in to_solve:
             new_f = f.replace(args.ext, 'new')
             f1 = f.replace(args.ext, 'axy')
             f2 = f.replace(args.ext, 'wcs')
@@ -336,11 +365,7 @@ def main(args):
     print("PLATE SOLVING SUMMARY")
     print("=" * 50)
     print(f"Total images in list: {total_files}")
-    if args.force_platesolve:
-        print(f"Images with existing WCS (overwritten): {already_solved}")
-        print(f"Images without existing WCS: {files_to_process - already_solved}")
-    else:
-        print(f"Images already plate solved (skipped): {already_solved}")
+    print(f"Images with a WCS from the cache: {from_cache}")
     print(f"Images processed: {files_to_process}")
     print(f"Successfully plate solved: {newly_solved}")
     print(f"Failed plate solving: {failed_solve}")
@@ -348,42 +373,6 @@ def main(args):
         print(f"Success rate: {newly_solved / files_to_process * 100:.1f}%")
     print("=" * 50)
 
-
-def find_raw_image(processed_path, raw_images):
-    """
-    Find the corresponding raw image for a processed image.
-
-    Parameters
-    ----------
-    processed_path : str
-        Path to the processed image (e.g., 'proc_IMAGE123.fits')
-    raw_images : list
-        List of raw image paths
-
-    Returns
-    -------
-    str or None
-        Path to corresponding raw image, or None if not found
-    """
-    processed_basename = os.path.basename(processed_path)
-
-    if processed_basename.startswith('proc'):
-        raw_basename_with_ext = processed_basename[4:]  # Remove 'proc' prefix
-    else:
-        raw_basename_with_ext = processed_basename
-
-    # Remove extension for matching
-    raw_basename_no_ext = os.path.splitext(raw_basename_with_ext)[0]
-
-    # Look for matching raw image (ignoring extension)
-    for raw_path in raw_images:
-        raw_file_basename = os.path.basename(raw_path)
-        raw_file_no_ext = os.path.splitext(raw_file_basename)[0]
-
-        if raw_file_no_ext == raw_basename_no_ext:
-            return raw_path
-
-    return None
 
 def get_trim_offsets(instrument):
     """
@@ -416,54 +405,7 @@ WCS_KEYWORDS = ['CTYPE1', 'CTYPE2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2',
                 'CDELT2', 'LONPOLE', 'LATPOLE', 'RADESYS']
 
 
-def copy_wcs_to_raw(processed_path, raw_path, trim_offsets):
-    """
-    Copy WCS headers from processed image to raw image.
-
-    Parameters
-    ----------
-    processed_path : str
-        Path to processed image with WCS solution
-    raw_path : str
-        Path to raw image to update
-    """
-    from calibration.pipeutils import get_instrument_parameters
-
-    # Use module-level WCS keywords
-    wcs_keywords = WCS_KEYWORDS
-
-    # Read WCS headers from processed image
-    with fits.open(processed_path) as processed_hdu:
-        processed_header = processed_hdu[0].header
-
-        # Extract WCS keywords
-        wcs_headers = {}
-        for keyword in wcs_keywords:
-            if keyword in processed_header:
-                wcs_headers[keyword] = processed_header[keyword]
-
-    x_offset, y_offset = trim_offsets
-
-    # Adjust CRPIX values for trimming
-    if 'CRPIX1' in wcs_headers:
-        wcs_headers['CRPIX1'] += x_offset
-    if 'CRPIX2' in wcs_headers:
-        wcs_headers['CRPIX2'] += y_offset
-
-    # Update raw image with WCS headers
-    with fits.open(raw_path, mode='update') as raw_hdu:
-        raw_header = raw_hdu[0].header
-
-        # Add WCS keywords to raw image
-        for keyword, value in wcs_headers.items():
-            raw_header[keyword] = value
-
-        # # Log the adjustment for debugging
-        # if x_offset != 0 or y_offset != 0:
-        #     print(f"Debug: Adjusted CRPIX by ({x_offset}, {y_offset}) using config-based trim offsets")
-
-def add_astrometry(f, ext, db_path, raw_images, trim_offsets, file_num=None, total_files=None,
-                   progress=None):
+def add_astrometry(f, ext, db_path, file_num=None, total_files=None, progress=None):
     if fnmatch.fnmatch(f, '*.' + ext):
         file = f
         # print("Add astrometry.net data to header of file: " + file)
@@ -472,15 +414,6 @@ def add_astrometry(f, ext, db_path, raw_images, trim_offsets, file_num=None, tot
         # result = twirl_wcs(str(file), verbose=False)
         result = pointer_wcs(str(file), db_path, wcs_keywords=WCS_KEYWORDS, clear_existing_wcs=True,
                              verbose=False, progress=progress)
-
-        # If successful and raw images provided, update raw image with WCS
-        if result['success'] and raw_images:
-            raw_file = find_raw_image(file, raw_images)
-            if raw_file:
-                try:
-                    copy_wcs_to_raw(file, raw_file, trim_offsets)
-                except Exception as e:
-                    print(f"Warning: Failed to update raw image {raw_file}: {e}")
 
         # Create summary line
         filename = os.path.basename(file)
@@ -502,6 +435,7 @@ def add_astrometry(f, ext, db_path, raw_images, trim_offsets, file_num=None, tot
                        f"Sources: {_n('sources_detected')}→{_n('sources_used')} "
                        f"Gaia: {_n('gaia_queried')}→{_n('gaia_used')} "
                        f"Matches: {_n('matches')} "
+                       f"Method: {result.get('method') or '?'} "
                        f"CRPIX=({crpix1:.2f},{crpix2:.2f}) "
                        f"CRVAL=({crval1:.6f},{crval2:.6f})")
         else:
@@ -569,9 +503,12 @@ if __name__ == '__main__':
                         help='Number of parallel processes (default: 1)')
     parser.add_argument('-e', '--ext')
     parser.add_argument('-d', '--db_path')
-    parser.add_argument('-r', '--raw-list', help='Path to raw image list file')
+    parser.add_argument('-r', '--raw-list',
+                        help="T1's raw image list: matches each frame to its raw frame for the WCS cache (read only)")
+    parser.add_argument('-w', '--wcs-cache',
+                        help="this night's WCS cache table (ZLP: <BASEDIR>/PipelineOutput/wcs_cache/<TEL>/<night>.ecsv)")
     parser.add_argument('-f', '--force-platesolve', action='store_true',
-                        help='Force plate solving even for images that already have WCS')
+                        help='Ignore the WCS cache: solve every frame and refresh its cache row')
     parser.add_argument('-t', '--timeout', type=int, default=60,
                         help='Timeout per image in seconds (default: 60)')
     main(parser.parse_args())

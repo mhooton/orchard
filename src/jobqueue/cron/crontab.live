@@ -1,29 +1,23 @@
 SHELL=/bin/bash
-# Proposed speculoos crontab on appct once nightly processing goes through the queue (decisions Q3, Q4).
-# Times are appct local time (Europe/London). The five nightly lines are kept, commented out, for rollback:
-# to roll back, uncomment them and comment out the four queue lines (or reinstall the saved crontab).
-#
-# --- orchard job queue (live) ---
-# keep one dispatcher running inside orchard-server; starts the container only if it is down
+# --- orchard job queue, live since 2026-10-09 (docs/job-queue.md in mhooton/orchard) ---
 */5 * * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh watchdog
-# ESO watcher: queue each night's download and pipeline as soon as its frames are at ESO (Artemis: its raw directory)
 */30 11-23 * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh watch
-# 30-night look-back: fetch late frames add-only, rerun nights that gained frames or have no light curves (P1)
 15 21 * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh lookback
-# daily report: /export/data/SPECULOOSPipeline/queue/reports/report_<date>.md
 30 7 * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh report
-# notifier: incident alerts every 30 min, and the morning digest after the report. Both only write to
-# queue/notify/outbox until notify.transport is 'smtp' in queue/config.json (docs/job-queue.md, Notifications)
-10,40 * * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh alerts
-45 7 * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh digest
-#
-# --- replaced by the queue (rollback: uncomment) ---
+# --- the five nightly lines below were replaced by the job queue on 2026-10-09. Rollback: crontab ~/crontab.backup.20261009 ---
 #00 19 * * * source /home/speculoos/.bashrc; ulimit -u 2061801; docker-compose -f /appct/data/speculoos/orchard/docker/docker-compose.server.yml up -d; docker exec orchard-server bash -c "python download/SSO_download.py --dir /data/SPECULOOSPipeline --telescope Io --sdate $(date -d '-1 day'  +\%Y\%m\%d) --edate $(date -d 'today'  +\%Y\%m\%d) --max-retries 25" > "/appct/data/SPECULOOSPipeline/ESO_logs/$(date -d '-1 day'  +\%Y\%m\%d)Io.log" 2>&1 && docker exec orchard-server bash -c "./main/ZLP_pipeline.sh --force-platesolve 1 /data/SPECULOOSPipeline $(date -d '-1 day'  +\%Y\%m\%d) 8 2 Io"
 #00 20 * * * source /home/speculoos/.bashrc; ulimit -u 2061801; docker-compose -f /appct/data/speculoos/orchard/docker/docker-compose.server.yml up -d; docker exec orchard-server bash -c "python download/SSO_download.py --dir /data/SPECULOOSPipeline --telescope Europa --sdate $(date -d '-1 day'  +\%Y\%m\%d) --edate $(date -d 'today'  +\%Y\%m\%d) --max-retries 25" > "/appct/data/SPECULOOSPipeline/ESO_logs/$(date -d '-1 day'  +\%Y\%m\%d)Europa.log" 2>&1 && docker exec orchard-server bash -c "./main/ZLP_pipeline.sh --force-platesolve 1 /data/SPECULOOSPipeline $(date -d '-1 day'  +\%Y\%m\%d) 8 2 Europa"
 #00 21 * * * source /home/speculoos/.bashrc; ulimit -u 2061801; docker-compose -f /appct/data/speculoos/orchard/docker/docker-compose.server.yml up -d; docker exec orchard-server bash -c "python download/SSO_download.py --dir /data/SPECULOOSPipeline --telescope Ganymede --sdate $(date -d '-1 day'  +\%Y\%m\%d) --edate $(date -d 'today'  +\%Y\%m\%d) --max-retries 25" > "/appct/data/SPECULOOSPipeline/ESO_logs/$(date -d '-1 day'  +\%Y\%m\%d)Ganymede.log" 2>&1 && docker exec orchard-server bash -c "./main/ZLP_pipeline.sh --force-platesolve 1 /data/SPECULOOSPipeline $(date -d '-1 day'  +\%Y\%m\%d) 8 2 Ganymede"
 #00 22 * * * source /home/speculoos/.bashrc; ulimit -u 2061801; docker-compose -f /appct/data/speculoos/orchard/docker/docker-compose.server.yml up -d; docker exec orchard-server bash -c "python download/SSO_download.py --dir /data/SPECULOOSPipeline --telescope Callisto --sdate $(date -d '-1 day'  +\%Y\%m\%d) --edate $(date -d 'today'  +\%Y\%m\%d) --max-retries 25" > "/appct/data/SPECULOOSPipeline/ESO_logs/$(date -d '-1 day'  +\%Y\%m\%d)Callisto.log" 2>&1 && docker exec orchard-server bash -c "./main/ZLP_pipeline.sh --force-platesolve 1 /data/SPECULOOSPipeline $(date -d '-1 day'  +\%Y\%m\%d) 8 2 Callisto"
 #00 23 * * * source /home/speculoos/.bashrc; ulimit -u 2061801; docker-compose -f /appct/data/speculoos/orchard/docker/docker-compose.server.yml up -d; docker exec orchard-server bash -c "./main/ZLP_pipeline.sh 1 /data/SPECULOOSPipeline $(date -d '-1 day'  +\%Y\%m\%d) 8 2 Artemis"
-#
-# --- unchanged ---
-00 06 * * * source /home/speculoos/.bashrc; ulimit -u 2061801; docker-compose -f /appct/data/speculoos/orchard/docker/docker-compose.server.yml up -d; docker exec orchard-server bash -c "python reporting/total_hours.py" > "/home/speculoos/total_hours.out"
-00 05 * * * source /home/speculoos/.bashrc; ulimit -u 2061801; python2.7 /appct/data/SPECULOOSPipeline/Pipeline_v2/scripts/qualitychecks/completeness_check.py -f=completeness_check -d=/appct/data/SPECULOOSPipeline/ -v=v2
+# 2026-10-20: the 06:00 and 05:00 lines no longer source ~/.bashrc (it reached appcg and appcs NFS mounts).
+# 06:00 no longer runs docker-compose: the container restarts itself and the queue watchdog brings it up.
+# 05:00 runs reporting/completeness_check.py, orchard's Python 3 port of Pipeline_v2/scripts/qualitychecks/
+# completeness_check.py, inside orchard-server; it still writes /data/SPECULOOSPipeline/completeness_check.
+00 06 * * * ulimit -u 2061801; docker exec orchard-server bash -c "python reporting/total_hours.py" > "/home/speculoos/total_hours.out"
+00 05 * * * ulimit -u 2061801; docker exec orchard-server python /opt/orchard/src/reporting/completeness_check.py -f=completeness_check -d=/data/SPECULOOSPipeline/ -v=v2
+
+# notifier (PR #43, installed 2026-10-18): incident alerts every 30 min, and the morning digest. Both only write to
+# queue/notify/outbox until notify.transport is smtp in queue/config.json (docs/job-queue.md, Notifications)
+10,40 * * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh alerts
+45 7 * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh digest
