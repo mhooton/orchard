@@ -526,9 +526,16 @@ Sorts raw nightly observations into science targets and calibration frames based
 {run}_bias.list              # Bias frames
 {run}_dark.list              # Dark frames
 {run}_flat_{filter}.list     # Flat fields per filter
+{run}_calib_selection.json   # Which night each calibration came from, and why
 ```
 
 **Handles:** Multiple image extensions (.fits, .fts, .fz, .bz2), target name sanitisation, filter-specific organisation.
+
+**Calibration frames** come from the calibration register (`src/calibration/calregister.py`, one SQLite
+file under the data root): for each type the nearest compatible night on either side, never another
+camera, configuration or readout mode, never several nights combined (`src/calibration/calselect.py`).
+T1 registers its own night first and stops with an error when nothing can calibrate the night. See
+[docs/calibration-register.md](docs/calibration-register.md).
 
 ---
 

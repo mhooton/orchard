@@ -709,11 +709,12 @@ def _scan(args):
 
 
 def build_night_rows(telescope, night_dir, night_path, relpaths, science_relpaths=(), method='night', workers=4,
-                     throttle=None, n_files=None, executor=None, log=print):
+                     throttle=None, n_files=None, executor=None, preread=None, log=print):
     """(night row, frame rows) for one night: reads the given candidate files (and science samples).
 
     Frames are read by `workers` threads, or by the builder's process pool (`executor`): the scan is mostly
     Python (headers, sigma-clipped overscan statistics), so threads cannot run more than ~15 frames a second.
+    preread: (infos of relpaths, infos of science_relpaths) the builder already read in a batch of nights.
     """
     night = night_of(night_dir)
     scanned_at = utcnow_iso()
@@ -737,8 +738,12 @@ def build_night_rows(telescope, night_dir, night_path, relpaths, science_relpath
         return [finish(r, i) for r, i in zip(rels, infos)]
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        infos = read_all(pool, relpaths)
-        sci = read_all(pool, science_relpaths, stats=False)
+        if preread is not None:
+            infos = [finish(r, i) for r, i in zip(relpaths, preread[0])]
+            sci = [finish(r, i) for r, i in zip(science_relpaths, preread[1])]
+        else:
+            infos = read_all(pool, relpaths)
+            sci = read_all(pool, science_relpaths, stats=False)
         missed = [s['relpath'] for s in sci if s.get('kind') in KINDS]
         if missed:
             log('{} {}: {} sampled frame(s) the prefilter skipped are calibration frames, e.g. {}'.format(
@@ -966,7 +971,36 @@ def build(register, basedir, telescopes, eso_index=None, since=None, until=None,
 
 
 def _build(register, basedir, telescopes, eso_types, cubes, executor, since, until, rescan, nights, totals,
-           t_start, log):
+           t_start, log, batch_files=400):
+    batch = []
+
+    def flush():
+        # read the frames of several nights in one go, so no process waits for one night's slowest frame
+        tasks = []
+        for tel, nd, path, relpaths, cands, samples in batch:
+            night = night_of(nd)
+            tasks += [(os.path.join(path, r), tel, night, True) for r in cands]
+            tasks += [(os.path.join(path, r), tel, night, False) for r in samples]
+        infos = list(executor.map(_scan, tasks, chunksize=2)) if tasks else []
+        i = 0
+        for tel, nd, path, relpaths, cands, samples in batch:
+            got_cal = infos[i:i + len(cands)]
+            got_sci = infos[i + len(cands):i + len(cands) + len(samples)]
+            i += len(cands) + len(samples)
+            night_row, rows = build_night_rows(tel, nd, path, cands, samples, method='build',
+                                               n_files=len(relpaths), executor=executor,
+                                               preread=(got_cal, got_sci), log=log)
+            register.put_night(night_row, rows)
+            totals['nights'] += 1
+            totals['files_read'] += len(cands) + len(samples)
+            totals['cal'] += len(rows)
+            if totals['nights'] % 50 == 0:
+                el = time.time() - t_start
+                log('{} {}: {} nights, {} files read ({:.0f}/s), {} calibration frames'.format(
+                    tel, nd, totals['nights'], totals['files_read'],
+                    totals['files_read'] / max(el, 1e-6), totals['cal']))
+        del batch[:]
+
     for telescope in telescopes:
         images = os.path.join(basedir, 'Observations', telescope, 'images')
         try:
@@ -991,17 +1025,10 @@ def _build(register, basedir, telescopes, eso_types, cubes, executor, since, unt
                 continue
             cands = candidate_paths(telescope, night_dir, relpaths, eso_types, cubes)
             samples = science_samples(relpaths, cands)
-            night_row, rows = build_night_rows(telescope, night_dir, path, cands, samples, method='build',
-                                               n_files=len(relpaths), executor=executor, log=log)
-            register.put_night(night_row, rows)
-            totals['nights'] += 1
-            totals['files_read'] += len(cands) + len(samples)
-            totals['cal'] += len(rows)
-            if totals['nights'] % 50 == 0:
-                el = time.time() - t_start
-                log('{} {}: {} nights, {} files read ({:.0f}/s), {} calibration frames'.format(
-                    telescope, night_dir, totals['nights'], totals['files_read'],
-                    totals['files_read'] / max(el, 1e-6), totals['cal']))
+            batch.append((telescope, night_dir, path, relpaths, cands, samples))
+            if sum(len(b[4]) + len(b[5]) for b in batch) >= batch_files:
+                flush()
+    flush()
 
 
 def reflag(register, telescope=None, log=print):

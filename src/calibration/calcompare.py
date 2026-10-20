@@ -237,14 +237,14 @@ def _brief(e):
     return {'night': e['night'], 'delta_days': e['delta_days'], 'n': e['n']}
 
 
-def compare(register, basedir, telescopes, versions=('v2', 'v3'), science=None, log=print):
+def compare(register, basedir, telescopes, versions=('v2', 'v3'), science=None, only=None, log=print):
     results = []
     for tel in telescopes:
         view = TelescopeView(register, tel)
         for v in versions:
             outdir = os.path.join(basedir, 'PipelineOutput', v, tel, 'output')
             try:
-                nights = sorted(d for d in os.listdir(outdir) if cr.NIGHT_DIR.match(d))
+                nights = sorted(d for d in os.listdir(outdir) if cr.NIGHT_DIR.match(d) and (not only or d in only))
             except OSError:
                 continue
             n = 0
@@ -267,7 +267,10 @@ def load_science(path):
     with open(path) as f:
         for r in csv.DictReader(f):
             key = (r['telescope'], r['night'])
-            e = cr.exposure_key(float(r['exposure']))
+            try:
+                e = cr.exposure_key(float(r['exposure']))
+            except ValueError:
+                continue  # ESO rows without an exposure time
             out.setdefault(key, {})
             out[key][e] = out[key].get(e, 0) + int(r['n'])
     return out
@@ -376,6 +379,7 @@ def main(argv=None):
     c.add_argument('--out', required=True)
     c.add_argument('--science')
     c.add_argument('--telescopes', default='Io,Europa,Ganymede,Callisto,Artemis')
+    c.add_argument('--nights', help='comma-separated night directories (default: all)')
     a = p.parse_args(argv)
     log = lambda m: print(m, flush=True)
     if a.cmd == 'eso-science' and a.nights_from:
@@ -389,7 +393,8 @@ def main(argv=None):
         if a.cmd == 'eso-science':
             eso_science(reg, a.out, a.env, log=log)
         else:
-            res = compare(reg, a.basedir, a.telescopes.split(','), science=load_science(a.science), log=log)
+            res = compare(reg, a.basedir, a.telescopes.split(','), science=load_science(a.science),
+                          only=set(a.nights.split(',')) if a.nights else None, log=log)
             s = write_report(res, a.out)
             log(json.dumps({k: len(v) if isinstance(v, list) else sum(v.values()) for k, v in s.items()}))
     finally:

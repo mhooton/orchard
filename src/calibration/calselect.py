@@ -11,7 +11,7 @@ tie), among the nights whose frames are compatible with the science frames:
     ASTRAROT/ASTRAMIR) - a master of another shape would be left out by T2-T6 with only a warning;
   - bias and darks: the same readout mode (calibration/readout.py), and darks a detector temperature within
     DARK_TEMP_TOLERANCE of the science frames';
-  - enough usable frames (calregister.flag_night): MIN_BIAS, MIN_DARK, MIN_FLAT per filter.
+  - enough usable frames (calregister.flag_night): MIN_BIAS (per instrument), MIN_DARK, MIN_FLAT per filter.
 
 Darks for an instrument with dark_matching_exptime (SPIRIT) are chosen per science exposure time (rounded to
 seconds, as pipered.py matches them), MIN_DARK frames at that exposure; one night that covers every exposure is
@@ -31,7 +31,11 @@ import numpy as np
 
 from calibration import calregister as cr
 
-MIN_BIAS = 5
+# bias frames a night needs: Andor nights take 6-14 (the overscan removes the level, the master is a structure
+# template, so a neighbour's 6-14 beat a night's own 2-4); SPIRIT nights of 2025-26 take 1-3, and its bias, the
+# zero level of a camera without overscan, cancels against exposure-matched darks anyway (the old threshold, 2)
+MIN_BIAS = {'spirit': 2}
+MIN_BIAS_DEFAULT = 5
 MIN_DARK = 3
 MIN_FLAT = 4
 COVERING_SLACK_DAYS = 3
@@ -223,11 +227,14 @@ class Chooser:
 
     # ---- the types
 
+    def min_bias(self):
+        return MIN_BIAS.get(self.profile.get('instrument'), MIN_BIAS_DEFAULT)
+
     def bias(self):
-        got = self.pick(self.candidates('bias'), MIN_BIAS)
+        got = self.pick(self.candidates('bias'), self.min_bias())
         if got is None:
             self.errors.append('no night in this epoch has {} usable {} bias frames in readout mode {}'.format(
-                MIN_BIAS, self.profile['config'], self.profile.get('readmode')))
+                self.min_bias(), self.profile['config'], self.profile.get('readmode')))
             return None
         nd, ok = got
         return self.entry(nd, ok, readmode=ok[0][0].get('readmode'))
@@ -322,6 +329,21 @@ class Chooser:
             by_exp['any'] = {'night': nd, 'delta_days': _delta(ok[0][0]['night'], self.night), 'n': len(ok),
                              'ccd_temp': median_temp([m for m, _ in ok]),
                              'exposures': sorted({cr.exposure_key(m.get('exptime')) for m, _ in ok})}
+        # the primary night's darks at the exposures no science frame needs are kept too, as the old lists kept
+        # all of a night's darks: MasterDark.fits, which pipeflat.py scales to every flat and pipered.py to an
+        # unmatched exposure, stays the night's longest (best-measured) master.  An exposure already taken from
+        # another night is not added, so no master combines two nights.
+        extra = []
+        if best:
+            primary = covering or best[max(sorted(best), key=lambda e: self.profile['exposures'][e])][0]
+            for e2, members in sorted(by_night.get(primary, {}).items()):
+                if e2 in best:
+                    continue
+                paths = [self.resolve(m) for m in members]
+                extra += [p for p in paths if p]
+                if any(paths):
+                    by_exp.setdefault('extra', {'night': primary, 'exposures': []})['exposures'].append(e2)
+            frames += extra
         if missing:
             self.flags.append('no darks at {} s within {:.0f} C in this epoch: T6 subtracts the highest-exposure '
                               'master dark scaled to those exposures'.format(
@@ -367,7 +389,9 @@ def select(register, telescope, night_dir, images_root, tonight_rows, science, s
     record['errors'] non-empty means the night cannot be calibrated."""
     profile = science_profile(science, science_readmodes)
     record = {'telescope': telescope, 'night': night_dir, 'register': getattr(register, 'path', None),
-              'rules_version': cr.RULES_VERSION, 'minimum': {'bias': MIN_BIAS, 'dark': MIN_DARK, 'flat': MIN_FLAT},
+              'rules_version': cr.RULES_VERSION,
+              'minimum': {'bias': MIN_BIAS.get((science_profile(science) or {}).get('instrument'), MIN_BIAS_DEFAULT),
+                          'dark': MIN_DARK, 'flat': MIN_FLAT},
               'profile': profile, 'flags': [], 'errors': [], 'stale_nights': []}
     if profile is None:
         record['errors'].append('no readable science frames')
@@ -421,9 +445,15 @@ def describe(record):
     d = record.get('dark')
     if d and 'by_exposure' in d:
         for k, e in sorted(d['by_exposure'].items(), key=lambda kv: (kv[0] == 'any', kv[0].zfill(6))):
+            if k == 'extra':
+                continue
             one('dark {}{}'.format(k, '' if k == 'any' else ' s'), e)
         if d.get('covering_night'):
             lines.append('  dark: one night covers every exposure: {}'.format(d['covering_night']))
+        if 'extra' in d['by_exposure']:
+            x = d['by_exposure']['extra']
+            lines.append('  dark: also {}\'s darks at {} s (no science frame needs them; the longest becomes '
+                         'MasterDark.fits)'.format(x['night'], ', '.join(str(e) for e in x['exposures'])))
     else:
         one('dark', d)
     for f, e in sorted((record.get('flat') or {}).items()):
@@ -468,8 +498,9 @@ def report_line(record):
     parts.append(fmt('bias', record.get('bias')))
     d = record.get('dark')
     if d and 'by_exposure' in d:
-        nights = sorted({e['night'] for e in d['by_exposure'].values()})
-        ds = [e['delta_days'] for e in d['by_exposure'].values()]
+        chosen = [e for k, e in d['by_exposure'].items() if k != 'extra']
+        nights = sorted({e['night'] for e in chosen})
+        ds = [e['delta_days'] for e in chosen]
         worst = max(ds, key=abs) if ds else 0
         parts.append('dark {}{}'.format('/'.join(nights) or 'none',
                                         '' if worst == 0 else ' (max {:+d} d)'.format(worst)))

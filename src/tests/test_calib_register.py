@@ -201,6 +201,22 @@ def test_register_replaces_a_night_and_refuses_to_be_created_by_t1(tmp_path):
     reg.close()
 
 
+def test_build_reads_candidates_with_a_process_pool_and_resumes(tmp_path):
+    root = tmp_path
+    for n in ('20180301', '20180302'):
+        d = root / 'Observations/Io/images' / n
+        for i in range(2):
+            write_frame(str(d / 'Calibration/Bias-{}.fts'.format(i)), 'Bias Frame', 0.0)
+        write_frame(str(d / 'Sp0000+0000-S001-R001-C001-I+z.fts'), 'Light Frame', 500.0, obj='Sp0000+0000')
+    reg = cr.Register(str(root / 'reg.sqlite'), create=True, check_local=False)
+    t = cr.build(reg, str(root), ['Io'], workers=2, log=lambda *a: None)
+    assert t['nights'] == 2 and t['cal'] == 4 and len(reg.frames('Io')) == 4
+    sci = json.loads(reg.night('Io', '20180301')['science'])
+    assert list(sci) == ['2048x2088 b1x1 maxim:Rotate 90 CCW'] and reg.night('Io', '20180301')['detector'] == '13.5um'
+    assert cr.build(reg, str(root), ['Io'], workers=2, log=lambda *a: None)['skipped'] == 2
+    reg.close()
+
+
 def test_readonly_register_is_not_written(tmp_path, monkeypatch):
     path = str(tmp_path / 'reg.sqlite')
     cr.Register(path, create=True, check_local=False).close()
@@ -328,6 +344,13 @@ def spirit_darks(night, exposures, k=3, ccd_temp=-60.0):
                 for e in exposures), [])
 
 
+def test_spirit_needs_fewer_bias_frames_than_andor():
+    rows = many('20250407', 'bias', 2, readmode='DEFAULT') + many('20250401', 'bias', 9, readmode='DEFAULT')
+    assert chooser(rows, profile=SPIRIT_PROFILE).bias()['night'] == '20250407'
+    rows = many('20250407', 'bias', 2) + many('20250401', 'bias', 9)
+    assert chooser(rows).bias()['night'] == '20250401'
+
+
 def test_spirit_darks_per_exposure_and_temperature():
     rows = (spirit_darks('20250407', [10]) + spirit_darks('20250405', [60]) + spirit_darks('20250406', [60],
                                                                                             ccd_temp=-50.0))
@@ -353,12 +376,25 @@ def test_spirit_prefers_one_night_covering_every_exposure_within_a_few_days():
     assert d['covering_night'] == '20250405' and d['missing_exposures'] == [3]
 
 
+def test_spirit_keeps_the_primary_nights_other_exposures_but_never_mixes_nights():
+    rows = spirit_darks('20250407', [10, 60, 120]) + spirit_darks('20250406', [30])
+    profile = dict(SPIRIT_PROFILE, exposures={10: 100, 60: 50})
+    d = chooser(rows, profile=profile, dark_matching=True).darks()
+    assert d['by_exposure']['extra'] == {'night': '20250407', 'exposures': [120]}
+    assert len(d['frames']) == 9 and not any('20250406' in f for f in d['frames'])
+    # an exposure taken from another night is not topped up from the primary night
+    rows = spirit_darks('20250407', [10, 60]) + spirit_darks('20250406', [10, 60, 120]) \
+        + many('20250407', 'dark', 3, exptime=60, readmode='DEFAULT', instrument='spirit', usable=0)
+    d = chooser(rows, profile=dict(profile, exposures={10: 100, 60: 50}), dark_matching=True).darks()
+    assert {e['night'] for k, e in d['by_exposure'].items() if k != 'extra'} == {'20250407'}
+
+
 def test_spirit_exposure_without_darks_is_flagged_not_dropped():
     rows = spirit_darks('20250407', [10, 120])
     c = chooser(rows, profile=SPIRIT_PROFILE, dark_matching=True)
     d = c.darks()
     assert d['missing_exposures'] == [60] and any('60 s' in f for f in c.flags) and not c.errors
-    assert len(d['frames']) == 3
+    assert len(d['frames']) == 6 and d['by_exposure']['extra']['exposures'] == [120]   # the scaled fallback
     c = chooser(spirit_darks('20250407', [120]), profile=SPIRIT_PROFILE, dark_matching=True)
     d = c.darks()
     assert 'any' in d['by_exposure'] and d['missing_exposures'] == [10, 60] and not c.errors
@@ -471,6 +507,7 @@ def test_createlists_job_1043_never_takes_andor_flats(callisto_archive, monkeypa
     assert rec['dark']['by_exposure']['10']['night'] == '20250407'
     assert rec['dark']['by_exposure']['60']['night'] == '20250405'
     assert len(lists['1_dark.list']) == 10 and len(lists['1_bias.list']) == 5
+    assert 'extra' not in rec['dark']['by_exposure']
     # the night's own frames were registered by T1
     reg = cr.open_existing(cr.default_register_path(str(callisto_archive)), readonly=True)
     assert reg.night('Callisto', '20250407')['method'] == 't1'
