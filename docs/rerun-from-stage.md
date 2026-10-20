@@ -73,8 +73,9 @@ masters of T2-T4). Every stage also adds rows to `reports/Pipeline_Report` and w
 **Why restage stops at T10.** From T9 back, a rerun edits the calibrated frames in place: T7 writes WCS into them,
 and `wcsfit` (T8's stacked frames, T9's every frame) rewrites their headers. A hard link shares one file between v2
 and the rerun, so an in-place edit would change v2's frame too; such a rerun needs its own copy of every frame
-(4-19 GB per target-night here), and then costs nearly what a run from raw does. `utils/stages.py` marks those
-inputs as copies, and `restage.py` refuses a rerun from T9 or earlier.
+(1-19 GB per target-night here), and its overlay replaces the frames and their per-frame files as well.
+`utils/stages.py` marks those inputs as copies, and `restage.py` refuses a rerun from T9 or earlier until that
+path is built and tried. What it would save (T1-T8, including T7's plate solving) has not been measured.
 
 ## `--from_TN` and the log
 

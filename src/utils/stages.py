@@ -245,8 +245,8 @@ def restage_inputs(first):
     """What a rerun from `first` needs in the night's reduction and the target directory, made by the stages before
     it: [(scope, pattern, made_by, link)], one per (scope, pattern). link: no stage of the rerun edits the file in
     place, so v2's own file can be shared by a hard link; otherwise it must be a copy. From T10 on, every input can be
-    shared. From T9 back, the calibrated frames get new WCS headers (wcsfit writes into the file), so a rerun would
-    need its own copy of every frame: a full rerun costs little more."""
+    shared. From T9 back, the calibrated frames get new WCS headers (wcsfit writes into the file), so a rerun needs
+    its own copy of every frame; restage.py does not do that yet."""
     edited = [(e.scope, e.pattern) for n in rerun_stages(first) for e in STAGES[n].edits]
     out, seen = [], set()
     for n in rerun_stages(first):
