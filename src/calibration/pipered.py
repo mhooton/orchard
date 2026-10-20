@@ -5,7 +5,7 @@ import os
 import numpy as np
 from astropy.io import fits as pyfits
 from calibration.pipeutils import (get_instrument_parameters, apply_image_slice, clean_bad_pixels, open_fits_file,
-                                   create_dark_dict, create_flat_dict, frame_telescope)
+                                   create_dark_dict, create_flat_dict, frame_telescope, proc_name)
 from calibration import readout
 from calibration.smear import correct_frame
 from utils import orchard_version
@@ -23,7 +23,7 @@ def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, 
                 readout_record=None):
 
     path, fname = os.path.split(filename)
-    outname = outdir + 'proc' + fname.replace("'", "").replace(" ", "--").replace(".fts", ".fits")
+    outname = outdir + proc_name(fname)
 
     # try:
     with open_fits_file(filename) as hdulist:
@@ -256,11 +256,9 @@ def reducer(inlist, outdir, biasname, darknames, flatnames, bpmname, reddir, ver
         # if we have a flat for this filter
         if filters[f] in flat_dict.keys():
             if filters[f] in procfarr.keys():
-                procfarr[filters[f]].append(outdir + 'proc' + os.path.basename(
-                    filenames[f].replace("'", "").replace(" ", "--").replace(".fts", ".fits")))
+                procfarr[filters[f]].append(outdir + proc_name(filenames[f]))
             else:
-                procfarr[filters[f]] = [outdir + 'proc' + os.path.basename(
-                    filenames[f].replace("'", "").replace(" ", "--").replace(".fts", ".fits"))]
+                procfarr[filters[f]] = [outdir + proc_name(filenames[f])]
 
     procfarr = dict((k, v) for k, v in procfarr.items() if v)
 

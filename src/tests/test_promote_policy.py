@@ -152,3 +152,21 @@ def test_frame_losses_reads_the_targets_own_section_and_the_last_attempt(tmp_pat
     assert (a['solved'], a['data'], a['processing']) == (1, 1, 1)
     assert pp.frame_losses(str(log), 'SpB')['processing'] == 1
     assert pp.frame_losses(str(tmp_path / 'missing.log'), 'SpA') is None
+
+
+def test_frame_losses_counts_trailed_frames_as_the_sky(tmp_path):
+    # pointer_wcs's wording for a telescope that stopped tracking, and for a frame its solvers could not verify;
+    # a solved line now carries its method
+    log = tmp_path / 'x.log'
+    log.write_text('\n'.join([
+        'TARGET: SpA',
+        '[1/3] procA.fits FAILED - Sources: 372→16 Gaia: 270→32 Matches: 0 Error: Sources trailed (axis ratio 3.1, '
+        'all one way), the telescope was probably not tracking; twirl: Plate scale sanity check failed: '
+        'solved=40.313 arcsec/px, expected=0.348 arcsec/px, deviation=11484.0%',
+        '[2/3] procB.fits FAILED - Sources: 230→16 Gaia: 75→32 Matches: 0 Error: No verified solution (best 5 of '
+        '100 sources on catalogue stars); twirl: Plate scale sanity check failed: solved=38.135 arcsec/px',
+        '[3/3] procC.fits SUCCESS - Sources: 218→100 Gaia: 75→61 Matches: 48 Method: pairs CRPIX=(1,2) '
+        'CRVAL=(3,4)',
+    ]) + '\n', encoding='utf-8')
+    a = pp.frame_losses(str(log), 'SpA')
+    assert (a['solved'], a['data'], a['processing']) == (1, 1, 1)
