@@ -107,7 +107,7 @@ def test_a_rerun_from_t9_copies_the_frames_it_edits_and_links_what_it_reads():
     assert (stages.TARGET, '*_{night}_output.fits') not in got           # T9 makes it
     assert stages.edited_by_rerun('1/procX.fits', 9) and not stages.edited_by_rerun('1/procX.fits', 10)
     assert stages.is_output('599_Io_andor_{}_stack_catalogue_pm_I+z.fits'.format(NIGHT), 9, night=NIGHT)
-    assert 9 in stages.RESTAGE and 8 not in stages.RESTAGE
+    assert {8, 9} <= set(stages.RESTAGE) and 7 not in stages.RESTAGE
 
 
 def test_causes_resolve_to_their_first_stage():

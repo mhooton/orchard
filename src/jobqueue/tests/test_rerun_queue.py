@@ -92,7 +92,7 @@ def test_a_rerun_from_t9_copies_frames_so_its_restage_is_disk_heavy(cfg, store):
 
 def test_q_add_from_refuses_what_it_cannot_do(cfg, capsys):
     promoted_night(cfg)
-    for args, why in ((['--from', 'T8', '--promote'], 'not supported'),
+    for args, why in ((['--from', 'T7', '--promote'], 'not supported'),
                       (['--from', 'T10'], 'needs --promote'),
                       (['--from', 'T10', '--promote', '--download'], 'does not go with --download')):
         rc, jobs = add(cfg, '--telescope', 'Europa', '--night', NIGHT, *args)

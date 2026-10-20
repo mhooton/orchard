@@ -50,7 +50,7 @@ SCOPES = OrderedDict([
 ])
 
 LAST = 11           # T12 (the v3 -> v2 sweep) is replaced by the promotion step: reruns run --no_T12
-RESTAGE = (9, 10, 11)  # stages utils/restage.py can rerun a promoted night from (restage_inputs: why not earlier)
+RESTAGE = (8, 9, 10, 11)  # stages utils/restage.py can rerun a promoted night from (restage_inputs: why not before)
 
 Read = namedtuple('Read', 'scope pattern made_by what')
 Write = namedtuple('Write', 'scope pattern what')
@@ -120,7 +120,9 @@ STAGES = OrderedDict((s.n, s) for s in [
            W(TARGET, '*_stack_catalogue_pm_*.fits'), W(TARGET, '*_{night}_output.fits', 'the night\'s photometry'),
            W(TELESCOPE, 'output/StackImages/already_run.txt', 'targets seen per telescope')],
           [R(TARGET, FRAMES, 6, 'WCS: wcsfit, the stale PC matrix removed, wcscompl'),
-           R(TELESCOPE, 'output/*_output.fits', 9, 'the multi-night file per star: the night replaced')], ''),
+           R(TARGET, '*_stack_catalogue_*.fits', 8, "opened read-write by condense (fitsio 'rw')"),
+           R(TELESCOPE, 'output/*_output.fits', 9, 'the multi-night file per star: the night replaced')],
+          'condense reads TARGET_ROLE, which T8 writes since 2026-03-31: older catalogues need a rerun from T8'),
     Stage(10, 'light curves', 'perform_differential_photometry', 'diff_photometry/SPlightcurve.py',
           [R(TARGET, '*_{night}_output.fits', 9), R(REDUCTION, '1_image_{target}.list', 1, 'its first raw frame'),
            R(RAW, '*', what='the header of the first frame of the image list'),
@@ -151,6 +153,7 @@ CAUSES = OrderedDict([
     ('comparison-stars', (10, 'comparison-star weights and the artificial light curve')),
     ('light-curves', (10, 'anything else in SPlightcurve.py: apertures 3-8, MCMC files, plots, best aperture')),
     ('pdf', (11, 'the night report only')),
+    ('stale-pc', (9, 'forced apertures placed with a stale PC matrix over the fitted CD (fixed 2026-10-17, PR #30)')),
     ('photometry', (9, 'aperture photometry, condensing, the night\'s *_output.fits')),
     ('stack', (8, 'the stack, its catalogue, the Gaia crossmatch, which stars are targets')),
     ('astrometry', (7, 'plate solving of the calibrated frames')),

@@ -165,13 +165,16 @@ def reduction_inputs(first, root, night, target):
 
 
 def has_inputs(first, root, night, target):
-    """Whether a target directory holds what the first stage of the rerun needs to run at all: for T9 a non-empty
-    frame list and T8's stack catalogue; from T10 on the night's *_output.fits (T11 also needs T10's curves)."""
+    """Whether a target directory holds what the first stage of the rerun needs to run at all: for T8 a non-empty
+    frame list, for T9 that and T8's stack catalogue; from T10 on the night's *_output.fits (T11 also needs T10's
+    curves)."""
     names = os.listdir(root) if os.path.isdir(root) else []
     if first <= 9:
         lists = [n for n in (os.listdir(os.path.join(root, RUNNAME)) if os.path.isdir(os.path.join(root, RUNNAME))
                              else []) if n.endswith('_processed.dat')]
-        return any(os.path.getsize(os.path.join(root, RUNNAME, n)) for n in lists) and \
+        if not any(os.path.getsize(os.path.join(root, RUNNAME, n)) for n in lists):
+            return False
+        return first <= 8 or \
             any('_stack_catalogue_' in n and '_stack_catalogue_pm_' not in n and n.endswith('.fits') for n in names)
     if not any(n.endswith('_{}_output.fits'.format(night)) for n in names):
         return False
@@ -352,15 +355,18 @@ def zlp_catalogue(root, filt):
     return expected
 
 
+def filters_of(root):
+    run = os.path.join(root, RUNNAME)
+    return sorted(n[:-len('_processed.dat')] for n in (os.listdir(run) if os.path.isdir(run) else [])
+                  if n.endswith('_processed.dat'))
+
+
 def catalogue_records(root, night, target):
     """For a night reduced before T8 recorded the catalogue it validated (target-named catalogues, before 2026-10):
     {filter: name} of the .active_stack_catalogue_<filter> records T9 needs, naming the only stack catalogue of that
     filter in the directory, the one the night's products were made with. Raises when there is more than one."""
     out = {}
-    run = os.path.join(root, RUNNAME)
-    filters = sorted(n[:-len('_processed.dat')] for n in (os.listdir(run) if os.path.isdir(run) else [])
-                     if n.endswith('_processed.dat'))
-    for filt in filters:
+    for filt in filters_of(root):
         if zlp_catalogue(root, filt):
             continue
         cands = sorted(n for n in os.listdir(root) if n.endswith('_stack_catalogue_{}.fits'.format(filt)) and
@@ -370,6 +376,19 @@ def catalogue_records(root, night, target):
                 target, filt, 'none' if not cands else 'more than one', ', '.join(cands) or '-'))
         out[filt] = cands[0]
     return out
+
+
+def has_target_roles(path):
+    """Whether a stack catalogue has the TARGET_ROLE column condense reads (T8 writes it since 2026-03-31)."""
+    try:
+        from astropy.io import fits
+        with fits.open(path) as h:
+            for hdu in h[1:]:
+                if hdu.name.upper() == 'GAIA_CROSSMATCH':
+                    return 'TARGET_ROLE' in [c.upper() for c in hdu.columns.names]
+    except Exception:
+        return False
+    return False
 
 
 def entry(rel, how, src, dst, edited=False):
@@ -439,7 +458,13 @@ class Restager(object):
         aside = []
         if source == 'v3':
             aside = [rel for rel in walk_files(v3) if stages.is_output(rel, first, night=night, target=target)]
-        records = catalogue_records(src_dir, night, target) if first <= 9 else {}
+        records = catalogue_records(src_dir, night, target) if first == 9 else {}     # T8 makes its own
+        if first == 9:
+            for filt in sorted(set(filters_of(src_dir)) - set(records)) + sorted(records):
+                name = records.get(filt) or zlp_catalogue(src_dir, filt)
+                if name and not has_target_roles(os.path.join(src_dir, name)):
+                    raise RestageError('{} predates the TARGET_ROLE column condense reads (T8 writes it since '
+                                       '2026-03-31): rerun this night from T8'.format(name))
         links = sum(1 for _, ln in files if ln)
         copied = sum(os.path.getsize(os.path.join(src_dir, rel)) for rel, ln in files if not ln) if source == 'v2' else 0
         summary = '{} for a rerun from T{}: {} inputs ({} as hard links{}), reduction {} ({} placed){}'.format(
@@ -557,7 +582,7 @@ def clear(base, tel, night, target, reason, apply=False, now_fn=utcnow):
     """Retire a restage: a v2 one's directory (inputs and whatever the rerun wrote) goes to
     superseded/<TEL>/<NIGHT>/<TARGET>/<stamp>-restage/ with the record, its links to v2's files dropped; a v3 one
     keeps its directory and gets its record moved beside the outputs it set aside. Returns a summary."""
-    from utils.promote import claim_and_rename, write_note
+    from utils.promote import claim_and_rename, thin, write_note
     rec = load_record(base, tel, night, target)
     if rec is None:
         raise RestageError('{} {} {} is not restaged'.format(tel, night, target))
@@ -576,9 +601,11 @@ def clear(base, tel, night, target, reason, apply=False, now_fn=utcnow):
     dst = superseded_dir(base, tel, night, target, stamp + '-restage')
     if not apply:
         return 'would move {} to {} and drop its links to v2'.format(rec['dest'], dst)
+    thinned = None
     if os.path.isdir(rec['dest']):
         claim_and_rename(rec['dest'], dst)
         dropped = drop_links(dst, rec)
+        thinned = thin(dst)['deleted']          # copies of v2's frames (a restage from T9 or T8), and what a rerun made
     else:
         os.makedirs(dst, exist_ok=True)
         dropped = 0
@@ -587,8 +614,9 @@ def clear(base, tel, night, target, reason, apply=False, now_fn=utcnow):
         os.rmdir(os.path.dirname(rec['_path']))         # .restage/, if no other target of the night is restaged
     except OSError:
         pass
-    write_note(dst, {'cleared_at': iso(now_fn()), 'reason': reason, 'was': rec['dest'], 'links_dropped': dropped})
-    return 'moved to {} ({} links to v2 dropped)'.format(dst, dropped)
+    write_note(dst, {'cleared_at': iso(now_fn()), 'reason': reason, 'was': rec['dest'], 'links_dropped': dropped,
+                     'frames_thinned': thinned})
+    return 'moved to {} ({} links to v2 dropped, {} files thinned)'.format(dst, dropped, thinned or 0)
 
 
 def drop_links(root, rec):
