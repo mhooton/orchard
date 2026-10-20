@@ -445,8 +445,8 @@ def shutter_state(header, overrides=None, detection=None, auto_apply=False):
 
 def auto_apply(params):
     """Does a measured shutter state decide the de-smear for this instrument?
-    Off until the detection thresholds are agreed ("detect_auto_apply" under
-    "smear" in instrument_config.json)."""
+    ("detect_auto_apply" under "smear" in instrument_config.json: on for the
+    four SSO telescopes since 2026-10-20.)"""
     return bool(((params or {}).get('smear') or {}).get('detect_auto_apply', False))
 
 
