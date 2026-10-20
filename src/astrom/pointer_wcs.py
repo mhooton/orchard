@@ -16,6 +16,7 @@ from astropy.io import fits
 from astropy.stats import SigmaClip, sigma_clipped_stats
 from astropy.units import Quantity
 from astropy.wcs.utils import WCS, pixel_to_skycoord
+from astrom import header_write
 from calibration.pipeutils import get_instrument_parameters, resolve_plate_scale
 from utils import orchard_version
 from astrom import known_scale
@@ -850,10 +851,10 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
 
     try:
         result['stage'] = 'opening_file'
-        with fits.open(filepath, mode='update') as hdu:
-            header = hdu[0].header
-            # Read the pixels through a separate read-only open: touching the update-mode HDU's
-            # data on a 16-bit frame (BZERO set) makes astropy rewrite the whole frame as float32 on close
+        # The header is edited and written back as bytes, keeping CHECKSUM/DATASUM valid without
+        # astropy re-summing the pixels (astrom/header_write.py); the pixels come from a separate
+        # read-only open, so a 16-bit frame (BZERO set) is never rewritten as float32
+        with header_write.updating(filepath) as header:
             data = fits.getdata(filepath).astype(float)
 
             if verbose:
@@ -874,7 +875,7 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 if verbose:
                     print("Clearing any existing WCS headers...")
                 removed = clear_wcs_headers(header, wcs_keywords, verbose=verbose)
-                if removed:     # written back on close whether or not the solve below succeeds
+                if removed:     # written back on leaving the block whether or not the solve below succeeds
                     orchard_version.record_edit(header, 'T7', 'inherited WCS removed')
                 if verbose and removed > 0:
                     print(f"Removed {removed} existing WCS headers")

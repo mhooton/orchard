@@ -69,10 +69,9 @@ code) never counts as a solution. Without a usable row, a frame is always solved
 2. For each frame with a usable row, applies it, header only: it clears the WCS keywords as a solve does, applies
    the cards with `header.update()`, and records the edit (`ORCHMOD`, HISTORY `orchard <ver> T7: WCS from cache`). The
    pixels are never decoded, so a 16-bit frame stays 16-bit. The result is the header a fresh solve gives; only that
-   HISTORY card differs from a solve's `T7: WCS solved`. Each frame costs 20–60 ms on appct, nearly all of it
-   astropy recomputing `DATASUM`/`CHECKSUM` over the unchanged pixels when the file closes (T6 writes calibrated
-   frames with checksums). A solve's header write pays the same. That work holds the GIL, so threads do not
-   shorten it (tried on the scratch nights: no gain).
+   HISTORY card differs from a solve's `T7: WCS solved`. The header is written as after a solve (see
+   [Header writes and checksums](#header-writes-and-checksums)): 13–30 ms a frame on appct. That work holds the GIL,
+   so threads do not shorten it (tried on the scratch nights: no gain).
 3. Solves the other frames in the pool, as before, then tries the failures again from the frames nearest them in
    time: the second pass (`docs/plate-solving.md`, step 6). A frame applied from the cache can be the neighbour.
 4. After the pool and the second pass, the parent reads the solved frames' headers and writes their rows, second-pass
@@ -95,6 +94,47 @@ WCS cache: 2 rows written to .../wcs_cache/Io/20261018.ecsv
 
 The reasons in brackets are `no entry`, the first validity field that differs (e.g. `raw_mtime_ns`),
 `provenance`, `forced`, `no raw frame` (not in T1's list) or `unusable` (the row did not apply).
+
+## Header writes and checksums
+
+T7 writes a calibrated frame's header after a solve (`pointer_wcs`) and on a cache hit (`wcs_cache.apply`). Both go
+through `astrom/header_write.updating()`. It reads the primary header as bytes, hands it to the caller to edit, and
+writes it back:
+
+- **Where:** in place, if the header still fills the same number of 2880-byte blocks. Otherwise the file is rewritten
+  through a temporary file, with the data bytes copied unchanged, and swapped in with `os.replace`.
+- **When:** also if the block raises, as astropy's update mode did, so an inherited WCS cleared before a failed solve
+  stays cleared. An unchanged header is not written.
+- **Checksums:** if the header has `CHECKSUM`/`DATASUM`, both are left valid:
+  - `DATASUM` is trusted when the old `CHECKSUM` agrees with it, as `repair_astra_wcs` does for raw frames. This reads
+    the header only.
+  - Otherwise `DATASUM` is summed from the data bytes in 4 MB chunks (`download/raw_provenance.py`).
+  - The pixels are never decoded, so a 16-bit frame stays 16-bit.
+
+astropy's update mode, which T7 used before, re-summed the data unit in 2880-byte Python steps on every close.
+
+**T6's frames do not verify.** `calibration/pipered.py` writes with `writeto(checksum=False)`, which keeps the raw
+frame's `CHECKSUM`/`DATASUM`: ESO's, computed for the raw header and pixels. So T7's first write to a frame always sums
+the data. After that the frame verifies, and a later T7 write trusts it. Artemis frames carry neither card, and get
+none.
+
+Measured on appct (2026-10-20) under production load (load average ~55), on copies of the scratch nights' frames
+(`mh_scratch/t7-checksum/bench.py`). Each figure is ms per frame: the mean of the medians of two alternating rounds,
+which agree within 2.5 ms. One exception is left out as load noise: round 1's astropy Ganymede T6-state median of
+300 ms (p10 153 ms).
+
+| per frame | astropy update mode | `header_write` |
+|---|---|---|
+| cache hit, as T6 left it: Ganymede (Andor 16.7 MB) | 148 | 30 |
+| cache hit, as T6 left it: Callisto (SPIRIT 5.3 MB) | 59 | 21 |
+| cache hit, T7 wrote it before: Ganymede | 147 | 15 |
+| cache hit, T7 wrote it before: Callisto | 60 | 17 |
+| cache hit: Artemis (no checksum cards) | 16 | 13 |
+| header write after a solve: Ganymede / Callisto / Artemis | 136 / 48 / 5 | 15 / 9 / 4 |
+
+Every frame with checksum cards verified afterwards in both. A solve itself takes 3–9 s, so the write is now under
+1% of it. The ~13 ms a cache hit still costs is astropy's header handling: parsing, checking the row's WCS, and
+serialising. A header that grows a block costs a copy of the file (30–50 ms for 16.7 MB).
 
 ## SOLVER_EPOCH
 
