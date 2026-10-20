@@ -76,14 +76,28 @@ class TelescopeView:
         self.epochs = cs.Epochs([(n['night_dir'], n['detector']) for n in self.nights.values()],
                                 cs.load_breaks().get(telescope, []))
         self.by_key = {}
+        self.by_night = collections.defaultdict(list)
         self.by_config = collections.defaultdict(lambda: collections.defaultdict(list))
         self.instrument = {}
         for r in register.frames(telescope):
             self.by_key[(r['night_dir'], r['stem'])] = r
+            self.by_night[r['night_dir']].append(r)
             if r['usable']:
                 self.by_config[r['config']][r['kind']].append(r)
             self.instrument.setdefault(r['config'], r.get('instrument'))
             self.instrument.setdefault(('telescop', r['config']), r.get('telescop'))
+
+    def grouped(self, config):
+        """{kind: {night_dir: rows}} of a configuration, shared by every night's Chooser."""
+        if not hasattr(self, '_grouped'):
+            self._grouped = {}
+        if config not in self._grouped:
+            g = {}
+            for kind, rows in self.by_config[config].items():
+                for r in rows:
+                    g.setdefault(kind, {}).setdefault(r['night_dir'], []).append(r)
+            self._grouped[config] = g
+        return self._grouped[config]
 
     def row(self, night_dir, rel):
         return self.by_key.get((night_dir, cr.strip_suffix(rel)))
@@ -97,7 +111,7 @@ class TelescopeView:
             return None
         config = max(sorted(sci), key=lambda c: sci[c]['n'])
         c = sci[config]
-        own = [r for r in self.by_key.values() if r['night_dir'] == night_dir and r['config'] == config]
+        own = [r for r in self.by_night.get(night_dir, []) if r['config'] == config]
         modes = collections.Counter(r.get('readmode') for r in own if r['kind'] == 'bias' and r.get('readmode'))
         if not modes:
             modes = collections.Counter(r.get('readmode') for r in own if r.get('readmode'))
@@ -167,10 +181,11 @@ def compare_night(view, night_dir, lists, science_exposures=None):
         own = [x for x in frames if x[0] == night_dir]
         if len(own) < len(frames) or len(own) >= cs.MIN_FLAT:
             profile['filters'][f] = 1
-    rows = {k: list(v) for k, v in view.by_config[profile['config']].items()}
+    rows = view.by_config[profile['config']]
     matching = dark_matching(view, profile['config'])
     ch = cs.Chooser(view.telescope, night_dir, profile, rows, view.epochs,
                     lambda r: '{}/{}'.format(r['night_dir'], r['relpath']), matching, log=lambda *a: None)
+    ch._by_night = view.grouped(profile['config'])
     new = {'bias': ch.bias(), 'dark': ch.darks(), 'flat': ch.flats()}
     out['flags'], out['errors'] = ch.flags, ch.errors
     # cross-camera and unusable frames in the old lists

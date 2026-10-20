@@ -78,6 +78,7 @@ class Epochs:
             if not self.starts or self.starts[-1][1] != det:
                 self.starts.append((night, det))
         self.breaks = list(breaks)
+        self._cache = {}
 
     def run(self, night):
         night = cr.night_of(night)
@@ -90,10 +91,12 @@ class Epochs:
         return idx
 
     def epoch(self, night, kind):
-        night = cr.night_of(night)
-        n_breaks = sum(1 for first, applies in self.breaks
-                       if first <= night and applies in ('all', kind))
-        return (self.run(night), n_breaks)
+        key = (night, kind)
+        if key not in self._cache:
+            n = cr.night_of(night)
+            n_breaks = sum(1 for first, applies in self.breaks if first <= n and applies in ('all', kind))
+            self._cache[key] = (self.run(n), n_breaks)
+        return self._cache[key]
 
     def describe(self, night, kind):
         r = self.run(night)
@@ -178,44 +181,84 @@ class Chooser:
         self.flags = []
         self.errors = []
         self.stale = set()
+        self._by_night = {}
 
-    def candidates(self, kind, extra=None):
-        """{night_dir: [usable rows]} compatible with the science frames for this kind."""
+    def _groups(self, kind):
+        """{night_dir: rows} of a kind, built once."""
+        if kind not in self._by_night:
+            g = {}
+            for r in self.rows.get(kind, []):
+                g.setdefault(r['night_dir'], []).append(r)
+            self._by_night[kind] = g
+        return self._by_night[kind]
+
+    def nights_in_order(self, kind):
+        """Night directories of the science night's epoch for this kind, nearest first, the past before the
+        future at the same distance."""
         want = self.epochs.epoch(self.night, kind)
-        out = {}
-        for r in self.rows.get(kind, []):
-            if not r.get('usable') or r.get('config') != self.profile['config']:
-                continue
-            nd = r['night_dir']
-            if r['compressed'] and nd != self.night_dir:
-                continue  # T2-T4 cannot read compressed raw frames; a compressed night keeps its own as before
+        out = []
+        for nd, rows in self._groups(kind).items():
             if nd != self.night_dir and not cr.NIGHT_DIR.match(nd):
                 continue  # a working copy such as 20251124_rotated is only used for itself
-            if self.epochs.epoch(r['night'], kind) != want:
+            if self.epochs.epoch(rows[0]['night'], kind) != want:
                 continue
+            d = _delta(rows[0]['night'], self.night)
+            out.append((abs(d), 0 if d <= 0 else 1, nd))
+        return [nd for _, _, nd in sorted(out)]
+
+    def usable(self, kind, nd, extra=None):
+        """The night's rows of this kind that are compatible with the science frames."""
+        out = []
+        for r in self._groups(kind).get(nd, []):
+            if not r.get('usable') or r.get('config') != self.profile['config']:
+                continue
+            if r['compressed'] and nd != self.night_dir:
+                continue  # T2-T4 cannot read compressed raw frames; a compressed night keeps its own as before
             if kind in ('bias', 'dark') and self.profile.get('readmode') and r.get('readmode') != self.profile[
                     'readmode']:
                 continue
             if extra is not None and not extra(r):
                 continue
-            out.setdefault(nd, []).append(r)
+            out.append(r)
         return out
+
+    def candidates(self, kind, extra=None):
+        """{night_dir: [usable rows]} compatible with the science frames for this kind, nearest night first."""
+        out = {}
+        for nd in self.nights_in_order(kind):
+            members = self.usable(kind, nd, extra)
+            if members:
+                out[nd] = members
+        return out
+
+    def _accept(self, nd, members, minimum, check):
+        if len(members) < minimum:
+            return None
+        if check is not None and not check(nd, members):
+            return None
+        paths = [self.resolve(m) for m in members]
+        ok = [(m, p) for m, p in zip(members, paths) if p]
+        if len(ok) < minimum:
+            self.stale.add(nd)
+            return None
+        return nd, ok
+
+    def nearest(self, kind, minimum, extra=None, check=None):
+        """(night_dir, [(row, path)]) of the nearest night with `minimum` compatible frames on disk, or None."""
+        for nd in self.nights_in_order(kind):
+            got = self._accept(nd, self.usable(kind, nd, extra), minimum, check)
+            if got is not None:
+                return got
+        return None
 
     def pick(self, groups, minimum, check=None):
         """(night_dir, rows) of the best group with at least `minimum` frames that resolve on disk, or None."""
         order = sorted(groups.items(), key=lambda kv: _order(_delta(kv[1][0]['night'], self.night),
                                                               len(kv[1]), kv[0]))
         for nd, members in order:
-            if len(members) < minimum:
-                continue
-            if check is not None and not check(nd, members):
-                continue
-            paths = [self.resolve(m) for m in members]
-            ok = [(m, p) for m, p in zip(members, paths) if p]
-            if len(ok) < minimum:
-                self.stale.add(nd)
-                continue
-            return nd, ok
+            got = self._accept(nd, members, minimum, check)
+            if got is not None:
+                return got
         return None
 
     def entry(self, nd, ok, **extra):
@@ -231,7 +274,7 @@ class Chooser:
         return MIN_BIAS.get(self.profile.get('instrument'), MIN_BIAS_DEFAULT)
 
     def bias(self):
-        got = self.pick(self.candidates('bias'), self.min_bias())
+        got = self.nearest('bias', self.min_bias())
         if got is None:
             self.errors.append('no night in this epoch has {} usable {} bias frames in readout mode {}'.format(
                 self.min_bias(), self.profile['config'], self.profile.get('readmode')))
@@ -256,11 +299,10 @@ class Chooser:
         if self.dark_matching:
             return self.darks_by_exposure()
         tol = self.dark_tolerance()
-        groups = self.candidates('dark')
-        got = self.pick(groups, MIN_DARK, self._temp_ok(tol))
+        got = self.nearest('dark', MIN_DARK, check=self._temp_ok(tol))
         relaxed = False
         if got is None and self.profile.get('instrument') in DARK_TEMP_RELAX:
-            got = self.pick(groups, MIN_DARK)
+            got = self.nearest('dark', MIN_DARK)
             relaxed = got is not None
         if got is None:
             self.errors.append('no night in this epoch has {} usable {} dark frames in readout mode {}'.format(
@@ -355,7 +397,7 @@ class Chooser:
         out = {}
         filters = sorted(self.profile.get('filters') or {})
         for f in filters:
-            got = self.pick(self.candidates('flat', extra=lambda r, f=f: (r.get('filter') or '') == f), MIN_FLAT)
+            got = self.nearest('flat', MIN_FLAT, extra=lambda r, f=f: (r.get('filter') or '') == f)
             if got is None:
                 self.flags.append('no night in this epoch has {} usable {} flats in {}: its {} science frame(s) '
                                   'will not be reduced'.format(MIN_FLAT, self.profile['config'], f or "''",
