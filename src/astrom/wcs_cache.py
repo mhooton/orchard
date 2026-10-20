@@ -142,12 +142,13 @@ def cards_header(cards):
 
 def apply(proc_path, cards, wcs_keywords):
     """Write a row's cards into a calibrated frame as a fresh solve would (pointer_wcs: clear the WCS keywords,
-    header.update() with the solution), and record the edit. Header only: the pixels are never read, so a 16-bit
-    frame stays 16-bit. The cards are checked before the file is opened, so a bad row leaves the frame untouched."""
+    header.update() with the solution), and record the edit. Header only, written as pointer_wcs writes it
+    (astrom/header_write.py): the pixels are never decoded, so a 16-bit frame stays 16-bit, and CHECKSUM/DATASUM stay
+    valid. The cards are checked before the file is opened, so a bad row leaves the frame untouched."""
+    from astrom.header_write import updating
     from astrom.pointer_wcs import clear_wcs_headers
     cached = cards_header(cards)
-    with fits.open(proc_path, mode='update', do_not_scale_image_data=True) as hdul:
-        header = hdul[0].header
+    with updating(proc_path) as header:
         if clear_wcs_headers(header, wcs_keywords):
             orchard_version.record_edit(header, 'T7', 'inherited WCS removed')
         header.update(cached)

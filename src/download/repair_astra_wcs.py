@@ -48,14 +48,13 @@ import sys
 import tarfile
 
 import numpy as np
-from astropy.io import fits
 
 if __package__ in (None, ''):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from download.astra_transform import (MIRROR_X, ROT90_ACW, drop_singular_wcs, linear_matrix,  # noqa: E402
                                       plate_pa, set_linear_matrix, transform_wcs)
-from download.raw_provenance import claimed_datasum, data_sum, set_checksum  # noqa: E402
+from download.raw_provenance import claimed_datasum, data_sum, read_header_bytes, set_checksum  # noqa: E402
 from utils import orchard_version  # noqa: E402
 
 EXTS = ('*.fits', '*.fts', '*.fit')
@@ -170,24 +169,10 @@ def frames(night_dir):
     return sorted(out)
 
 
-# Writing. These are the archive's raw frames, so the data are never decoded: the header is read and written as
-# bytes, the data bytes stay where they are, and the original header goes to a tar file first so the repair can be
-# undone with --restore. Decoding scaled 16-bit data through astropy's update mode can rewrite it as float.
-BLOCK = 2880
-
-
-def read_header_bytes(path):
-    """The primary header exactly as stored (to the END card, padded to whole blocks), and its parse."""
-    chunks = []
-    with open(path, 'rb') as f:
-        while True:
-            block = f.read(BLOCK)
-            if len(block) < BLOCK:
-                raise ValueError('{}: no END card before the end of the file'.format(path))
-            chunks.append(block)
-            if any(block[i:i + 8] == b'END     ' for i in range(0, BLOCK, 80)):
-                raw = b''.join(chunks)
-                return raw, fits.Header.fromstring(raw.decode('ascii'))
+# Writing. These are the archive's raw frames, so the data are never decoded: the header is read (read_header_bytes,
+# from download/raw_provenance.py) and written as bytes, the data bytes stay where they are, and the original header
+# goes to a tar file first so the repair can be undone with --restore. Decoding scaled 16-bit data through astropy's
+# update mode can rewrite it as float.
 
 
 def write_header_bytes(path, new_raw, old_raw):

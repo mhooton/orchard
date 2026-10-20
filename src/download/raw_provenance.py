@@ -12,7 +12,8 @@ Provenance of the raw frames orchard writes into Observations/ (docs/versioning.
 
 Every orchard write leaves CHECKSUM and DATASUM valid. A writer that writes the whole file passes checksum=True to
 astropy. A writer that replaces header bytes only (repair_astra_wcs) uses set_checksum() below, which recomputes
-CHECKSUM from the new header and a DATASUM it can trust.
+CHECKSUM from the new header and a DATASUM it can trust. T7's header writes to calibrated frames use the same
+helpers (astrom/header_write.py).
 
 Until this module, every Astra frame kept the CHECKSUM/DATASUM ESO computed for the untransformed image
 (astropy's writeto(checksum=False) leaves cards it was given), so they did not verify. The exceptions were light
@@ -23,6 +24,7 @@ import os
 import sys
 
 import numpy as np
+from astropy.io import fits
 
 if __package__ in (None, ''):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -31,6 +33,7 @@ from utils import orchard_version  # noqa: E402
 
 NEGATIVE_ZERO = 0xFFFFFFFF          # the ones' complement sum of an HDU whose CHECKSUM is valid
 CHUNK = 1 << 22                     # bytes read at a time when summing a data unit (a multiple of 4)
+BLOCK = 2880                        # a FITS block
 # ASCII punctuation the FITS checksum encoding steps around (Seaman, Pence & Rots, the FITS checksum convention)
 _EXCLUDE = tuple(range(0x3a, 0x41)) + tuple(range(0x5b, 0x61))
 
@@ -46,6 +49,20 @@ def stamp_ingest(header, script):
 
 
 # --- FITS checksums by hand, for a header written as bytes ---------------------------------------------------------
+
+def read_header_bytes(path):
+    """The primary header exactly as stored (to the END card, padded to whole blocks), and its parse."""
+    chunks = []
+    with open(path, 'rb') as f:
+        while True:
+            block = f.read(BLOCK)
+            if len(block) < BLOCK:
+                raise ValueError('{}: no END card before the end of the file'.format(path))
+            chunks.append(block)
+            if any(block[i:i + 8] == b'END     ' for i in range(0, BLOCK, 80)):
+                raw = b''.join(chunks)
+                return raw, fits.Header.fromstring(raw.decode('ascii'))
+
 
 def ones_add(a, b):
     """32-bit ones' complement addition."""
