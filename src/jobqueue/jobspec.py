@@ -125,10 +125,11 @@ def promote_job(cfg, cls, telescope, night, after=None, targets=(), source='cli'
 # A rerun from a late stage costs this share of a full run's estimate (minutes per 1000 frames): T10 is six
 # SPlightcurve.py runs per target, T11 the PDF (which aligns every frame for its stack panel). The scratch trial of
 # 2026-10-20 (docs/rerun-from-stage.md) took 10-32% of the original full runs for T10 + T11, 2-7% for T11.
-RERUN_SHARE = {10: 0.3, 11: 0.1}
-# A rerun from T10 reserves fewer cores than a full run: SPlightcurve.py is one process, and only T11's alignment of the
-# frames for its stack panel runs in parallel (the trial ran with 8)
-RERUN_CORES = 8
+RERUN_SHARE = {9: 0.6, 10: 0.3, 11: 0.1}
+# Cores a rerun reserves (None: a full run's). From T10 fewer: SPlightcurve.py is one process, and only T11's alignment
+# of the frames for its stack panel runs in parallel (the trial ran with 8). From T9 T9's WCS fits and photometry are
+# spread over every core, as in a full run.
+RERUN_CORES = {9: None, 10: 8, 11: 8}
 
 
 def rerun_estimate(cfg, telescope, night, frames, first):
@@ -138,15 +139,16 @@ def rerun_estimate(cfg, telescope, night, frames, first):
 
 def restage_job(cfg, cls, telescope, night, first, targets=(), source='cli', note=None, priority=0.0):
     """utils/restage.py for one night (docs/rerun-from-stage.md): puts back into v3 what a rerun from stage `first`
-    reads (from v2, as hard links, where promotion already moved the night) and records it, so that the promotion
-    after the rerun overlays v2 with only what the rerun wrote. Holds the night lock; links and a few small copies."""
+    reads (from v2 where promotion already moved the night: hard links, and from T9 copies of the frames) and records
+    it, so that the promotion after the rerun overlays v2 with only what the rerun wrote. Holds the night lock."""
     argv = [cfg['python'], 'utils/restage.py', 'stage', '--apply', '--telescope', telescope, '--night', night,
             '--from', str(first)]
     for t in targets:
         argv += ['--target', t]
+    copies = first <= 9                 # from T9 the frames are copied (GBs), not linked
     return dict(
         cls=cls, kind='restage', telescope=telescope, night=night, targets=' '.join(targets), argv=argv,
-        cwd=cfg['src_dir'], env=job_env(cfg), cores=1, disk_heavy=False, est_minutes=5.0,
+        cwd=cfg['src_dir'], env=job_env(cfg), cores=1, disk_heavy=copies, est_minutes=15.0 if copies else 5.0,
         locks=['night:{}:{}'.format(telescope, night)], priority=priority,
         dedupe_key='restage:{}:{}:{}:T{}'.format(telescope, night, ' '.join(targets) or '*', first),
         max_retries=cfg['max_retries'], source=source, note=note, meta={'from_stage': first})

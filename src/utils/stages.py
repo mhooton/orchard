@@ -50,7 +50,7 @@ SCOPES = OrderedDict([
 ])
 
 LAST = 11           # T12 (the v3 -> v2 sweep) is replaced by the promotion step: reruns run --no_T12
-RESTAGE = (10, 11)  # stages utils/restage.py can rerun a promoted night from (see restage_inputs for why not earlier)
+RESTAGE = (9, 10, 11)  # stages utils/restage.py can rerun a promoted night from (restage_inputs: why not earlier)
 
 Read = namedtuple('Read', 'scope pattern made_by what')
 Write = namedtuple('Write', 'scope pattern what')
@@ -102,7 +102,8 @@ STAGES = OrderedDict((s.n, s) for s in [
           [R(TARGET, '1/*_processed.dat', 6), R(TARGET, FRAMES, 6), R(OBS, 'schedule/**', what='plan files'),
            R(DATA, 'ml_40pc_v2.csv', what='the 40 pc target list'),
            R(DATA, 'PipelineOutput/v2/StackImages/**', what='backup catalogues')],
-          [W(TARGET, '1/*_stacked.dat'), W(TARGET, '1_initial-catalogue.fits'), W(TARGET, '*_outstack_*.fits'),
+          [W(TARGET, '1/*_stacked.dat'), W(TARGET, '1/*.cat', 'of the stacked frames'),
+           W(TARGET, '1_initial-catalogue.fits'), W(TARGET, '*_outstack_*.fits'),
            W(TARGET, '*_stack_catalogue_*'), W(TARGET, '.expected_stack_catalogue'),
            W(TARGET, '.active_stack_catalogue_*'), W(DATA, 'PipelineOutput/v2/StackImages/**', 'backup catalogues')],
           [R(TARGET, FRAMES, 6, 'WCS of the stacked frames (wcsfit)')],
@@ -110,11 +111,16 @@ STAGES = OrderedDict((s.n, s) for s in [
     Stage(9, 'photometry', 'perform_aperture_photometry',
           'photometry/ZLP_app_photom.py, condense/condense_photometry.py',
           [R(TARGET, '1/*_processed.dat', 6), R(TARGET, FRAMES, 6), R(TARGET, '.active_stack_catalogue_*', 8),
-           R(TARGET, '*_stack_catalogue_*.fits', 8), R(DATA, 'ml_40pc_v2.csv', what='the 40 pc target list')],
-          [W(TARGET, '1/*.phot'), W(TARGET, '1/*.cat'), W(TARGET, '1/*.ell'), W(TARGET, '1/*_processed.dat_phot'),
+           R(TARGET, '.expected_stack_catalogue', 8), R(TARGET, '*_stack_catalogue_*.fits', 8),
+           R(OBS, 'schedule/**', what="plan files (the target's Gaia ID)"),
+           R(DATA, 'ml_40pc_v2.csv', what='the 40 pc target list'),
+           R(DATA, 'Gaia database', what="wcsfit's reference stars ($GAIADATABASEPATH)")],
+          [W(TARGET, '1/*.cat'), W(TARGET, '1/*.phot'), W(TARGET, '1/*.ell'), W(TARGET, '1/*.png', 'PSF plots'),
+           W(TARGET, '1/*_processed.dat_phot'), W(TARGET, '1_initial-catalogue.fits'),
            W(TARGET, '*_stack_catalogue_pm_*.fits'), W(TARGET, '*_{night}_output.fits', 'the night\'s photometry'),
            W(TELESCOPE, 'output/StackImages/already_run.txt', 'targets seen per telescope')],
-          [R(TARGET, FRAMES, 6, 'WCS (wcsfit)'), R(TELESCOPE, 'output/output.fits', 9, 'the night appended')], ''),
+          [R(TARGET, FRAMES, 6, 'WCS: wcsfit, the stale PC matrix removed, wcscompl'),
+           R(TELESCOPE, 'output/*_output.fits', 9, 'the multi-night file per star: the night replaced')], ''),
     Stage(10, 'light curves', 'perform_differential_photometry', 'diff_photometry/SPlightcurve.py',
           [R(TARGET, '*_{night}_output.fits', 9), R(REDUCTION, '1_image_{target}.list', 1, 'its first raw frame'),
            R(RAW, '*', what='the header of the first frame of the image list'),
@@ -246,7 +252,11 @@ def restage_inputs(first):
     it: [(scope, pattern, made_by, link)], one per (scope, pattern). link: no stage of the rerun edits the file in
     place, so v2's own file can be shared by a hard link; otherwise it must be a copy. From T10 on, every input can be
     shared. From T9 back, the calibrated frames get new WCS headers (wcsfit writes into the file), so a rerun needs
-    its own copy of every frame; restage.py does not do that yet."""
+    its own copy of every frame. A file a stage of the rerun writes is never an input, whatever pattern it matches
+    (T9's *_stack_catalogue_pm_*.fits matches what T9 reads of T8's): restage.py leaves those out.
+    From T7 back a rerun is not restaged: T7 writes each frame's WCS into the raw frame its image list names (an
+    absolute path, so a rerun anywhere would write production raw) until the WCS cache (PR #64) replaces that, and
+    from T6 back the frames themselves are new, so a run from raw costs the same."""
     edited = [(e.scope, e.pattern) for n in rerun_stages(first) for e in STAGES[n].edits]
     out, seen = [], set()
     for n in rerun_stages(first):
@@ -268,6 +278,11 @@ def rerun_outputs(first, scope=TARGET):
 
 def is_output(rel, first, **kw):
     return any(matches(rel, p, **kw) for p in rerun_outputs(first))
+
+
+def edited_by_rerun(rel, first, scope=TARGET, **kw):
+    """Whether a stage of a rerun from `first` edits this file in place (an input it must have its own copy of)."""
+    return any(e.scope == scope and matches(rel, e.pattern, **kw) for n in rerun_stages(first) for e in STAGES[n].edits)
 
 
 def cause_stage(cause):
