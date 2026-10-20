@@ -72,6 +72,11 @@ DEFAULTS = {
         r'50[234] (Server Error|Service Unavailable|Bad Gateway|Gateway Time-out)',
     ],
 
+    # calibration register (calibration/calregister.py): download and fetch jobs add the night's calibration
+    # frames to it, when it exists (None: <basedir>/calibration_register/register.sqlite). False: they do not
+    'calib_register': None,
+    'calib_register_hook': True,
+
     # what a nightly pipeline job looks like
     'pipeline_cores': 20,
     'download_cores': 2,

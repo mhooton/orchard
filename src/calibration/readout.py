@@ -217,8 +217,16 @@ def overscan_signature(data, params):
     The noise is taken in tiles spanning the strip's height, so a slow drift
     of the bias level along the strip is not counted.
     """
-    strip = overscan_strip(data, params)
+    return strip_signature(overscan_strip(data, params))
+
+
+def strip_signature(strip):
+    """(level, noise) of an overscan strip already cut out of a frame (the
+    calibration register reads only those rows), or (None, None)."""
     if strip is None:
+        return None, None
+    strip = np.asarray(strip, dtype=float)
+    if strip.ndim != 2 or strip.size < TILE * 2:
         return None, None
     level = float(np.median(strip))
     noise = tile_sigma(strip, strip.shape[0], TILE)

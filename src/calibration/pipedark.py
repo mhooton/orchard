@@ -87,7 +87,11 @@ def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ
     with open_fits_file(bias_path) as hdulist:
         bias = hdulist[0].data
 
-    # Group all dark files by exposure time
+    # Group all dark files by exposure time.  With exposure-matched darks the group is the exposure rounded to
+    # whole seconds, the key pipered.py looks a science frame's dark up by and the name of the master
+    # (MasterDark_<n>s.fits): grouping by the exact value made e.g. 42.407 s and 42.408 s darks two masters of
+    # the same name, the second overwriting the first.
+    matching = params.get('dark_matching_exptime', False)
     exposure_groups = defaultdict(list)
 
     for line in open(outdir + 'removeindexlist.dat'):
@@ -97,7 +101,8 @@ def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ
             try:
                 with open_fits_file(filename) as hdulist:
                     exposure_time = hdulist[0].header['exptime']
-                    exposure_groups[exposure_time].append((call, filename))
+                    key = int(round(exposure_time)) if matching else exposure_time
+                    exposure_groups[key].append((call, filename))
             except Exception as e:
                 print(f"Warning: Could not read exposure time from {filename}: {e}")
                 continue
@@ -113,6 +118,9 @@ def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ
         groups_to_process = {'combined': all_files}
 
     output_files = []
+    # the master MasterDark.fits becomes: the combined one, or with exposure-matched darks the highest-exposure
+    # one, which pipered.py scales to a science exposure no master matches and pipeflat.py to every flat
+    fallback = None
 
     # Process each group
     for group_key, file_pairs in groups_to_process.items():
@@ -182,6 +190,8 @@ def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ
         if use_existing and os.path.exists(outname):
             print(f"Skipping T3: existing master dark found at {outname}")
             output_files.append(outname)
+            if fallback is None or (group_key != 'combined' and group_key > fallback[0]):
+                fallback = (group_key, None)
             continue
         if os.path.exists(outname):
             os.remove(outname)
@@ -199,6 +209,8 @@ def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ
         phdu.header['DARKUNIT'] = 'ADU/s'
         orchard_version.stamp(phdu.header)
         phdu.writeto(outname)
+        if fallback is None or (group_key != 'combined' and group_key > fallback[0]):
+            fallback = (group_key, phdu)
 
         output_files.append(outname)
         print(f"Created master dark: {outname}")
@@ -222,8 +234,11 @@ def darkmaker(inlist, biasname, darkname, outdir, reportdir=None, run=None, targ
                 tel = dirsplit[-5]
                 QC([0, reportdir + "/QC", date, field, tel, run, 'QC7', darkc])
 
-    #Assign final group to outname - highest exposure time group for dark matching
-    phdu.writeto(outdir + darkname, overwrite=True)
+    # MasterDark.fits: the highest exposure time group for dark matching (the combined master otherwise)
+    if fallback is not None and fallback[1] is not None:
+        fallback[1].writeto(outdir + darkname, overwrite=True)
+        if matching:
+            print(f"MasterDark.fits is the {fallback[0]} s master (highest exposure)")
 
     # Clean up temporary files
     for dsorted_fn in glob.glob(outdir + 'dsorted*'):

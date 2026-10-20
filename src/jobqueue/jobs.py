@@ -151,6 +151,20 @@ def plan_fetch(rows, path, replace='never'):
     return todo, summary, foreign
 
 
+def register_calibrations(cfg, telescope, night):
+    """Add the night's calibration frames to the calibration register, so T1 of any night can choose them.
+    Best-effort: the register never fails a download (T1 registers its own night again anyway)."""
+    if not cfg.get('calib_register_hook', True):
+        return None
+    try:
+        from calibration import calregister
+    except Exception as e:  # e.g. a tree without it
+        print('calibration register: not available ({})'.format(e))
+        return None
+    return calregister.hook_register_night(cfg['basedir'], telescope, night, cfg.get('calib_register'),
+                                           log=lambda m: print(m, flush=True))
+
+
 def download(cfg, telescope, night):
     age = (utcnow().date() - parse_night(night)).days
     recent = int(cfg['watcher']['recent_days'])
@@ -194,6 +208,8 @@ def download(cfg, telescope, night):
         rows = archive.frames(prog, night, night)
     except Exception as e:  # the check is informational; the frames on disk decide
         print('could not list the night at ESO to check the download ({}); {} files on disk'.format(e, len(names)))
+        if names:
+            register_calibrations(cfg, telescope, night)
         return 0 if names else EX_TEMPFAIL
     present, missing, _ = diff_eso_disk(rows, names)
     print('{} {}: ESO {} rows ({} science); on disk {} files; missing {} rows ({} science)'.format(
@@ -204,6 +220,7 @@ def download(cfg, telescope, night):
     if missing:
         print('{} rows still missing; processing what is here, the look-back will fetch the rest'.format(
             len(missing)))
+    register_calibrations(cfg, telescope, night)
     return 0
 
 
@@ -228,6 +245,8 @@ def fetch(cfg, store, telescope, night, rows_file=None, rerun_class='P1', dest=N
     if dest:  # a trial into a scratch directory: record nothing, queue nothing
         print(res)
         return 0
+    if res.get('added') or res.get('replaced'):
+        register_calibrations(cfg, telescope, night)
     result_path = rows_file + '.result.json' if rows_file else os.path.join(
         queue_paths(cfg)['fetch'], '{}_{}_job{}.result.json'.format(telescope, night, os.getenv('JOBQUEUE_JOB_ID', 'x')))
     os.makedirs(os.path.dirname(result_path), exist_ok=True)
