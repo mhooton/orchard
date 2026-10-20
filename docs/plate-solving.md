@@ -34,7 +34,7 @@ pixels.
    cannot verify. On Callisto 20261012 (SPIRIT) v4.1.0 refused 63 such frames whose old photometry was normal; their
    consecutive frames, 6-18 s apart, put 3 of their 5 sources on catalogue stars (twirl's "4 of 5" was its own fitted
    quad). A frame the second pass cannot solve goes through steps 3-5 again and keeps its first failure message.
-   Solved lines say `Method: neighbour`.
+   Solved lines say `Method: neighbour`, and the solutions go into the WCS cache like any other (`docs/wcs-cache.md`).
 
 ## The verification
 

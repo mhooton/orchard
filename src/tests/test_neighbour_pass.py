@@ -21,6 +21,7 @@ if SRC not in sys.path:
 
 pytest.importorskip('twirl')
 from astrom import astrometry as am      # noqa: E402
+from astropy.io import fits              # noqa: E402
 
 WCS = {'CTYPE1': 'RA---TAN', 'CTYPE2': 'DEC--TAN', 'CRVAL1': 150.0, 'CRVAL2': -30.0, 'CRPIX1': 512.0,
        'CRPIX2': 640.0, 'CD1_1': -8.6e-5, 'CD1_2': 0.0, 'CD2_1': 0.0, 'CD2_2': 8.6e-5}
@@ -90,3 +91,92 @@ def test_no_neighbour_too_far_away_or_without_a_solution():
     # more than NEIGHBOUR_MAX_GAP away
     far = {'a': {'DATE-OBS': '2026-10-13T00:00:00', **WCS}, 'b': {'DATE-OBS': '2026-10-13T05:00:00'}}
     assert am.neighbour_jobs(['a', 'b'], [OK, failed(6)], ['a', 'b'], read_header=far.get) == []
+
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Through astrometry.main, with the WCS cache (astrom/wcs_cache.py): the second pass takes its neighbours from frames
+# applied from the cache as well as frames solved this run, and what it solves is cached like any other solution.
+# The solves are real; test_wcs_cache's `solver` fakes only the image cleaning, detection and Gaia query.
+# ---------------------------------------------------------------------------------------------------------------
+
+import numpy as np                                                      # noqa: E402
+import astropy.wcs                                                       # noqa: E402
+from astrom import wcs_cache                                            # noqa: E402
+from test_wcs_cache import Night, STARS, _truth, solver                 # noqa: E402,F401
+
+
+def _hard_frame(monkeypatch, path):
+    """Make `path` a frame no lone solve verifies, as the faint sparse-field frames of Callisto 20261012 are: alone,
+    it fails with its sources counted; given a neighbour, the real solve runs."""
+    real = am.pointer_wcs
+
+    def pointer_wcs(filepath, *args, **kwargs):
+        if os.path.basename(filepath) == os.path.basename(path) and not kwargs.get('neighbour'):
+            return dict(success=False, crpix=None, crval=None, sources_detected=12, sources_used=12, gaia_queried=12,
+                        gaia_used=12, matches=3, method=None, stage='star_matching',
+                        error='No verified solution (best 3 of 12 sources on catalogue stars); twirl: ...')
+        return real(filepath, *args, **kwargs)
+    monkeypatch.setattr(am, 'pointer_wcs', pointer_wcs)
+
+
+def _solved_right(path, center):
+    """The frame's WCS puts the detections on the catalogue stars they are (test_wcs_cache._truth), within 0.1"."""
+    got = astropy.wcs.WCS(fits.getheader(path)).pixel_to_world(STARS[:, 0], STARS[:, 1])
+    want = _truth(center).pixel_to_world(STARS[:, 0], STARS[:, 1])
+    return np.max(got.separation(want).arcsec) < 0.1
+
+
+def _row_is_the_solution(row, path):
+    """The frame's cache row holds the cards the solve wrote into it."""
+    cached, header = wcs_cache.cards_header(row['cards']), fits.getheader(path)
+    return 'CRVAL1' in cached and all(header.get(k) == v for k, v in cached.items())
+
+
+def test_the_second_pass_solves_from_a_frame_solved_this_run_and_caches_it(tmp_path, solver, monkeypatch, capsys):
+    night = Night(tmp_path, n=3)
+    hard = night.procs[1]
+    _hard_frame(monkeypatch, hard)
+    night.t7()
+    out = capsys.readouterr().out
+    assert 'procIo_001.fits FAILED' in out                     # the first pass
+    assert 'Second pass: 1 frames tried again' in out and 'Second pass: 1 of 1 solved' in out
+    assert ' procIo_001.fits SUCCESS' in out and 'Method: neighbour' in out
+    assert 'Successfully plate solved: 3' in out and 'Failed plate solving: 0' in out
+    assert _solved_right(hard, solver[-1])                      # its query is the last one: frames 0 and 2 went first
+    rows = night.rows()
+    assert set(rows) == {'Io_000.fits', 'Io_001.fits', 'Io_002.fits'}
+    assert _row_is_the_solution(rows['Io_001.fits'], hard)
+    assert rows['Io_001.fits']['solver_epoch'] == am.SOLVER_EPOCH
+
+
+def test_the_second_pass_takes_neighbours_from_the_cache_and_caches_what_it_solves(tmp_path, solver, monkeypatch,
+                                                                                    capsys):
+    night = Night(tmp_path, n=3)
+    hard = night.procs[1]
+    _hard_frame(monkeypatch, hard)
+    # a run without the second pass (v4.1.0): the hard frame fails and gets no row
+    real_jobs = am.neighbour_jobs
+    monkeypatch.setattr(am, 'neighbour_jobs', lambda *a, **k: [])
+    night.t7()
+    assert set(night.rows()) == {'Io_000.fits', 'Io_002.fits'}
+    # the rerun: frames 0 and 2 come from the cache and only the hard frame is solved, so its only neighbours are
+    # frames the cache applied
+    monkeypatch.setattr(am, 'neighbour_jobs', real_jobs)
+    capsys.readouterr()
+    asked = len(solver)
+    night.t7()
+    out = capsys.readouterr().out
+    assert 'WCS cache: 2 frames from the cache, 1 to solve' in out
+    assert 'Second pass: 1 frames tried again' in out and 'Second pass: 1 of 1 solved' in out
+    assert ' procIo_001.fits SUCCESS' in out and 'Method: neighbour' in out
+    assert len(solver) == asked + 1                             # one solve: the hard frame's second pass
+    assert _solved_right(hard, solver[-1])
+    rows = night.rows()
+    assert set(rows) == {'Io_000.fits', 'Io_001.fits', 'Io_002.fits'}
+    assert _row_is_the_solution(rows['Io_001.fits'], hard)
+    # and the next run solves nothing
+    capsys.readouterr()
+    night.t7()
+    assert 'WCS cache: 3 frames from the cache, 0 to solve' in capsys.readouterr().out
+    assert len(solver) == asked + 1
