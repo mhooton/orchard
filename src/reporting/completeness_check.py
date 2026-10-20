@@ -30,7 +30,10 @@ def create_file(fname,dir,all_nights,version):
     # column headers:
     hdr = ['Night','Telescope','Targets','Images Exist','Pipeline ('+version+') Started','Calibration','Science','All Images','Pipeline ('+version+') Completed','Lightcurves','Reports','Notes']
     # column data types:
-    dtypes = ['S8','S9','S50','S12','S11','S7','S16','S10','S16','S11','S7','S30']
+    dtypes = ['U8','U9','U50','U12','U11','U7','U16','U10','U16','U11','U7','U30']
+    # Under Python 2 numpy cut longer values to these widths (e.g. a night's Targets to 50 characters).
+    # astropy 5 widens the column instead, which would change every line of the report, so cut them here.
+    widths = [int(d[1:]) for d in dtypes]
 
     # create the table, add the test row and first row to the table and write to report file
     report = Table(names=hdr,dtype=dtypes)
@@ -38,11 +41,12 @@ def create_file(fname,dir,all_nights,version):
 
     for i in range(int(len(dates))):
         row = [dates[i],tel[i]," ".join(targets[i]),images[i],pipeline[i],c_images[i],s_images[i],all_im[i]," ".join(outputfits[i])," ".join(lcurves[i])," ".join(r[i]),notes[i]]
+        row = [str(v)[:w] for v,w in zip(row,widths)]
         try:
             report.add_row(row)
         except Exception as e:
             print(e)
-    ascii.write(report,dir + "/" + fname,format='fixed_width')
+    ascii.write(report,dir + "/" + fname,format='fixed_width',overwrite=True)
 
 def read_images(flist):
     with open(flist) as infile:
@@ -131,7 +135,7 @@ def completeness_check(dir,version):
     for i in range(delta.days + 1):
         day = sdate + timedelta(days=i)
         datestring = day.strftime('%Y%m%d')
-        print datestring
+        print(datestring)
 
         for t in range(len(ims)):
             if datestring in ims[t]:
@@ -269,7 +273,7 @@ def completeness_check(dir,version):
                     all_nights['all_images'].append(' ')
                     all_nights['notes'].append(' ')
                 else:
-                    print "Before " + tels[t] + " started observations."
+                    print("Before " + tels[t] + " started observations.")
 
     return all_nights
 
