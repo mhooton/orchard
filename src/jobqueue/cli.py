@@ -196,14 +196,22 @@ def parse_backlog(path, cfg):
 
 
 def queue_night(cfg, store, eso_nights, req, cls, priority=0.0, note=None, no_t12=False, extra_flags=(), cores=None,
-                dry_run=False, log=print, campaign=None, promote=False):
+                dry_run=False, log=print, campaign=None, promote=False, from_stage=None):
     """Queue one night: an add-only fetch (if req['download']) and the pipeline run after it (if req['process']).
     The pipeline job waits for the fetch and is cancelled if the fetch fails. promote: the pipeline runs with
-    --no_T12 and a promote job follows it."""
+    --no_T12 and a promote job follows it. from_stage: a rerun from that stage instead (queue_rerun)."""
     from .dispatcher import count_frames
     from .jobs import plan_fetch
     from .nights import night_dir, night_targets, normalise_target
     tel, night = req['telescope'], req['night']
+    if from_stage:
+        if req['download']:
+            log('{} {} {}: not queued: a rerun from T{} reprocesses what is on disk; it does not download'.format(
+                cls, tel, night, from_stage))
+            return None
+        queue_rerun(cfg, store, cls, tel, night, from_stage, req.get('run_targets'), priority=priority, note=note,
+                    extra_flags=extra_flags, cores=cores, dry_run=dry_run, log=log, campaign=campaign, promote=promote)
+        return None
     path = night_dir(cfg['basedir'], tel, night)
     fetch_id, lock_targets, what = None, [], []
     if req['download']:
@@ -251,6 +259,53 @@ def queue_night(cfg, store, eso_nights, req, cls, priority=0.0, note=None, no_t1
     return fetch_id
 
 
+def queue_rerun(cfg, store, cls, tel, night, first, targets=None, priority=0.0, note=None, extra_flags=(), cores=None,
+                dry_run=False, log=print, campaign=None, promote=False):
+    """Queue a rerun of a night from stage `first` (docs/rerun-from-stage.md): a restage job (utils/restage.py), then
+    ZLP_pipeline.sh --from_T<first> --no_T12 for the restaged targets, then, with promote, a promote job, which
+    overlays v2 with what the rerun wrote where the night was already promoted. The targets default to every target
+    of the night with the rerun's inputs in v3 or v2, and the pipeline job is always given them: its PDF then says
+    which targets it covers. Returns the pipeline job id, or None."""
+    from utils import restage
+    from .dispatcher import count_frames
+    from .nights import night_dir
+    targets = list(targets or restage.night_targets(cfg['basedir'], tel, night, first))
+    if not targets:
+        log('{} {} {}: not queued: no target of the night has the inputs of a rerun from T{} in v3 or v2'.format(
+            cls, tel, night, first))
+        return None
+    if dry_run:
+        r = restage.Restager(cfg['basedir'], apply=False)
+        _, lines = r.night(tel, night, first, targets)
+        log('{} {} {}: would restage, then run ZLP_pipeline.sh --from_T{} --no_T12 for {}{}'.format(
+            cls, tel, night, first, ' '.join(targets), ', then a promote job' if promote else ''))
+        for line in lines:
+            log('  ' + line)
+        return None
+    frames = count_frames(night_dir(cfg['basedir'], tel, night))
+    spec = jobspec.pipeline_job(
+        cfg, cls, tel, night, lock_targets=targets, run_targets=targets, frames=frames,
+        est_minutes=jobspec.rerun_estimate(cfg, tel, night, frames, first), source='cli', priority=priority,
+        no_t12=True, extra_flags=list(extra_flags or ()) + ['--from_T{}'.format(first)], note=note, cores=cores)
+    rid, jid, created, pid = jobspec.add_rerun(store, cfg, spec, first, promote=promote, campaign=campaign)
+    log('{} {} {}: restage job {}, then {} pipeline job {} (--from_T{}, {}){}'.format(
+        cls, tel, night, rid, 'queued' if created else 'already queued as', jid, first, ' '.join(targets),
+        ', then promote job {}'.format(pid) if pid else ''))
+    return jid
+
+
+def parse_from_stage(value):
+    """--from: a stage (T10, 10) or a cause the stage map knows (pwv, teff, pdf: utils/stages.py CAUSES)."""
+    from utils import stages
+    v = value.strip()
+    if v.upper().lstrip('T').isdigit():
+        return int(v.upper().lstrip('T'))
+    try:
+        return stages.cause_stage(v)
+    except KeyError as e:
+        raise argparse.ArgumentTypeError(e.args[0])
+
+
 def cmd_add_nights(cfg, store, a):
     if a.from_file:
         reqs, errors = parse_backlog(a.from_file, cfg)
@@ -272,12 +327,15 @@ def cmd_add_nights(cfg, store, a):
         for r in reqs:
             if r['download'] and r['replace'] == 'never':
                 r['replace'] = 'all' if a.refetch else 'invalid'
+    if a.from_stage and any(r['download'] for r in reqs):
+        print('--from reruns what is on disk: a line with DOWNLOAD=1 needs a full run; nothing queued')
+        return 2
     eso_nights = EsoNights(cfg, _eso(cfg)) if any(r['download'] for r in reqs) else None
     for r in reqs:
         try:
             queue_night(cfg, store, eso_nights, r, a.cls, priority=a.priority, note=a.note, no_t12=a.no_T12,
                         extra_flags=a.flag or (), cores=a.cores, dry_run=a.dry_run, campaign=a.campaign,
-                        promote=a.promote)
+                        promote=a.promote, from_stage=a.from_stage)
         except Exception as e:  # one bad night (ESO unreachable, say) must not stop the rest
             print('{} {} {}: not queued: {}: {}'.format(a.cls, r['telescope'], r['night'], type(e).__name__, e))
     return 0
@@ -309,7 +367,36 @@ def cmd_add_promote(cfg, store, a):
     return 0
 
 
+def check_rerun_args(a):
+    """What is wrong with a --from request, or ''."""
+    from utils import stages
+    if a.kind != 'pipeline':
+        return '--from goes with pipeline jobs'
+    if a.from_stage not in stages.RESTAGE:
+        return ('a rerun from T{} is not supported: from {} only (utils/stages.py says why); for an earlier stage, '
+                'rerun the whole night'.format(a.from_stage, ' or '.join('T{}'.format(n) for n in stages.RESTAGE)))
+    if a.download or a.download_only:
+        return '--from reruns what is on disk: it does not go with --download'
+    if not (a.promote or a.no_T12):
+        return ('--from needs --promote (the promotion overlays v2 with what the rerun wrote) or --no-T12 (keep it in '
+                'v3): T12 would sweep the restaged inputs into v2')
+    return ''
+
+
 def cmd_add(cfg, store, a):
+    if getattr(a, 'from_stage', None):
+        why = check_rerun_args(a)
+        if why:
+            print(why)
+            return 2
+        if not a.from_file:
+            if not (a.telescope and a.night):
+                print('a rerun needs --telescope and --night, or --from-file')
+                return 2
+            queue_rerun(cfg, store, a.cls, a.telescope, a.night, a.from_stage, a.targets.split() if a.targets else None,
+                        priority=a.priority, note=a.note, extra_flags=a.flag or (), cores=a.cores, dry_run=a.dry_run,
+                        campaign=a.campaign, promote=a.promote)
+            return 0
     if a.kind == 'promote':
         return cmd_add_promote(cfg, store, a)
     if a.after:
@@ -774,7 +861,13 @@ def build_parser():
                    help='fetch the whole night again and swap in every frame that differs; old files go to quarantine')
     s.add_argument('--from-file', help='queue each line of a {} file (the v3_backlog.txt format); DELETE=1 means '
                                        '--refetch'.format(BACKLOG_FORMAT))
-    s.add_argument('--dry-run', action='store_true', help='with --download or --from-file: only say what would be queued')
+    s.add_argument('--from', dest='from_stage', type=parse_from_stage,
+                   help='rerun from this stage, or for this cause (T10 or pwv/teff/light-curves: T10 and T11; T11 or '
+                        'pdf: the PDF): a restage job puts back into v3 what the rerun reads (from v2 for a promoted '
+                        'night), then ZLP_pipeline.sh --from_T<N> runs; with --promote the promotion overlays v2 with '
+                        'what the rerun wrote (docs/rerun-from-stage.md). Needs --promote or --no-T12')
+    s.add_argument('--dry-run', action='store_true',
+                   help='with --download, --from-file or --from: only say what would be queued')
     s.add_argument('cmd', nargs=argparse.REMAINDER, help='-- command for a non-pipeline job')
     s.set_defaults(fn=cmd_add)
 

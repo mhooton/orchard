@@ -208,9 +208,10 @@ def parse_sso_download_argv(argv):
 
 
 def parse_promote_argv(argv):
-    """Locks held by a promotion run outside the queue (utils/promote.py): one that changes the tree carries
-    --apply --telescope T --night N and holds that night; a dry run only reads, so it holds nothing."""
-    if not any(a.endswith('promote.py') for a in argv) or '--apply' not in argv:
+    """Locks held by a promotion or a restage run outside the queue (utils/promote.py, utils/restage.py): one that
+    changes the tree carries --apply --telescope T --night N and holds that night; a dry run only reads, so it holds
+    nothing."""
+    if not any(a.endswith(('promote.py', 'restage.py')) for a in argv) or '--apply' not in argv:
         return None
     opts = {}
     for k, a in enumerate(argv):

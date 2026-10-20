@@ -122,6 +122,52 @@ def promote_job(cfg, cls, telescope, night, after=None, targets=(), source='cli'
         source=source, meta=dict(meta or {}, after=after), note=note)
 
 
+# A rerun from a late stage costs this share of a full run's estimate (minutes per 1000 frames): T10 is six
+# SPlightcurve.py runs per target, T11 the PDF (which aligns every frame for its stack panel). Measured on the
+# scratch trial of 2026-10-20 (docs/rerun-from-stage.md).
+RERUN_SHARE = {10: 0.3, 11: 0.2}
+
+
+def rerun_estimate(cfg, telescope, night, frames, first):
+    return max(float(cfg['min_estimate_minutes']), pipeline_estimate(cfg, telescope, night, frames or 0) *
+               RERUN_SHARE.get(first, 1.0))
+
+
+def restage_job(cfg, cls, telescope, night, first, targets=(), source='cli', note=None, priority=0.0):
+    """utils/restage.py for one night (docs/rerun-from-stage.md): puts back into v3 what a rerun from stage `first`
+    reads (from v2, as hard links, where promotion already moved the night) and records it, so that the promotion
+    after the rerun overlays v2 with only what the rerun wrote. Holds the night lock; links and a few small copies."""
+    argv = [cfg['python'], 'utils/restage.py', 'stage', '--apply', '--telescope', telescope, '--night', night,
+            '--from', str(first)]
+    for t in targets:
+        argv += ['--target', t]
+    return dict(
+        cls=cls, kind='restage', telescope=telescope, night=night, targets=' '.join(targets), argv=argv,
+        cwd=cfg['src_dir'], env=job_env(cfg), cores=1, disk_heavy=False, est_minutes=5.0,
+        locks=['night:{}:{}'.format(telescope, night)], priority=priority,
+        dedupe_key='restage:{}:{}:{}:T{}'.format(telescope, night, ' '.join(targets) or '*', first),
+        max_retries=cfg['max_retries'], source=source, note=note, meta={'from_stage': first})
+
+
+def add_rerun(store, cfg, spec, first, promote=False, campaign=None):
+    """Queue a rerun from stage `first` of a night: a restage job, then the pipeline job described by pipeline_job()
+    with --from_T<first>, which runs only if the restage succeeded, and, with promote, a promote job after it.
+    Returns (restage job id, pipeline job id, created, promote job id or None)."""
+    flag = '--from_T{}'.format(first)
+    if flag not in spec['argv']:
+        raise ValueError('a rerun from T{} must run ZLP_pipeline.sh with {}'.format(first, flag))
+    if '--no_T12' not in spec['argv']:
+        raise ValueError('a rerun from T{} must run with --no_T12: T12 would sweep the restaged inputs into v2'.format(
+            first))
+    rid, _ = add(store, restage_job(cfg, spec['cls'], spec['telescope'], spec['night'], first,
+                                    (spec.get('targets') or '').split(), source=spec.get('source') or 'cli',
+                                    note=spec.get('note'), priority=spec.get('priority') or 0.0), campaign=campaign)
+    spec = dict(spec, depends_on=rid, dep_requires_success=True,
+                dedupe_key='{}:from_T{}'.format(spec['dedupe_key'], first))
+    jid, created, pid = add_pipeline(store, cfg, spec, promote=promote, campaign=campaign)
+    return rid, jid, created, pid
+
+
 def nightly_promote(cfg):
     """Whether the watcher's, the look-back's and fetch reruns' pipeline jobs run with --no_T12 and a promote job."""
     return bool((cfg.get('promote') or {}).get('nightly'))

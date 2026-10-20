@@ -85,6 +85,8 @@ import numpy as np
 
 from utils import promote_check
 from utils import promote_policy
+from utils import restage as restage_mod
+from utils import stages as stage_map
 from utils import target_management
 from utils.promote_check import Identity, RawFrames, assess
 from utils.promote_journal import Journal, iso, parse_iso, utcnow
@@ -96,7 +98,11 @@ KEEP_IN_RUN_DIRS = ('.dat', '.dat_phot')   # frame lists: tiny, and they say whi
 TOLERANCE = 1.0                     # seconds: run starts are logged to the second
 EX_TEMPFAIL = 75                    # the queue retries a job with this exit code an hour later
 PROC = '/proc'                      # where night_busy looks for pipeline runs outside the queue (tests point it away)
-STEPS = ('check', 'aside', 'supersede', 'publish', 'touch', 'reduction', 'records', 'thin')
+STEPS = ('check', 'aside', 'supersede', 'publish', 'touch', 'reduction', 'records', 'thin', 'unstage')
+# a night restaged from v2 for a rerun from a late stage (utils/restage.py): only what the rerun wrote goes into v2
+OVERLAY_STEPS = ('check', 'install', 'touch', 'records', 'leftover', 'thin')
+OVERLAY = '-overlay'                # superseded/<TEL>/<NIGHT>/<TARGET>/<stamp>-overlay/: the v2 files an overlay replaced
+RESTAGED = '-restage'               # superseded/<TEL>/<NIGHT>/<TARGET>/<stamp>-restage/: the restaged inputs, afterwards
 STALE = '-stale'                    # superseded/<TEL>/<NIGHT>/<TARGET>/<stamp>-stale/: files set aside before publishing
 RANK = {'PROMOTE': 0, 'HOLD': 1, 'REJECT': 2}
 EPOCH = dt.datetime(1970, 1, 1)
@@ -279,7 +285,7 @@ def parse_log(path):
     """What a ZLP_pipeline.sh log says about its run: start and end (its first and last `date` lines, UTC in the
     container), the targets it ran and whether they were given, and whether it completed. None without a start."""
     run = {'source': 'log', 'log': path, 'job': None, 'state': None, 'start': None, 'end': None, 'targets': None,
-           'specified': None, 'complete': False, 'science': True}
+           'specified': None, 'complete': False, 'science': True, 'stages': None}
     try:
         with open(path, 'rb') as f:
             for k, raw in enumerate(f):
@@ -288,6 +294,8 @@ def parse_log(path):
                 line = raw.decode('utf-8', 'replace').rstrip('\r\n')
                 if run['start'] is None:
                     run['start'] = _date_line(line)
+                if run['stages'] is None:
+                    run['stages'] = stage_map.parse_stages_line(line)       # 'Stages run: T10 T11' (since 2026-10)
                 for label, given in (('Using specified targets:', True), ('Using discovered targets:', False)):
                     if line.startswith(label):
                         run['targets'], run['specified'] = line[len(label):].split(), given
@@ -303,6 +311,8 @@ def parse_log(path):
     ends = [t for t in (_date_line(line) for line in tail) if t]
     run['end'] = ends[-1] if ends and ends[-1] > run['start'] else None
     run['complete'] = any(line.strip() == 'PIPELINE COMPLETE' for line in tail)
+    if run['stages'] is not None:
+        run['science'] = 10 in run['stages']
     if run['targets'] is None:
         # a log with neither line: its name says whether targets were given (<NIGHT>_<RUN>_v3_<T1_T2>.log)
         m = LOG_NAME.match(os.path.basename(path))
@@ -347,10 +357,7 @@ def queue_job(conn, job_id):
 def science_argv(argv):
     """Whether a ZLP_pipeline.sh invocation runs T10, the stage that writes the light curves. An --only_T11 run (the
     PDF and frame packing) or an --only_T12 sweep makes no products, so S1 must not judge files against it."""
-    only = [a for a in argv if a.startswith('--only_T')]
-    if only:
-        return any(a == '--only_T10' for a in only)
-    return '--no_T10' not in argv
+    return 10 in stage_map.stages_from_argv(argv)
 
 
 def runs_from_queue(conn, tel, night):
@@ -370,7 +377,7 @@ def runs_from_queue(conn, tel, night):
                     'end': None if r['state'] == 'running' else parse_iso(r['finished_at']),
                     'targets': targets or None, 'specified': bool(targets), 'complete': None, 'log': None,
                     'job_log': r['log_path'], 'exit_code': r['exit_code'], 'code': r['code_sha'],
-                    'science': science_argv(argv)})
+                    'science': science_argv(argv), 'stages': stage_map.stages_from_argv(argv)})
     return out
 
 
@@ -721,14 +728,62 @@ class Promoter(object):
 
     # ------------------------------------------------------------------ judging
 
+    def restage_record(self, tel, night, target):
+        """The restage record of a candidate (utils/restage.py), if it was restaged for a rerun from a late stage."""
+        rec = restage_mod.load_record(self.tree.base, tel, night, target)
+        if rec is None or os.path.abspath(rec['dest']) != os.path.abspath(self.tree.output('v3', tel, night, target)):
+            return None
+        return rec
+
+    @staticmethod
+    def run_stale(stale, run, rec, night, target):
+        """The files of a candidate that predate its run and should not: S1 limited to what the run had to write.
+        A restaged candidate's unchanged inputs (its record says which) are exempt; so, after a run that started at a
+        later stage (--from_T10, or --no_T1 ... --no_T9), are the products of the stages it did not run (the calibrated
+        frames, the stacks, the night's *_output.fits), which it read and must predate it. Returns (stale, the
+        record's check or None)."""
+        if rec is not None:
+            st = restage_mod.check(rec)
+            inputs = set(st['unchanged'])
+            return [r for r in stale if r not in inputs], st
+        first = stage_map.first_stage(run.get('stages')) if run else None
+        if first and first > 1:
+            return [r for r in stale if not stage_map.made_before(r, first, night=night, target=target)], None
+        return list(stale), None
+
     def judge(self, tel, night, target, runs):
         cand = self.tree.output('v3', tel, night, target)
         inc = self.tree.output('v2', tel, night, target)
         run = science_run(runs, target)
+        rec = self.restage_record(tel, night, target)
         c = scan_dir(cand, run['start'] if run else None)
+        c['stale'], st = self.run_stale(c['stale'], run, rec, night, target)
         i = scan_dir(inc)
         row = assess(tel, night, target, cand, inc if i['fp'] is not None else '', self.identity, self.raw, self.th)
         hold = []
+        overlay = rec is not None and rec['source'] == 'v2'
+        if rec is not None:
+            bad = st['changed'] + st['missing']
+            if rec.get('state') != 'staged':
+                hold.append('O1 the restage of {} did not finish ({} is still {})'.format(
+                    target, os.path.basename(rec['_path']), rec.get('state')))
+            if bad:
+                linked = {e['rel'] for e in rec['files'] if e['how'] == 'link'} & set(bad)
+                hold.append('O1 {} of the {} restaged inputs changed or went after the restage ({}){}'.format(
+                    len(bad), len(rec['files']), ', '.join(sorted(bad)[:3]),
+                    "; {} were hard links to v2's files, so v2's changed too".format(len(linked)) if linked else ''))
+            if st['reduction_changed']:
+                hold.append("O1 the night's v3 reduction changed after the restage ({})".format(
+                    ', '.join(st['reduction_changed'][:3])))
+            if overlay and st['src_changed']:
+                hold.append('O2 v2 changed after the restage: {} of the files the rerun read are no longer what v2 '
+                            'holds ({})'.format(len(st['src_changed']), ', '.join(sorted(st['src_changed'])[:3])))
+            if overlay and run and run.get('code'):
+                m = restage_mod.manifest(rec, sha=False)
+                foreign = sorted(e['rel'] for e in m['written'] if e.get('orchrel') and e['orchrel'] != run['code'])
+                if foreign:
+                    hold.append('O3 {} file(s) of the rerun were made by another code release than its run ({}): '
+                                '{}'.format(len(foreign), run['code'], ', '.join(foreign[:3])))
         if run is None and latest_run(runs, target) is not None:
             hold.append('S2 no run of the night covering {} made light curves (the latest, {}, did not run T10), so '
                         'its files cannot be checked against the run that wrote them'.format(
@@ -756,6 +811,10 @@ class Promoter(object):
         elif c_pwv == 'missing':
             notes.append('no PWV correction in the candidate (nor in v2)' if i_pwv else
                          'no PWV correction in the candidate')
+        if rec is not None:
+            notes.append('restaged from {} for a rerun from T{} ({} inputs){}'.format(
+                rec['source'], rec['from_stage'], len(rec['files']),
+                ': promoted as an overlay of what the rerun wrote' if overlay else ''))
         verdict = row['verdict']
         if hold and verdict == 'PROMOTE':
             verdict = 'HOLD'
@@ -763,7 +822,8 @@ class Promoter(object):
                 'incumbent': inc if i['fp'] is not None else '', 'verdict': verdict,
                 'checker_verdict': row['verdict'], 'reasons': '; '.join(x for x in [row['reasons']] + hold if x),
                 'notes': '; '.join(notes), 'metrics': jsonable(row), 'run': run, 'cand_fp': c['fp'],
-                'inc_fp': i['fp'], 'cand_files': c['files'], 'stale_files': len(c['stale']), 'stale': c['stale']}
+                'inc_fp': i['fp'], 'cand_files': c['files'], 'stale_files': len(c['stale']), 'stale': c['stale'],
+                'mode': 'overlay' if overlay else 'whole'}
 
     # ------------------------------------------------------------------ the journal
 
@@ -805,8 +865,13 @@ class Promoter(object):
     def plan(self, v, stamp):
         tel, night, target = v['telescope'], v['night'], v['target']
         run = run_from_json(v['run'])
+        rec = self.restage_record(tel, night, target)
+        if rec is not None and os.path.abspath(v['candidate']) == os.path.abspath(rec['dest']) and \
+                rec['source'] == 'v2':
+            return self.plan_overlay(v, stamp, rec, run)
         dest = self.tree.output('v2', tel, night, target)
         c = scan_dir(v['candidate'], run['start'] if run and run.get('start') else None)
+        c['stale'], _ = self.run_stale(c['stale'], run, rec, night, target)
         i = scan_dir(dest)
         # files the run did not write go aside, so v2 holds only the promoted run's own (an accept of an S1 hold,
         # or the policy's)
@@ -816,7 +881,59 @@ class Promoter(object):
                 'cand_ino': c['ino'], 'inc_fp': v['inc_fp'], 'inc_ino': i['ino'],
                 'superseded': self.tree.superseded(tel, night, target, stamp) if i['ino'] else None, 'aside': aside,
                 'reduction': self.plan_reduction(tel, night, run, stamp), 'records': self.plan_records(tel, night, run),
-                'run': v['run']}
+                'run': v['run'],
+                'record': {'path': rec['_path'], 'dir': self.tree.superseded(tel, night, target, stamp + RESTAGED)}
+                if rec is not None else None}
+
+    def plan_overlay(self, v, stamp, rec, run):
+        """A candidate restaged from v2 (utils/restage.py): v2 keeps its directory, and only the files the rerun wrote
+        (its manifest: everything in the candidate but the unchanged inputs, less any that predate the run) replace
+        or join v2's. v2's files they replace, and v2's outputs of the rerun's stages that the rerun did not write
+        again, are set aside under superseded/<TEL>/<NIGHT>/<TARGET>/<stamp>-overlay/; the inputs go to
+        <stamp>-restage/ with the record."""
+        tel, night, target = v['telescope'], v['night'], v['target']
+        dest = self.tree.output('v2', tel, night, target)
+        c = scan_dir(v['candidate'])
+        i = scan_dir(dest)
+        m = restage_mod.manifest(rec, run['start'] if run and run.get('start') else None)
+        early = set(m['early'])
+        install = [{k: e[k] for k in ('rel', 'size', 'mtime_ns', 'sha1')} for e in m['written'] if e['rel'] not in early]
+        names = {e['rel'] for e in install}
+        have = set(restage_mod.walk_files(dest)) if os.path.isdir(dest) else set()
+        orphans = sorted(rel for rel in have - names
+                         if stage_map.is_output(rel, rec['from_stage'], night=night, target=target))
+        records = self.plan_records(tel, night, run)
+        covered = self.covers_night(tel, night, run)
+        for r in records:
+            if r['kind'] == 'pdf' and r.get('src'):
+                # the night's report shows the rerun's curves: it takes the plain name when it covers every target
+                r['replace_plain'] = covered
+                r['plain_aside'] = os.path.join(self.tree.po, SUPERSEDED, tel, night, 'reports', stamp)
+        return {'mode': 'overlay', 'stamp': stamp, 'candidate': v['candidate'], 'dest': dest,
+                'cand_fp': v['cand_fp'], 'cand_ino': c['ino'], 'inc_fp': v['inc_fp'], 'inc_ino': i['ino'],
+                'install': install, 'replace': sorted(names & have), 'orphans': orphans, 'early': sorted(early),
+                'inputs': len(m['inputs']), 'from_stage': rec['from_stage'],
+                'overlay_dir': self.tree.superseded(tel, night, target, stamp + OVERLAY),
+                'leftover': self.tree.superseded(tel, night, target, stamp + RESTAGED),
+                'record': {'path': rec['_path'], 'dir': self.tree.superseded(tel, night, target, stamp + RESTAGED)},
+                'links': sorted(e['rel'] for e in rec['files'] if e['how'] == 'link'),
+                'superseded': None, 'aside': None,
+                'reduction': {'action': 'keep', 'why': 'an overlay leaves the reduction alone: the rerun only read it'},
+                'records': records, 'run': v['run']}
+
+    def covers_night(self, tel, night, run):
+        """Whether a rerun given its targets covered every target of the night with products (a v2 or v3 directory
+        with the night's *_output.fits), so that its PDF can stand for the night. A run that discovered its targets
+        could have rerun some of them on nothing, so it never does."""
+        if run is None or not run.get('specified'):
+            return False
+        made = set()
+        for version in ('v2', 'v3'):
+            d = self.tree.output(version, tel, night)
+            for name in os.listdir(d) if os.path.isdir(d) else []:
+                if name != 'reduction' and glob.glob(os.path.join(d, name, '*_{}_output.fits'.format(night))):
+                    made.add(norm_target(name))
+        return made <= {norm_target(t) for t in run.get('targets') or ()}
 
     def plan_reduction(self, tel, night, run, stamp):
         src = self.tree.output('v3', tel, night, 'reduction')
@@ -964,18 +1081,20 @@ class Promoter(object):
         """Run a promotion's remaining steps. Returns (state, why): done, aborted (nothing moved), failed, or
         waiting (a resumed promotion whose night is busy now; nothing changed)."""
         pid, plan = prom['id'], prom['plan']
+        overlay = plan.get('mode') == 'overlay'
         done = {s['step'] for s in self.journal.steps(pid) if s['state'] in ('done', 'skipped')}
         if 'check' in done:
             # resuming: the pre-flight check ran before the interruption, and the night may be busy again since
             busy = night_busy(self.queue, prom['telescope'], prom['night'], self.own_job, self.proc)
             if busy:
                 return 'waiting', 'the night is busy: ' + busy
-        for name in STEPS:
+        for name in steps_of(plan):
             if name in done:
                 continue
             sid = self.journal.step_intent(pid, name, {})
             try:
-                detail = getattr(self, 'step_' + name)(plan, prom)
+                fn = getattr(self, 'step_overlay_' + name, None) if overlay else None
+                detail = (fn or getattr(self, 'step_' + name))(plan, prom)
             except Exception as e:
                 err = '{} step: {}: {}'.format(name, type(e).__name__, e)
                 note = {'error': err}
@@ -1132,14 +1251,34 @@ class Promoter(object):
                     plain = rec['plain']
                 except FileExistsError:
                     pass
+            elif rec.get('replace_plain') and not os.path.samefile(rec['plain'], path):
+                plain = self.replace_plain(rec['plain'], path, rec['plain_aside'])
             done.append({'kind': rec['kind'], 'copy': path, 'copied': copied, 'plain': plain})
         return {'records': done}
+
+    def replace_plain(self, plain, copy, aside_dir):
+        """Point a plain record name (<TEL>_<NIGHT>.pdf) at a new copy. The file it named is kept: under its own .run
+        name if it has one (another hard link), else set aside into aside_dir first."""
+        if os.lstat(plain).st_nlink < 2:
+            if not self.tree.under_superseded(aside_dir):
+                raise PromoteError('refusing to set {} aside outside {}'.format(plain, SUPERSEDED))
+            os.makedirs(aside_dir, exist_ok=True)
+            kept = os.path.join(aside_dir, os.path.basename(plain))
+            if not os.path.lexists(kept):
+                os.link(plain, kept)
+        tmp = os.path.join(os.path.dirname(plain), '.{}.promote-{}'.format(os.path.basename(plain), os.getpid()))
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+        os.link(copy, tmp)
+        os.replace(tmp, plain)
+        return plain
 
     def step_thin(self, plan, prom):
         out = {}
         red = plan['reduction'].get('superseded') if plan['reduction'].get('action') != 'keep' else None
         aside = (plan.get('aside') or {}).get('dir')
-        for key, path in (('target', plan['superseded']), ('reduction', red), ('aside', aside)):
+        for key, path in (('target', plan['superseded']), ('reduction', red), ('aside', aside),
+                          ('restaged', plan.get('leftover'))):
             if not path or not os.path.isdir(path):
                 continue
             if not self.tree.under_superseded(path):
@@ -1148,6 +1287,121 @@ class Promoter(object):
         if not out:
             return {'skipped': True, 'why': 'nothing was superseded'}
         return out
+
+    def step_unstage(self, plan, prom):
+        """After a restaged candidate is published whole (restaged in place in v3): its record goes to the superseded
+        tree, so that the night is no longer taken for one restaged."""
+        r = plan.get('record')
+        if not r:
+            return {'skipped': True, 'why': 'the candidate was not restaged'}
+        dst = os.path.join(r['dir'], 'restage.json')
+        if not os.path.lexists(r['path']):
+            return {'record': dst, 'resumed': True}
+        os.makedirs(r['dir'], exist_ok=True)
+        os.rename(r['path'], dst)
+        _rmdir_empty(os.path.dirname(r['path']))
+        return {'record': dst}
+
+    # ------------------------------------------------------------------ the overlay of a restaged rerun
+
+    def step_overlay_check(self, plan, prom):
+        busy = night_busy(self.queue, prom['telescope'], prom['night'], self.own_job, self.proc)
+        if busy:
+            raise PromoteError('the night is busy: ' + busy)
+        c = scan_dir(plan['candidate'])
+        if c['fp'] != plan['cand_fp'] or c['ino'] != plan['cand_ino']:
+            raise PromoteError('the candidate {} changed after it was judged'.format(plan['candidate']))
+        i = scan_dir(plan['dest'])
+        if i['fp'] != plan['inc_fp'] or i['ino'] != plan['inc_ino'] or i['ino'] is None:
+            raise PromoteError('v2 {} changed after the candidate was judged'.format(plan['dest']))
+        rec = restage_mod.load_record(self.tree.base, prom['telescope'], prom['night'], prom['target'])
+        if rec is None or rec['_path'] != plan['record']['path']:
+            raise PromoteError('the restage record {} is gone'.format(plan['record']['path']))
+        st = restage_mod.check(rec)
+        bad = st['changed'] + st['missing'] + st['src_changed']
+        if bad:
+            raise PromoteError('{} restaged inputs (or the v2 files they came from) changed: {}'.format(
+                len(bad), ', '.join(bad[:3])))
+        for e in plan['install']:
+            p = os.path.join(plan['candidate'], e['rel'])
+            if os.path.getsize(p) != e['size'] or os.lstat(p).st_mtime_ns != e['mtime_ns']:
+                raise PromoteError('{} is not the file the manifest lists'.format(p))
+        if os.path.islink(plan['dest']) or os.path.islink(plan['candidate']):
+            raise PromoteError('a symbolic link where a directory should be')
+        same_device(plan['candidate'], plan['dest'], plan['overlay_dir'], plan['leftover'])
+        problems = overlay_access_problems(plan)
+        if problems:
+            raise PromoteError('; '.join(problems))
+        return {'install': len(plan['install']), 'replace': len(plan['replace']), 'orphans': len(plan['orphans'])}
+
+    def step_install(self, plan, prom):
+        """Install the rerun's files into v2. Every v2 file it replaces, and every v2 output of the rerun's stages it
+        did not write again, gets a hard link under <stamp>-overlay/ first, so v2 never lacks a file and nothing is
+        lost; then each new file is renamed over v2's (one filesystem: atomic) and read back against its sha1."""
+        root, dest, cand = plan['overlay_dir'], plan['dest'], plan['candidate']
+        if not self.tree.under_superseded(root):
+            raise PromoteError('refusing to set files aside outside {}: {}'.format(SUPERSEDED, root))
+        kept = installed = resumed = 0
+        for rel in plan['replace'] + plan['orphans']:
+            v2f, a = os.path.join(dest, rel), os.path.join(root, rel)
+            if os.path.lexists(a):
+                continue                                    # kept before an interruption
+            if not os.path.lexists(v2f):
+                raise PromoteError('{} went from v2 during the overlay'.format(v2f))
+            os.makedirs(os.path.dirname(a), exist_ok=True)
+            os.link(v2f, a)
+            kept += 1
+        for e in plan['install']:
+            src, dst = os.path.join(cand, e['rel']), os.path.join(dest, e['rel'])
+            if not os.path.lexists(src):
+                if os.path.lexists(dst) and os.path.getsize(dst) == e['size'] and file_sha1(dst) == e['sha1']:
+                    resumed += 1                            # installed before an interruption
+                    continue
+                raise PromoteError('{} went from the candidate during the overlay'.format(src))
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            os.replace(src, dst)
+            if os.path.getsize(dst) != e['size'] or file_sha1(dst) != e['sha1']:
+                raise PromoteError('{} does not read back as the file the manifest lists'.format(dst))
+            installed += 1
+        gone = 0
+        for rel in plan['orphans']:
+            v2f = os.path.join(dest, rel)
+            if os.path.lexists(v2f) and os.path.samefile(v2f, os.path.join(root, rel)):
+                os.unlink(v2f)                              # its data stays under <stamp>-overlay/
+                gone += 1
+        if plan['replace'] or plan['orphans']:
+            write_note(root, {'overlaid_at': iso(self.now()), 'v2': dest, 'promotion': prom['id'],
+                              'verdict': prom['verdict_id'], 'from_stage': plan['from_stage'],
+                              'why': "v2's files that a rerun from T{} replaced, or wrote no more".format(
+                                  plan['from_stage']),
+                              'replaced': plan['replace'], 'no_longer_written': plan['orphans'],
+                              'manifest': plan['install'], 'run': plan.get('run')})
+        return {'installed': installed, 'resumed': resumed, 'kept': kept, 'removed_orphans': gone,
+                'dir': root if (plan['replace'] or plan['orphans']) else None}
+
+    def step_leftover(self, plan, prom):
+        """The restaged directory, now holding only the inputs (and anything that predated the run), goes to
+        <stamp>-restage/ with its record; its hard links to v2's own files are dropped there (v2 keeps them)."""
+        src, dst = plan['candidate'], plan['leftover']
+        if lino(dst) != plan['cand_ino']:
+            if lino(src) != plan['cand_ino']:
+                raise PromoteError('the restaged directory {} is gone or replaced'.format(src))
+            claim_and_rename(src, dst)
+        rec_path, kept = plan['record']['path'], os.path.join(dst, 'restage.json')
+        rec = None
+        if os.path.lexists(rec_path):
+            with open(rec_path) as f:
+                rec = json.load(f)
+            os.rename(rec_path, kept)
+            _rmdir_empty(os.path.dirname(rec_path))
+        elif os.path.lexists(kept):
+            with open(kept) as f:
+                rec = json.load(f)
+        dropped = restage_mod.drop_links(dst, rec) if rec else 0
+        write_note(dst, {'restaged_inputs_of': plan['dest'], 'promotion': prom['id'], 'verdict': prom['verdict_id'],
+                         'why': 'the inputs a rerun from T{} read, restaged from v2; its own files went into v2'.format(
+                             plan['from_stage']), 'links_to_v2_dropped': dropped})
+        return {'moved': [src, dst], 'links_dropped': dropped}
 
     # ------------------------------------------------------------------ one night
 
@@ -1180,6 +1434,10 @@ class Promoter(object):
         runs = discover_runs(self.tree, self.queue, tel, night)
         results = []
         for target in targets:
+            waiting = self.rerun_pending(tel, night, target, runs)
+            if waiting:
+                results.append(self._result(tel, night, target, action='skipped: ' + waiting))
+                continue
             try:
                 j = self.judge(tel, night, target, runs)
             except Exception as e:      # one unreadable directory must not stop the night
@@ -1208,6 +1466,22 @@ class Promoter(object):
             self.out('{:8} {} {:16} {:7} {}'.format(tel, night, target, j['verdict'], j['action']))
         return results
 
+    def rerun_pending(self, tel, night, target, runs):
+        """Why a restaged candidate is not judged yet ('' if it is): its restage did not finish, or no run covering
+        it has started since (a candidate restaged for a rerun from T11 holds T10's curves from the start)."""
+        rec = self.restage_record(tel, night, target)
+        if rec is None:
+            return ''
+        if rec.get('state') != 'staged':
+            return 'the restage of {} for a rerun from T{} did not finish (utils/restage.py stage again)'.format(
+                target, rec['from_stage'])
+        last = latest_run(runs, target)
+        staged = parse_iso(rec.get('staged_at') or rec['made_at'])
+        if last is None or epoch(last['start']) < epoch(staged) - TOLERANCE:
+            return 'restaged at {} for a rerun from T{}, which has not run yet'.format(
+                rec.get('staged_at') or rec['made_at'], rec['from_stage'])
+        return ''
+
     def _policy_due(self, v):
         """Whether the policy should decide a pending verdict the journal already held unchanged: not when this
         version of it has already left the verdict for reprocessing or for a person."""
@@ -1234,6 +1508,13 @@ class Promoter(object):
         elif red['action'] != 'keep':
             self._dry_reductions[key] = j['target']
         j['plan'] = plan
+        if plan.get('mode') == 'overlay':
+            problems = overlay_access_problems(plan)
+            return 'would overlay v2 with the {} files the rerun from T{} wrote ({} replacing v2\'s, {} new; {} of v2\'s ' \
+                'no longer written set aside); the {} restaged inputs go to the superseded tree{}'.format(
+                    len(plan['install']), plan['from_stage'], len(plan['replace']),
+                    len(plan['install']) - len(plan['replace']), len(plan['orphans']), plan['inputs'],
+                    '; BUT {}'.format('; '.join(problems)) if problems else '')
         problems = access_problems(plan)
         return 'would promote{}; reduction: {} ({}){}'.format(
             ', superseding the v2 directory' if plan['superseded'] else ' (new in v2)', red['action'], red['why'],
@@ -1243,6 +1524,29 @@ class Promoter(object):
         self.out('{:8} {} {:16} {:7} {}'.format(tel, night, target, '-', action))
         return {'telescope': tel, 'night': night, 'target': target, 'verdict': '', 'action': action, 'busy': busy,
                 'error': error, 'reasons': '', 'notes': '', 'metrics': {}, 'run': None, 'plan': None}
+
+
+def steps_of(plan):
+    """The steps of a promotion: the whole-directory ones, or an overlay's."""
+    return OVERLAY_STEPS if (plan or {}).get('mode') == 'overlay' else STEPS
+
+
+def _rmdir_empty(path):
+    try:
+        os.rmdir(path)
+    except OSError:
+        pass
+
+
+def overlay_access_problems(plan):
+    """What would stop an overlay: writing in v2's directory and its subdirectories, renaming the restaged
+    directory out of v3, and making the directories under superseded/."""
+    want = [plan['dest'], os.path.dirname(plan['candidate']), plan['candidate'], nearest_existing(plan['overlay_dir']),
+            nearest_existing(plan['leftover'])]
+    want += sorted({os.path.join(plan['dest'], os.path.dirname(e['rel'])) for e in plan['install']})
+    want += sorted({os.path.join(plan['candidate'], os.path.dirname(e['rel'])) for e in plan['install']})
+    want += sorted({os.path.join(plan['dest'], os.path.dirname(rel)) for rel in plan['orphans']})
+    return ['cannot write in {}'.format(d) for d in want if os.path.isdir(d) and not os.access(d, os.W_OK | os.X_OK)]
 
 
 def access_problems(plan):
@@ -1305,7 +1609,8 @@ def write_csv(results, path):
                        run_start=iso(run['start']) if isinstance(run.get('start'), dt.datetime) else
                        run.get('start', ''),
                        stale_files=r.get('stale_files', ''), cand_files=r.get('cand_files', ''),
-                       supersedes='yes' if plan.get('superseded') else ('no' if plan else ''),
+                       supersedes='overlay' if plan.get('mode') == 'overlay' else
+                       'yes' if plan.get('superseded') else ('no' if plan else ''),
                        reduction=(plan.get('reduction') or {}).get('action', ''),
                        reduction_why=(plan.get('reduction') or {}).get('why', ''))
             w.writerow({k: promote_check._fmt(v) if v is not None else '' for k, v in row.items()})
@@ -1477,6 +1782,13 @@ def cmd_run(a, cfg, paths):
         p.close_gone(a.telescope, a.night, set())
     for (tel, night), targets in found.items():
         results += p.night(tel, night, targets, only)
+    for tel in tels or ():
+        for night in nights or ():
+            for t in restage_mod.restaged_targets(a.base, tel, night):
+                if t not in found.get((tel, night), ()) and (not only or norm_target(t) in {norm_target(x) for x in only}):
+                    print('{:8} {} {:16} -       restaged for a rerun, but v3 holds no light curves of it to promote '
+                          '(the rerun has not run, or failed): requeue it, or retire the restage with '
+                          'utils/restage.py clear'.format(tel, night, t))
     counts = Counter(r['verdict'] or 'skipped' for r in results)
     acted = Counter(r['action'].split(':')[0] for r in results)
     summary = {'target_nights': len(results), 'verdicts': dict(counts), 'actions': dict(acted),
@@ -1624,8 +1936,13 @@ def cmd_accept(a, cfg, paths):
         plan = p.plan(v, 'DRYRUN')
         print('dry run: accepting verdict {} ({} {} {}, {}) would promote {}'.format(
             v['id'], v['telescope'], v['night'], v['target'], v['verdict'], v['candidate']))
+        if plan.get('mode') == 'overlay':
+            print('  as an overlay: {} files of the rerun from T{} into v2 ({} replacing, {} no longer written set '
+                  'aside under {})'.format(len(plan['install']), plan['from_stage'], len(plan['replace']),
+                                           len(plan['orphans']), os.path.dirname(plan['overlay_dir'])))
         print('  v2 directory: {}'.format('superseded into ' + os.path.dirname(plan['superseded']) + '/<stamp>'
-                                          if plan['superseded'] else 'none yet'))
+                                          if plan['superseded'] else 'kept' if plan.get('mode') == 'overlay'
+                                          else 'none yet'))
         print('  reduction: {} ({})'.format(plan['reduction']['action'], plan['reduction']['why']))
         for rec in plan['records']:
             print('  {}: {}'.format(rec['kind'], rec.get('missing') or 'copy to ' + rec['dst']))
@@ -1674,7 +1991,7 @@ def cmd_resume(a, cfg, paths):
             done = [s['step'] for s in j.steps(p['id']) if s['state'] in ('done', 'skipped')]
             print('promotion {} ({} {} {}, {}): done {}; would run {}'.format(
                 p['id'], p['telescope'], p['night'], p['target'], p['state'], ' '.join(done) or 'nothing',
-                ' '.join(s for s in STEPS if s not in done)))
+                ' '.join(s for s in steps_of(p['plan']) if s not in done)))
         print('add --apply to finish them')
         return 0
     nights = sorted({(p['telescope'], p['night']) for p in proms})

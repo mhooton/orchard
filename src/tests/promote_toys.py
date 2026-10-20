@@ -122,15 +122,18 @@ class Toy(object):
                 f.write(tag + '\n')
         return d
 
-    def log(self, version, tel, night, start, targets, specified=False, end=None, complete=True):
-        """A ZLP_pipeline.sh log: `date` lines in UTC, the target line, the end."""
+    def log(self, version, tel, night, start, targets, specified=False, end=None, complete=True, stages=None):
+        """A ZLP_pipeline.sh log: `date` lines in UTC, the 'Stages run:' line (given stages), the target line, the
+        end."""
         d = os.path.join(self.po, version, tel, 'logs')
         os.makedirs(d, exist_ok=True)
         name = '{}_1_v3{}.log'.format(night, '_' + '_'.join(targets) if specified else '')
         end = end or start + dt.timedelta(hours=1)
         fmt = '%a %b %d %H:%M:%S UTC %Y'
-        lines = ['Using python: /usr/local/bin/python', 'Environment set up', start.strftime(fmt),
-                 'Using 20 cores', 'START T1',
+        lines = ['Using python: /usr/local/bin/python', 'Environment set up', start.strftime(fmt)]
+        if stages:
+            lines.append('Stages run: ' + ' '.join('T{}'.format(n) for n in stages))
+        lines += ['Using 20 cores', 'START T1',
                  'Using {} targets: {}'.format('specified' if specified else 'discovered', ' '.join(targets))]
         lines += ['TARGET: {}'.format(t) for t in targets]
         lines += ['START frame packing (int16)', end.strftime(fmt)]

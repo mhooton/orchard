@@ -28,6 +28,9 @@ T12="1" # sweep from v3 to v2
 # Parse and remove task control arguments, leaving positional args intact
 filtered_args=()
 only_task=""
+# --from_TN: run TN and every stage after it (less any --no_T); the earlier stages' products must be there already.
+# For a night promotion has moved into v2, utils/restage.py puts them back first (docs/rerun-from-stage.md).
+FROM_TASK="0"
 FORCE_PLATESOLVE="0"
 USE_EXISTING_CALIBRATIONS="0"
 SAVE_FLAT_PRODUCTS="0" # T4: also write flats/proc*, std.fts and variance.fts (never read)
@@ -60,6 +63,7 @@ while [[ $# -gt 0 ]]; do
         --only_T10) only_task="10"; shift ;;
         --only_T11) only_task="11"; shift ;;
         --only_T12) only_task="12"; shift ;;
+        --from_T[1-9]|--from_T1[0-2]) FROM_TASK="${1#--from_T}"; shift ;;
         --force-platesolve) FORCE_PLATESOLVE="1"; shift ;;
         --use-existing-calibrations) USE_EXISTING_CALIBRATIONS="1"; shift ;;
         --save-flat-products) SAVE_FLAT_PRODUCTS="1"; shift ;;
@@ -88,6 +92,25 @@ if [[ -n "$only_task" ]]; then
     esac
 fi
 
+# Handle --from_TX: nothing before X
+if [ "${FROM_TASK}" != "0" ]; then
+    if [[ -n "$only_task" ]]; then
+        echo "--from_T${FROM_TASK} and --only_T${only_task} cannot be combined" >&2
+        exit 1
+    fi
+    [ "${FROM_TASK}" -gt 1 ] && T1="0"
+    [ "${FROM_TASK}" -gt 2 ] && T2="0"
+    [ "${FROM_TASK}" -gt 3 ] && T3="0"
+    [ "${FROM_TASK}" -gt 4 ] && T4="0"
+    [ "${FROM_TASK}" -gt 5 ] && T5="0"
+    [ "${FROM_TASK}" -gt 6 ] && T6="0"
+    [ "${FROM_TASK}" -gt 7 ] && T7="0"
+    [ "${FROM_TASK}" -gt 8 ] && T8="0"
+    [ "${FROM_TASK}" -gt 9 ] && T9="0"
+    [ "${FROM_TASK}" -gt 10 ] && T10="0"
+    [ "${FROM_TASK}" -gt 11 ] && T11="0"
+fi
+
 # Reassign positional parameters with filtered arguments
 set -- "${filtered_args[@]}"
 
@@ -97,7 +120,17 @@ case "${FRAME_FORMAT}" in
 esac
 
 # Make variables readonly after parsing
-readonly T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12 FORCE_PLATESOLVE USE_EXISTING_CALIBRATIONS SAVE_FLAT_PRODUCTS CORES_OVERRIDE FRAME_FORMAT
+readonly T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12 FORCE_PLATESOLVE USE_EXISTING_CALIBRATIONS SAVE_FLAT_PRODUCTS CORES_OVERRIDE FRAME_FORMAT FROM_TASK
+
+# The stages this run runs, for its log ("Stages run: T10 T11"): the promotion step reads it to tell which of a
+# target directory's files the run had to write (utils/stages.py).
+stages_run() {
+    local n out=""
+    for n in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        eval "[ \"\$T${n}\" = \"1\" ]" && out="${out} T${n}"
+    done
+    echo "Stages run:${out}"
+}
 
 #if [[ $# -ne 8 ]] && [[ $# -ne 8 ]]; then
 #    cat >&2 <<-EOF
@@ -949,6 +982,9 @@ pack_frames(){
     [ "${FRAME_FORMAT}" = "float32" ] && return 0
     # only when this run made or touched frames (not, e.g., an --only_T12 sweep)
     [ "$T6$T7$T8$T9$T10$T11" = "000000" ] && return 0
+    # nor a rerun from T10 or later: its frames were restaged from v2 (hard links to v2's own files), and T10 and T11
+    # only read them
+    [ "${FROM_TASK}" -ge 10 ] && return 0
     local op="int16"
     [ "${FRAME_FORMAT}" = "rice" ] && op="pack"
     local dirs
@@ -1251,6 +1287,7 @@ main() {
     date
     # which orchard this is: the version its products carry as ORCHVER (utils/orchard_version.py)
     echo "$(python ${SCRIPTDIR}/utils/orchard_version.py --line 2>/dev/null || echo 'orchard version unknown')"
+    stages_run
     echo "Using ${CORES} cores"
 
     EXT="$(find_ext)"
@@ -1325,10 +1362,11 @@ main() {
                 fi
 
                 # Only set below if the target has reduced images; never let T9
-                # see it unset or left over from the previous target.
+                # see it unset or left over from the previous target. Only T9 uses it, and
+                # already_run_targs.py writes the telescope's already_run.txt: not for a run without T9.
                 correct_i=""
                 IMAGELISTS=${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}/*_processed.dat
-                if $(any_filelists ${IMAGELISTS}); then
+                if [ "$T9" = "1" ] && $(any_filelists ${IMAGELISTS}); then
                     for IMAGELIST in ${IMAGELISTS}
                     do
                         correct_i="$(python ${SCRIPTDIR}/utils/correct_target_names.py ${IMAGELIST} ${i} ${OUTPUTDIR})"
