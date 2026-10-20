@@ -738,7 +738,8 @@ def clear_wcs_headers(header, wcs_keywords, verbose=False):
 
 def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, verbose=False,
                 max_stars=16, plate_scale_tolerance=0.1, min_matches=4, asterism=TWIRL_ASTERISM,
-                progress=None, known_scale_solve=True, use_inherited_wcs=True, verify_twirl=VERIFY_TWIRL):
+                progress=None, known_scale_solve=True, use_inherited_wcs=True, verify_twirl=VERIFY_TWIRL,
+                neighbour=None):
     """
     Perform WCS solving on a FITS file using local Gaia database and multiscale star detection.
 
@@ -794,6 +795,10 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
         verify like any other solution, so a wrong one costs only the attempt.
     verify_twirl : bool, optional
         Hold a twirl solution to the same verification as a known-scale one (VERIFY_TWIRL by default).
+    neighbour : dict, optional
+        WCS cards of the frame nearest in time that has a solution (astrometry.py's second pass). Tried first with
+        known_scale.solve_from_neighbour, which accepts fewer matches when they agree with it; the usual solve follows
+        if that finds nothing.
 
     Returns
     -------
@@ -811,7 +816,7 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
           catalogue stars inside the frame
         - matches: int, number of successful star matches; for a known-scale solution, how many of the tested
           sources sit within known_scale.VERIFY_RADIUS px of a catalogue star
-        - method: 'prior', 'pairs' or 'grid' (known-scale solve) or 'twirl', once solved
+        - method: 'prior', 'pairs', 'grid' or 'neighbour' (known-scale solve) or 'twirl', once solved
     """
     # Initialize return dictionary. When the caller supplies `progress` we
     # populate that dict in place, so a solve killed part-way through (the
@@ -1033,7 +1038,25 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 result['stage'] = 'star_matching'
                 trail = known_scale.trail_ellipticity(image_clean, all_stars_in_image)
                 solution = None
-                if known_scale_solve:
+                neighbour_wcs = None
+                if neighbour:
+                    try:
+                        neighbour_wcs = inherited_wcs(fits.Header(list(neighbour.items())))
+                    except Exception:
+                        neighbour_wcs = None
+                if known_scale_solve and neighbour_wcs is not None:
+                    try:
+                        solution = known_scale.solve_from_neighbour(
+                            all_stars_in_image, catalogue[:, 0], catalogue[:, 1], neighbour_wcs, plate_scale,
+                            image_clean.shape, trail=trail)
+                    except Exception:
+                        solution = None
+                    if verbose and solution is not None:
+                        print(f"Solve from the neighbour: success={solution['success']} "
+                              f"verification={solution['verification']}")
+                    if solution is not None and not solution['success']:
+                        solution = None         # the usual solve below, and its own failure message
+                if known_scale_solve and solution is None:
                     try:
                         solution = known_scale.solve(
                             all_stars_in_image, catalogue[:, 0], catalogue[:, 1], (center.ra.deg, center.dec.deg),

@@ -349,3 +349,85 @@ def test_trail_ellipticity_round_stars_trails_and_crowding():
     crowded = ks.trail_ellipticity(_render((300, 340), pairs), np.array(pts, float))
     assert crowded < 0.3
     assert ks.trail_ellipticity(np.zeros((50, 50)), np.array([[25.0, 25.0]])) is None
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# The second pass: a frame solved from its neighbour's solution
+# ---------------------------------------------------------------------------------------------------------------
+
+def faint_frame(seed, n_real=4, n_spurious=1, shape=(1280, 1024), theta=179.5):
+    """A faint SPIRIT frame of a sparse field, as on Callisto 20261012: n_real sources on catalogue stars, a few
+    spurious ones, about a dozen catalogue stars in the frame."""
+    rng = np.random.default_rng(seed)
+    _, ra, dec, inner, truth = field(seed, n_cat=50, shape=shape, theta=theta, spurious=0)
+    x, y = truth.all_world2pix(ra, dec, 0)
+    rows, cols = shape
+    inside = np.flatnonzero((x > 15) & (x < cols - 15) & (y > 15) & (y < rows - 15))
+    real = np.column_stack([x[inside[:n_real]], y[inside[:n_real]]]) + rng.normal(0, 0.3, (n_real, 2))
+    junk = np.column_stack([rng.uniform(15, cols - 15, n_spurious), rng.uniform(15, rows - 15, n_spurious)])
+    return np.vstack([real, junk]), ra, dec, inner, truth, int(len(inside))
+
+
+def shifted(truth, dx, dy, turn=0.0, shape=(1280, 1024)):
+    """The truth moved by (dx, dy) px and turned by `turn` degrees about the frame centre: a neighbour's solution."""
+    w = truth.deepcopy()
+    w.wcs.crpix = w.wcs.crpix + np.array([dx, dy])
+    if turn:
+        t = np.radians(turn)
+        w.wcs.cd = w.wcs.cd @ np.array([[np.cos(t), -np.sin(t)], [np.sin(t), np.cos(t)]])
+    return w
+
+
+def test_a_faint_frame_solves_from_its_neighbour():
+    shape = (1280, 1024)
+    hits = 0
+    for seed in range(60, 66):
+        src, ra, dec, inner, truth, in_frame = faint_frame(seed)
+        if in_frame < 8:
+            continue
+        blind = ks.solve(src, ra, dec, CENTRE, SCALE, shape, inner=inner, trail=0.1)
+        assert not blind['success']                    # 4 of 5 cannot verify alone
+        out = ks.solve_from_neighbour(src, ra, dec, shifted(truth, 15.0, -10.0, 0.1), SCALE, shape, trail=0.1)
+        assert out['success'] and out['method'] == 'neighbour', (seed, out)
+        assert out['matches'] >= 4
+        assert max_error_arcsec(out['wcs'], truth, shape) < 1.0
+        hits += 1
+    assert hits >= 3
+
+
+def test_the_neighbour_allowance_has_limits():
+    shape = (1280, 1024)
+    src, ra, dec, inner, truth, _ = faint_frame(61)
+    # a neighbour 300 px away is out of reach
+    assert not ks.solve_from_neighbour(src, ra, dec, shifted(truth, 300.0, 0.0), SCALE, shape, trail=0.1)['success']
+    # turned 5 degrees: what matches does not agree with it
+    assert not ks.solve_from_neighbour(src, ra, dec, shifted(truth, 5.0, 5.0, 5.0), SCALE, shape, trail=0.1)['success']
+    # trailed sources get no allowance, nor do sources whose shape was not measured
+    near = shifted(truth, 15.0, -10.0, 0.1)
+    assert not ks.solve_from_neighbour(src, ra, dec, near, SCALE, shape, trail=0.76)['success']
+    assert not ks.solve_from_neighbour(src, ra, dec, near, SCALE, shape, trail=None)['success']
+    # a neighbour at the wrong scale is not used
+    bad = near.deepcopy()
+    bad.wcs.cd = bad.wcs.cd * 1.3
+    assert not ks.solve_from_neighbour(src, ra, dec, bad, SCALE, shape, trail=0.1)['success']
+
+
+def test_unrelated_sources_do_not_solve_from_a_neighbour():
+    shape = (1280, 1024)
+    _, ra, dec, inner, truth, _ = faint_frame(62)
+    rng = np.random.default_rng(7)
+    for _ in range(5):
+        noise = np.column_stack([rng.uniform(15, 1009, 6), rng.uniform(15, 1265, 6)])
+        out = ks.solve_from_neighbour(noise, ra, dec, shifted(truth, 10.0, 10.0), SCALE, shape, trail=0.1)
+        assert not out['success'], out
+
+
+def test_agrees():
+    shape = (1280, 1024)
+    _, _, _, _, truth, _ = faint_frame(63)
+    assert ks.agrees(shifted(truth, 30.0, 30.0, 0.3), truth, shape)
+    assert not ks.agrees(shifted(truth, 60.0, 0.0), truth, shape)
+    assert not ks.agrees(shifted(truth, 0.0, 0.0, 1.0), truth, shape)
+    w = truth.deepcopy()
+    w.wcs.cd = w.wcs.cd * 1.02
+    assert not ks.agrees(w, truth, shape)

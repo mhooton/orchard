@@ -202,6 +202,38 @@ def test_a_known_scale_crash_falls_back_to_twirl(tmp_path, monkeypatch):
         assert 'simulated' not in (result['error'] or '')
 
 
+def test_a_faint_frame_solves_from_its_neighbours_solution(tmp_path, monkeypatch):
+    # Callisto 20261012's faint SPIRIT frames: 4 sources on catalogue stars and a spurious one cannot verify alone,
+    # but do from the solution of a frame taken minutes earlier. Detection is pinned to the five rendered sources,
+    # as on those frames ("Sources: 5→5"); the image is real, so their shapes are measured.
+    ra, dec, j = catalogue(n=45)
+    db = make_db(tmp_path, ra, dec, j)
+    truth = truth_wcs()
+    x, y = truth.all_world2pix(ra, dec, 0)
+    rows, cols = SHAPE
+    inside = (x > 20) & (x < cols - 20) & (y > 20) & (y < rows - 20)
+    order = np.argsort(j[inside])[:4]
+    pts = np.column_stack([x[inside][order], y[inside][order]])
+    pts = np.vstack([pts, [[cols * 0.31, rows * 0.77]]])
+    path = write_frame(tmp_path, render(pts, np.full(len(pts), 12.0)))
+    monkeypatch.setattr(pw, 'find_stars_multiscale', lambda *a, **k: pts.copy())
+    alone = pw.pointer_wcs(path, db, wcs_keywords=WCS_KEYWORDS, clear_existing_wcs=True)
+    assert not alone['success'], alone
+    nb = truth.deepcopy()
+    nb.wcs.crpix = nb.wcs.crpix + np.array([12.0, -8.0])
+    cards = {k: v for k, v in nb.to_header().items() if k in WCS_KEYWORDS}
+    result = pw.pointer_wcs(path, db, wcs_keywords=WCS_KEYWORDS, clear_existing_wcs=True, neighbour=cards)
+    assert result['success'] and result['method'] == 'neighbour', result
+    assert result['matches'] >= 4
+    assert header_error_arcsec(path, truth) < 1.0
+    # a neighbour 300 px away is no help, and the usual failure comes back
+    far = truth.deepcopy()
+    far.wcs.crpix = far.wcs.crpix + np.array([300.0, 0.0])
+    cards = {k: v for k, v in far.to_header().items() if k in WCS_KEYWORDS}
+    result = pw.pointer_wcs(path, db, wcs_keywords=WCS_KEYWORDS, clear_existing_wcs=True, neighbour=cards)
+    assert not result['success'] and result['error'].startswith('No verified solution'), result
+
+
 def test_inside_query_box_matches_the_query():
     radecs = np.array([[150.0, -30.5], [150.05, -30.5], [150.2, -30.5], [150.0, -30.6]])
     mask = pw.inside_query_box(radecs, CENTRE, (0.12, 0.12))
