@@ -156,21 +156,90 @@ def test_build_without_a_stage_snapshots_the_live_tree(cfg, live):
     assert read(os.path.join(rel['src'], 'photometry', 'x.py')) == 'VERSION = 1\n'
 
 
-def test_run_tests_records_pytests_final_line(cfg, live, tmp_path):
-    """The suite runs from the release with the pylib's pytest; q release shows its count, not the progress dots."""
+def fake_pytest(tmp_path, monkeypatch, exit_code=0):
+    """A pylib whose pytest records its arguments and TMPDIR in <tmp_path>/pytest_run.json, leaves temporary files
+    as the real suite does (a read-only directory among them), and exits with exit_code."""
     pylib = tmp_path / 'pylib'
     write(str(pylib / 'pytest' / '__init__.py'), '')
     write(str(pylib / 'pytest' / '__main__.py'),
-          'import os, sys\n'
+          'import json, os, sys, tempfile\n'
+          'argv = sys.argv[1:]\n'
+          'base = argv[argv.index("--basetemp") + 1]\n'
+          'found = sorted(os.listdir(os.environ["TMPDIR"]))\n'
+          'os.makedirs(os.path.join(base, "test_a0", "ro"))\n'
+          'open(os.path.join(base, "test_a0", "ro", "frame.fits"), "w").write("x" * 1000)\n'
+          'os.chmod(os.path.join(base, "test_a0", "ro"), 0o555)\n'
+          'fd, spill = tempfile.mkstemp()\n'
+          'os.close(fd)\n'
+          'with open(os.environ["FAKE_PYTEST_RECORD"], "w") as f:\n'
+          '    json.dump({"argv": argv, "TMPDIR": os.environ.get("TMPDIR"), "found": found, "spill": spill}, f)\n'
           'print("." * 72 + " [ 93%]")\nprint("." * 20 + " " * 52 + " [100%]")\n'
-          'print("308 passed in 128.57s (0:02:08) cwd=" + os.getcwd())\nsys.exit(0)\n')
-    cfg['test_pylib'] = str(pylib)
+          'print("308 passed in 128.57s (0:02:08) cwd=" + os.getcwd())\n' +
+          'sys.exit({})\n'.format(exit_code))
+    monkeypatch.setenv('FAKE_PYTEST_RECORD', str(tmp_path / 'pytest_run.json'))
+    return str(pylib)
+
+
+def test_run_tests_records_pytests_final_line(cfg, live, tmp_path, monkeypatch):
+    """The suite runs from the release with the pylib's pytest; q release shows its count, not the progress dots."""
+    cfg['test_pylib'] = fake_pytest(tmp_path, monkeypatch)
     rel = build(cfg, log=lambda m: None)
     assert run_tests(cfg, rel['id'], log=lambda m: None) == 0
     assert read_release(cfg, rel['id'])['tests'] == 'exit 0: 308 passed in 128.57s (0:02:08) cwd=' + rel['src']
     cfg['test_pylib'] = str(tmp_path / 'none')
     with pytest.raises(ReleaseError):
         run_tests(cfg, rel['id'], log=lambda m: None)
+
+
+def test_the_suite_keeps_its_temporary_files_next_to_the_release_and_removes_them(cfg, live, tmp_path, monkeypatch):
+    """Not in the container's /tmp, which is appct's 20 GB /var: pytest left ~1.1 GB there per run and kept three,
+    and on 2026-10-19 /var filled and production jobs died with Errno 28."""
+    cfg['test_pylib'] = fake_pytest(tmp_path, monkeypatch)
+    write(os.path.join(live, 'tests', 'test_x.py'), '')
+    rel = build(cfg, log=lambda m: None)
+    logged = []
+    assert run_tests(cfg, rel['id'], log=logged.append) == 0
+    with open(str(tmp_path / 'pytest_run.json')) as f:
+        ran = json.load(f)
+    tmp = os.path.join(rel['path'], 'pytest-tmp')            # beside src, so no later build copies or links it
+    assert ran['argv'] == ['-q', '-p', 'no:cacheprovider', '-rs', '--basetemp', os.path.join(tmp, 'basetemp'),
+                           'tests']
+    assert ran['TMPDIR'] == os.path.join(tmp, 'tmp') and ran['spill'].startswith(ran['TMPDIR'] + os.sep)
+    assert ran['found'] == []
+    assert not os.path.lexists(tmp) and any(tmp in m for m in logged)               # gone, read-only dir and all
+    assert sorted(os.listdir(rel['path'])) == ['RELEASE.json', 'src', 'tests.json', 'tests.log']
+    assert read_release(cfg, rel['id'])['tests'].startswith('exit 0: 308 passed')
+
+    write(os.path.join(tmp, 'tmp', 'tmpk3j2', 'big.fits'), 'x')                    # what a killed run left
+    assert run_tests(cfg, rel['id'], log=lambda m: None) == 0 and not os.path.lexists(tmp)
+    with open(str(tmp_path / 'pytest_run.json')) as f:
+        assert json.load(f)['found'] == []                                          # cleared before the run
+
+
+def test_the_suites_temporary_files_go_even_when_it_fails(cfg, live, tmp_path, monkeypatch):
+    cfg['test_pylib'] = fake_pytest(tmp_path, monkeypatch, exit_code=1)
+    cfg['test_tmp'] = str(tmp_path / 'scratch')
+    rel = build(cfg, log=lambda m: None)
+    assert run_tests(cfg, rel['id'], log=lambda m: None) == 1
+    with open(str(tmp_path / 'pytest_run.json')) as f:
+        ran = json.load(f)
+    tmp = os.path.join(str(tmp_path / 'scratch'), rel['id'])                    # test_tmp: <test_tmp>/<release id>
+    assert ran['TMPDIR'] == os.path.join(tmp, 'tmp') and not os.path.lexists(tmp)
+    assert read_release(cfg, rel['id'])['tests'].startswith('exit 1: 308 passed')
+
+
+def test_the_suites_temporary_files_go_when_the_run_is_interrupted(cfg, live, tmp_path, monkeypatch):
+    cfg['test_pylib'] = fake_pytest(tmp_path, monkeypatch)
+    rel = build(cfg, log=lambda m: None)
+    tmp = os.path.join(rel['path'], 'pytest-tmp')
+
+    def interrupted(cmd, **kw):
+        write(os.path.join(tmp, 'basetemp', 'test_b0', 'big.fits'), 'x')
+        raise KeyboardInterrupt
+    monkeypatch.setattr('jobqueue.releases.subprocess.call', interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        run_tests(cfg, rel['id'], log=lambda m: None)
+    assert not os.path.lexists(tmp)
 
 
 VERSION_MODULE = os.path.join(os.path.dirname(JOBQUEUE), 'utils', 'orchard_version.py')

@@ -27,6 +27,9 @@ DEFAULTS = {
     'release_link': ['.env'],
     'test_pylib': '/data/SPECULOOSPipeline/mh_scratch/k1-deploy-check/pylib',   # pytest for the container
     'test_paths': ['tests', 'jobqueue/tests'],
+    # the suite's temporary files (pytest's --basetemp and TMPDIR), removed after each run: <test_tmp>/<release id>,
+    # default <release>/pytest-tmp. Never the container's /tmp: that is appct's 20 GB /var (filled 2026-10-19)
+    'test_tmp': None,
 
     # dispatcher
     'poll_seconds': 45,
