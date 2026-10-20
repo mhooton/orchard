@@ -8,6 +8,12 @@ from astropy.coordinates import SkyCoord
 from astropy.wcs import WCS
 import glob
 
+if __package__ in (None, ''):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from download.raw_provenance import stamp_ingest  # noqa: E402
+from utils import orchard_version  # noqa: E402
+
 def solve_astrometry(filenameold, frame_type):
     # images have to be fits not fts (otherwise astrometry solving doesn't work)
     filename = filenameold.replace('.fts', '.fits')
@@ -301,7 +307,7 @@ def get_output_filename(filename, dirname, n_repeats, test=False):
 
 
 def astra_transform_unified(input_data, transform_mode='auto', n_repeats=1, completeness="all",
-                            test=False, dirname=None, force=False):
+                            test=False, dirname=None, force=False, ingest=False):
     """
     Unified function to transform FITS files with proper WCS handling.
 
@@ -328,6 +334,12 @@ def astra_transform_unified(input_data, transform_mode='auto', n_repeats=1, comp
     force : bool, optional
         Transform frames that already carry ASTRAROT (rotate, rotate_wcs_only) or ASTRAMIR (mirror).
         By default they are skipped, so running the transform twice cannot turn a frame twice.
+    ingest : bool, optional
+        True when the frames have just been downloaded or unpacked (the astra_transform() wrapper): each frame
+        written is stamped as new, with ORCHVER and the card 'orchard <version> astra_transform'. False for a later
+        edit of frames already in the archive (the command line): ORCHMOD and an 'orchard <version>
+        astra_transform: <mode>' card. Either way the descriptive HISTORY cards below are written as before (the
+        repair scripts count them) and the file is written with a fresh CHECKSUM/DATASUM.
     """
 
     # Determine input type and build file list
@@ -495,11 +507,18 @@ def astra_transform_unified(input_data, transform_mode='auto', n_repeats=1, comp
             print(f"Invalid transform_mode: {actual_transform}. Use 'auto', 'rotate', 'mirror', or 'rotate_wcs_only'")
             continue
 
+        if ingest:
+            stamp_ingest(header, 'astra_transform')
+        else:
+            what = actual_transform if actual_transform == 'mirror' else '{} k={}'.format(actual_transform, n_repeats)
+            orchard_version.record_edit(header, 'astra_transform', what)
+
         # Create new HDU with transformed data and updated header
         new_hdu = fits.PrimaryHDU(data=data, header=header)
 
-        # Write to output file
-        new_hdu.writeto(output_path, overwrite=True)
+        # Write to output file. checksum=True replaces the CHECKSUM/DATASUM ESO computed for the untransformed image,
+        # which astropy would otherwise write back unchanged (and wrong).
+        new_hdu.writeto(output_path, overwrite=True, checksum=True)
 
     if test:
         print("Test mode: All files written with '_test' suffix.")
@@ -510,10 +529,11 @@ def astra_transform_unified(input_data, transform_mode='auto', n_repeats=1, comp
 # Backward compatibility wrapper for download script
 def astra_transform(filenames, dirname, n_repeats, test=False):
    """
-   Backward compatibility wrapper for existing download script.
+   The ingest transform, for frames just downloaded or unpacked (SSO_download.py, the queue's fetch): each frame
+   it writes is stamped as new (ingest=True).
    """
    return astra_transform_unified(filenames, transform_mode='auto', n_repeats=n_repeats, test=test,
-                                  dirname=dirname)
+                                  dirname=dirname, ingest=True)
 
 
 def main():
@@ -563,8 +583,8 @@ def main():
     print(f"Test mode: {test_mode}")
     print("")
 
-    # Run the transformation
-    astra_transform_unified(input_data, transform_mode, n_repeats, completeness, test_mode)
+    # Run the transformation: frames already in the archive, so each one written is recorded as an edit
+    astra_transform_unified(input_data, transform_mode, n_repeats, completeness, test_mode, ingest=False)
 
 if __name__ == "__main__":
     main()

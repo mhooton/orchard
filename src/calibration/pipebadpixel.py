@@ -5,6 +5,7 @@ import numpy as np
 from calibration.pipeutils import (get_instrument_parameters, open_fits_file, create_dark_dict, create_flat_dict,
                                    frame_telescope)
 from calibration import readout
+from utils import orchard_version
 from astropy.io import fits
 from matplotlib import pyplot as pl
 import warnings
@@ -155,8 +156,10 @@ def bad_pixel_maps(inlist, caldir, darknames, flatnames, bpmname, biasname):
                 hot_pixel_map, cold_pixel_map = detect_bad_pixels(dark_for_detection,
                                                                   hot_sigma=hot_sigma_threshold,
                                                                   cold_sigma=cold_sigma_threshold)
-                fits.writeto(hot_filename, hot_pixel_map.astype(int), overwrite=True)
-                fits.writeto(cold_filename, cold_pixel_map.astype(int), overwrite=True)
+                fits.writeto(hot_filename, hot_pixel_map.astype(int), header=orchard_version.stamp(fits.Header()),
+                             overwrite=True)
+                fits.writeto(cold_filename, cold_pixel_map.astype(int), header=orchard_version.stamp(fits.Header()),
+                             overwrite=True)
 
             # Flatbad pixels
             flatbad_filename = caldir + "flatbad_pixel_map.fits"
@@ -166,7 +169,8 @@ def bad_pixel_maps(inlist, caldir, darknames, flatnames, bpmname, biasname):
             else:
                 print("Creating flatbad pixel map")
                 flatbad_pixel_map = detect_flatbad_pixels(flat, flat_threshold)
-                fits.writeto(flatbad_filename, flatbad_pixel_map.astype(int), overwrite=True)
+                fits.writeto(flatbad_filename, flatbad_pixel_map.astype(int),
+                             header=orchard_version.stamp(fits.Header()), overwrite=True)
 
             # Combine all maps
             bad_pixel_map = hot_pixel_map | cold_pixel_map | flatbad_pixel_map
@@ -213,7 +217,8 @@ def bad_pixel_maps(inlist, caldir, darknames, flatnames, bpmname, biasname):
             print("=" * 60 + "\n")
 
             # Save final bad pixel map
-            fits.writeto(caldir + bpmname, bad_pixel_map.astype(int), overwrite=True)
+            fits.writeto(caldir + bpmname, bad_pixel_map.astype(int), header=orchard_version.stamp(fits.Header()),
+                         overwrite=True)
 
             # Calculate dark current with bad pixel correction
             from calibration.pipeutils import clean_bad_pixels

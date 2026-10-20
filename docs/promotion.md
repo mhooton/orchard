@@ -41,6 +41,11 @@ discovered. Runs come from two places:
 A queue job is matched to its log where the log is still there. The run's start is its first `date` line, in UTC
 inside the container.
 
+Only a run that made light curves counts as the candidate's run: one that ran T10. A queue job run with
+`--only_T11` (the PDF and frame packing, e.g. for a night whose run died after its science) or `--only_T12` makes
+none, so S1 and the reduction are judged against the run before it. Such later runs are kept on the run as `later`,
+and their PDF and log go into the records.
+
 ### Checks
 
 From `promote_check.assess()`, unchanged except R1 (thresholds as agreed; every one can be overridden with
@@ -57,12 +62,13 @@ From `promote_check.assess()`, unchanged except R1 (thresholds as agreed; every 
 | R2 | p2p more than 1.2 times v2's: HOLD | `max_scatter_ratio` 1.2 |
 | R3 | v2 is the plan's star and the candidate is not, or v2 has the target's aperture 5 and the candidate none: REJECT | |
 
-The promotion step adds three:
+The promotion step adds four:
 
 | Check | Holds when |
 |---|---|
-| **S1** | a file in the candidate predates the run: its inode last changed before the run started. Reruns reuse v3 directories, so an earlier run's files can sit beside the new ones (a stale aperture-8 curve, an old `_output.fits` of another star, last run's lightcurve plots), or make up the whole directory when the latest run did not get as far as this target. It uses ctime, not mtime: T8 restores stacks from `v2/StackImages` with `shutil.copy2`, which keeps their old mtime, and on 2026-10-17 mtime would have held 16 more of the 169 v3 directories for that alone. |
+| **S1** | a file in the candidate predates the run: its inode last changed before the run started. Reruns reuse v3 directories, so an earlier run's files can sit beside the new ones (a stale aperture-8 curve, an old `_output.fits` of another star, last run's lightcurve plots), or make up the whole directory when the latest run did not get as far as this target. It uses ctime, not mtime: T8 restores stacks from `v2/StackImages` with `shutil.copy2`, which keeps their old mtime, and on 2026-10-17 mtime would have held 16 more of the 169 v3 directories for that alone. The approval policy (below) tells clutter from stale products, and a promotion sets these files aside. |
 | **S2** | no run covering the target is found, so S1 cannot be checked. |
+| **P1** | the candidate's target curve has no PWV correction (T10 wrote an empty `PWV` table or an all-NaN `PWV_LIGHTCURVE`, as when the LHATPRO fetch fails: from 2026-10-18 no name resolved inside appct's containers) and v2's curve has one. A replacement must not lose it; a gap fill without PWV is still published, with a note. Artemis, SAINT-EX and targets without a usable Teff never get PWV, so only the comparison with v2 counts. |
 | **A3** (with `--identity table`) | the plan file names another star than the K1 target table `ml_40pc_v2.csv` (with both of its Gaia IDs) for an Sp target. |
 
 `--identity plan` (the default) is the checker's behaviour: plan file line 4, else the 40 pc list by name.
@@ -77,6 +83,9 @@ In this order, each step journalled before and after it runs:
 1. **check**: the night is not busy (below); the candidate and the incumbent are byte for byte as they were judged
    (a fingerprint of every file's path, size and mtime, and the directory's inode); every directory involved is on
    one filesystem and writable. If this fails, nothing has moved: the promotion is *aborted*.
+1a. **aside**: files in the candidate that predate its run (what S1 found) are moved, with their relative paths, to
+   `superseded/<TEL>/<NIGHT>/<TARGET>/<stamp>-p<id>-stale/` with a `superseded.json`, so that v2 gets only the
+   promoted run's own files. Skipped when every file is the run's own (an automatic PROMOTE always is).
 2. **supersede**: the v2 incumbent, if any, is renamed to
    `PipelineOutput/superseded/<TEL>/<NIGHT>/<TARGET>/<UTC stamp>-p<promotion id>/`. That directory is created empty
    first, and creation fails if the name is taken, so a supersession can never land inside another, however many
@@ -96,9 +105,9 @@ In this order, each step journalled before and after it runs:
    `v2/<TEL>/reports/<TEL>_<NIGHT>.run<start>[-j<job>].pdf`. When v2 has no `<TEL>_<NIGHT>.pdf` (or plain log) yet,
    that name is made a hard link to the copy, because `completeness_check.py` (05:00 cron) treats a night as
    processed only if `v2/<TEL>/reports/<TEL>_<NIGHT>.pdf` exists.
-7. **thin**: the superseded copy loses its frames and per-frame files: every file directly inside its run
-   directories (`1/`, and any other all-digit one), apart from the frame lists (`*.dat`, `*.dat_phot`); a
-   superseded reduction loses `flats/`. `*_diff.fits`, `*_output.fits`, `lightcurves/`, plots and stacks stay.
+7. **thin**: the superseded copy, and the set-aside files, lose their frames and per-frame files: every file directly
+   inside their run directories (`1/`, and any other all-digit one), apart from the frame lists (`*.dat`,
+   `*.dat_phot`); a superseded reduction loses `flats/`. `*_diff.fits`, `*_output.fits`, `lightcurves/`, plots and stacks stay.
    `thinned.tsv` beside them lists every file deleted, and `superseded.json` says what replaced the copy. Raw is
    on disk, and v2_old was thinned the same way on 2026-10-10.
 
@@ -107,14 +116,44 @@ the deletions take.
 
 Nothing is ever copied across filesystems or deleted outside `PipelineOutput/superseded`.
 
-## HOLD and REJECT
+## HOLD and REJECT: the approval policy
 
-Nothing changes on disk. With `--apply` the verdict, its reasons, the measurements and the fingerprints go into the
-journal, and the 07:30 daily report lists every verdict waiting for a person:
+With `--apply` the verdict, its reasons, the measurements and the fingerprints go into the journal. Then the
+approval policy (`src/utils/promote_policy.py`, on unless `promote.policy` is false in the queue config or the run
+has `--no-policy`) decides it, so that a person sees only what the evidence cannot settle. It answers every pending
+HOLD or REJECT, new ones and ones the journal already holds, once per policy version, and journals each answer in
+`policy_decisions` with its rule and evidence:
+
+The philosophy (Matthew Hooton, 2026-10-19): do not judge what should be on the portal; process everything we can
+and put it there, ideally with tools that show users when the conditions, not the pipeline, make data poor. So a
+candidate is withheld only when it is broken, when v2 already serves something better, when its directory mixes runs,
+or when its identity is in doubt. Any outcome can also mark the night **rerun**: the processing, not the data, lost
+frames, so the night is rerun once the cause is fixed at source (`q promote list --needs rerun`).
+
+| Outcome | What happens | When |
+|---|---|---|
+| **promote** | the PROMOTE steps, as `accept` would; the verdict becomes *accepted*, decided by `policy:v1:<rule>` | S1 found only clutter (plots, per-frame sidecars, frame lists and frames, stacks and catalogues, an SP-named `_output.fits` of the old naming, curves of other apertures) and the checks passed; or the candidate has at least v2's points and no more scatter, or is within 5% of v2 on both; or v2 has nothing usable: then every light curve with finite points is published, with a rule that says what made it poor (`partial-pipeline` and rerun when the pipeline lost frames, `partial-night-data` when the sky did, `partial`, `noisy-night-data` on a bad-weather night, `noisy`, `short-night`, `few-points`) |
+| **reject** | closed; v2 keeps what it has | broken (no aperture-5 curve, no finite point, a degenerate curve), v2 the plan's star and the candidate not, or v2 better on points and scatter |
+| **reprocess** | stays pending, listed for a rerun (`q promote list --needs reprocess`) | not publishable as it is: a replacement that lost v2's PWV correction (P1), one worse than v2 because the pipeline lost frames, a directory the latest science run (almost) did not write, or a curve the portal serves that predates the run beside its new one |
+| **person** | stays pending for a person | an identity disagreement (A3), no known run (S2), or better and worse than v2 at once (fewer points but less scatter, or slightly worse on both) |
+
+The deciding question for a partial or noisy curve is whether the data or the processing made it so: noisy is fine
+when the target is right and the data are genuinely noisy, not when the pipeline processed them poorly. The run's
+log says why each frame missing from the curve dropped out (astrometry.py's per-frame summary: a solve that found
+too few stars is the sky; one rejected, for instance by the plate-scale check, on a frame with 20 or more sources is
+the pipeline), and the curve's bad-weather flags say the same for noise. Thresholds are in
+`promote_policy.THRESHOLDS` and can be overridden in `promote.policy_thresholds`.
+
+Pipeline losses were "Plate scale sanity check failed" on frames with hundreds of stars, in the
+`--force-platesolve` reruns of October 2026; that is being fixed at source, and the affected nights are rerun after.
+
+A policy reject is left alone while the candidate's files are unchanged, like a person's. What waits, and the
+commands for a person:
 
 ```bash
 q promote list                     # what waits, and any promotion that did not finish
-q promote show 12                  # one verdict: reasons, notes, measurements, run, promotion steps
+q promote list --needs person      # only what the policy left for a person (--needs reprocess: for a rerun)
+q promote show 12                  # one verdict: reasons, notes, measurements, run, policy decisions, promotion steps
 q promote accept 12 --reason "short night, fine"            # shows what it would do
 q promote accept 12 --reason "short night, fine" --apply    # does it (the PROMOTE steps)
 q promote reject 12 --reason "keep v2's aperture-5 curve"   # closes it; nothing moves
@@ -123,7 +162,7 @@ q promote accept 12-20,25 --reason "stale plots only" --apply   # several at onc
 ```
 
 `accept` refuses if the candidate or v2 changed after the verdict; run the night again to judge it anew. A
-candidate rejected by a person is left alone on later runs while its files are unchanged. A held candidate that
+candidate rejected by a person, or by the policy, is left alone on later runs while its files are unchanged. A held candidate that
 is judged again unchanged keeps its verdict, rather than getting a new one each run. A verdict whose candidate
 changes, or leaves v3, becomes *outdated*.
 

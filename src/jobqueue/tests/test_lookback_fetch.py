@@ -3,6 +3,7 @@ import datetime as dt
 import json
 import os
 
+from jobqueue import esoreach
 from jobqueue.fetch import add_only_fetch
 from jobqueue.lookback import Lookback
 from jobqueue.tests.fakes import PROGS, FakeEso, write_fits
@@ -97,6 +98,19 @@ def test_lookback_survives_an_eso_failure(cfg, store):
     eso.fail = True
     res = Lookback(only_europa(cfg), store, eso, now=NOW, log=lambda m: None).run()
     assert 'ESO query failed' in res[0]['action'] and store.jobs() == []
+    s = esoreach.get(store)
+    assert (s['state'], s['failed_polls'], s['last_source'], s['error']) == \
+        ('failing', 1, 'look-back', 'TAP HTTP 503')
+
+
+def test_lookback_records_whether_eso_answered_except_in_a_dry_run(cfg, store):
+    eso, _ = scenario(only_europa(cfg))
+    eso.fail = True
+    Lookback(only_europa(cfg), store, eso, now=NOW, log=lambda m: None, dry_run=True).run()
+    assert esoreach.get(store) == {}
+    eso.fail = False
+    Lookback(only_europa(cfg), store, eso, now=NOW, log=lambda m: None).run()
+    assert esoreach.get(store)['state'] == 'ok'
 
 
 # ---------------------------------------------------------------- add-only fetch

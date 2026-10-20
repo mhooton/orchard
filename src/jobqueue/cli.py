@@ -62,9 +62,10 @@ def cmd_status(cfg, store, a):
         print('dispatcher NOT RUNNING (last heartbeat {})'.format(info.get('heartbeat', 'never')))
     paused = sorted(store.paused())
     print('drain      {}   paused: {}'.format('ON' if store.draining() else 'off', ', '.join(paused) or 'none'))
-    from .releases import current_id
-    release = current_id(cfg)
-    print('code       {}'.format('release ' + release if release else 'live tree (no release)'))
+    from .releases import current, current_id
+    release, rel = current_id(cfg), current(cfg)
+    print('code       {}'.format('release {} (orchard {})'.format(release, (rel or {}).get('version') or '-')
+                                 if release else 'live tree (no release)'))
     if a.resources:
         from .resources import ProcResources
         s = ProcResources(cfg['disk_devices']).snapshot()
@@ -513,8 +514,9 @@ def cmd_release(cfg, store, a):
             print('current: {}'.format(cur or 'none (jobs run from the live tree)'))
             releases = list_releases(cfg)
             for r in releases[-a.limit:]:
-                print('{} {:28} {:>8}  built {}  {:>3} changed  {:>3} differed from live{}{}'.format(
-                    '*' if r['id'] == cur else ' ', r['id'], (r.get('sha') or '-')[:8], r['built_at'],
+                print('{} {:28} {:>8}  orchard {:18} built {}  {:>3} changed  {:>3} differed from live{}{}'.format(
+                    '*' if r['id'] == cur else ' ', r['id'], (r.get('sha') or '-')[:8], r.get('version') or '-',
+                    r['built_at'],
                     len(r.get('changed_since_previous') or []), len(r.get('differs_from_live') or []),
                     '  running jobs {}'.format(running[r['id']]) if r['id'] in running else '',
                     '  tests {}'.format(r['tests']) if r.get('tests') else ''))
@@ -584,11 +586,27 @@ def _eso(cfg):
     return EsoArchive(cfg['eso_env_file'])
 
 
+def _eso_or_record(cfg, store, now, source, record=True):
+    """The ESO client, or None after recording a failed poll: a client that cannot even be set up (credentials
+    unreadable, the downloader failing to import) is ESO unreachable as far as the nightly work is concerned."""
+    from . import esoreach
+    try:
+        return _eso(cfg)
+    except Exception as e:                       # noqa: BLE001 - reported and recorded, like a failed query
+        print('{} cannot set up the ESO client: {}'.format(iso(now), e))
+        if record:
+            esoreach.record(store, now, ok=False, error='cannot set up the ESO client: {}'.format(e), source=source)
+        return None
+
+
 def cmd_watch(cfg, store, a):
     from .watcher import Watcher
     now = utcnow()
     print('{} watcher ({} mode)'.format(iso(now), cfg['mode']))
-    for line in Watcher(cfg, store, _eso(cfg), now=now).run():
+    eso = _eso_or_record(cfg, store, now, 'watcher')
+    if eso is None:
+        return 1
+    for line in Watcher(cfg, store, eso, now=now).run():
         print('  ' + line)
     return 0
 
@@ -598,7 +616,10 @@ def cmd_lookback(cfg, store, a):
     now = utcnow()
     print('{} look-back over {} nights ({}{})'.format(iso(now), cfg['lookback']['nights'], cfg['mode'],
                                                      ', dry run' if a.dry_run else ''))
-    res = Lookback(cfg, store, _eso(cfg), now=now, dry_run=a.dry_run).run()
+    eso = _eso_or_record(cfg, store, now, 'look-back', record=not a.dry_run)
+    if eso is None:
+        return 1
+    res = Lookback(cfg, store, eso, now=now, dry_run=a.dry_run).run()
     print(format_report(res))
     if a.json:
         with open(a.json, 'w') as f:

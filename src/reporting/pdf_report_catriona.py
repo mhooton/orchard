@@ -44,6 +44,18 @@ try:
     from calibration.readout import MODES as READOUT_MODES
 except Exception:
     READOUT_MODES = {}
+try:
+    from utils import orchard_version
+except Exception:
+    orchard_version = None
+
+
+def version_line():
+    """'orchard 1.2.0 (commit ..., release ...)' for the report, or '' where the pipeline package is missing."""
+    try:
+        return orchard_version.line() if orchard_version else ''
+    except Exception:
+        return ''
 
 
 def temp_dir(args):
@@ -731,6 +743,8 @@ def stack_and_vals(args, liste, outstack, outstack_save, outstack_save_dir, outf
         os.remove(outstack_save)  # to be commented for tests
     with fits.open(liste[-1]) as infile:
         head = infile[0].header
+        if orchard_version:
+            orchard_version.stamp(head)
         fits.writeto(outstack, stack, head)
         fits.writeto(outstack_save, stack, head)  # to be commented for tests
     stackim = outstack[:-5] + '.png'
@@ -1049,7 +1063,8 @@ def clean(imgs, args,targs):
 def make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap, flags, ellip, order,targs,gaia):
     print('Creating PDF')
 
-    pdf = PdfPages(outname)
+    version = version_line()
+    pdf = PdfPages(outname, metadata={'Creator': version} if version else None)
     # s = (args.target).split(" ")
 
     appix = ['2', '2.8', '4', '5.7', '8', '11.3', '16', '20', '24', '28', '32', '40', '48']
@@ -1064,6 +1079,8 @@ def make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap
     txt2 = args.date[0:4] + '-' + args.date[4:6] + '-' + args.date[6:8]
     txt = args.telescope + ' night report: ' + txt2
     ax.text(0.5, 0.8, txt, size=16, fontweight='bold', ha="center")
+    if version:
+        ax.text(0.5, 0.3, version, size=8, color='dimgrey', ha="center")
     ax.axis('off')
 
     ax = page.add_subplot(gs[1, :])

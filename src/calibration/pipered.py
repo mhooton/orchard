@@ -9,6 +9,7 @@ from calibration.pipeutils import (get_instrument_parameters, apply_image_slice,
 from calibration import readout
 from calibration.smear import correct_frame
 from calibration.shutter_detect import NightRecords
+from utils import orchard_version
 from functools import partial
 from multiprocessing.dummy import Pool as ThreadPool
 import timeit
@@ -102,6 +103,7 @@ def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, 
             for key, value, comment in readout.header_cards(values, pedestal=pedestal):
                 hdulist[0].header[key] = (value, comment)
             hdulist[0].header['PV'] = (version, 'Pipeline Version')
+            orchard_version.stamp(hdulist[0].header)
 
             # A shutterless frame is de-smeared before the flat: the trail charge
             # was collected by the upstream pixels, not the one it lands in. Its

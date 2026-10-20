@@ -1,8 +1,10 @@
 """Code releases: building, pinning jobs at launch, activating, and bringing the live tree up to date."""
 import json
 import os
+import re
 import shutil
 import stat
+import subprocess
 import sys
 import time
 
@@ -169,6 +171,59 @@ def test_run_tests_records_pytests_final_line(cfg, live, tmp_path):
     cfg['test_pylib'] = str(tmp_path / 'none')
     with pytest.raises(ReleaseError):
         run_tests(cfg, rel['id'], log=lambda m: None)
+
+
+VERSION_MODULE = os.path.join(os.path.dirname(JOBQUEUE), 'utils', 'orchard_version.py')
+
+
+def version_module(**values):
+    """utils/orchard_version.py with its ARCHIVE values set, as committed (placeholders) by default; the suite also
+    runs from deployed trees, whose copy git archive filled in."""
+    text = read(VERSION_MODULE)
+    for key, placeholder in (('describe', '$Format:%(describe:tags=true,match=v[0-9]*)$'),
+                             ('commit', '$Format:%H$'), ('date', '$Format:%cI$')):
+        text, n = re.subn(r"(\n    '{}': ')[^'\n]*(',\n)".format(key),
+                          lambda m: m.group(1) + values.get(key, placeholder) + m.group(2), text)
+        assert n == 1, key
+    return text
+
+
+def archived_version_module(describe, commit):
+    """utils/orchard_version.py as `git archive` writes it: the placeholders filled in."""
+    return version_module(describe=describe, commit=commit, date='2026-10-19T12:00:00+01:00')
+
+
+def test_a_release_records_which_orchard_it_is(cfg, live, tmp_path):
+    sha = 'e585ad81bfe8' + '0' * 28
+    stage = stage_tree(tmp_path, 's1', {'utils/orchard_version.py': archived_version_module('v1.0.0-2-ge585ad8', sha)})
+    rel = build(cfg, stage=stage, sha=sha, log=lambda m: None)
+    assert rel['version'] == '1.0.0-2-ge585ad8' and rel['commit'] == sha
+    # and the release's own module reports the release it is in, as a job's products will
+    out = subprocess.check_output([PY, os.path.join(rel['src'], 'utils', 'orchard_version.py'), '--line'],
+                                  universal_newlines=True)
+    assert out.strip() == 'orchard 1.0.0-2-ge585ad8 (commit e585ad81bfe8, release {})'.format(rel['id'])
+
+
+def test_build_refuses_a_stage_of_another_commit(cfg, live, tmp_path):
+    stage = stage_tree(tmp_path, 's1', {'utils/orchard_version.py': archived_version_module('v1.0.0', 'a' * 40)})
+    with pytest.raises(ReleaseError, match='not --sha'):
+        build(cfg, stage=stage, sha='bbbbbbb', log=lambda m: None)
+    assert not os.listdir(releases_dir(cfg))
+
+
+def test_a_stage_not_made_by_git_archive_is_built_with_a_warning(cfg, live, tmp_path):
+    stage = stage_tree(tmp_path, 's1', {'utils/orchard_version.py': version_module()})
+    logged = []
+    rel = build(cfg, stage=stage, sha='ccccccc', log=logged.append)
+    assert rel['version'] == 'ccccccc' and any('not filled in by git archive' in m for m in logged)
+
+
+def test_a_commit_from_before_versioning_does_not_inherit_the_live_trees_version(cfg, live, tmp_path):
+    write(os.path.join(live, 'utils', 'orchard_version.py'), archived_version_module('v1.0.0', 'a' * 40))
+    rel = build(cfg, stage=stage_tree(tmp_path, 's1', {}), sha='bbbbbbb', log=lambda m: None)
+    assert not os.path.exists(os.path.join(rel['src'], 'utils', 'orchard_version.py')) and rel['version'] is None
+    snap = build(cfg, log=lambda m: None)            # a snapshot of the live tree is the live tree, version and all
+    assert snap['version'] == '1.0.0'
 
 
 def test_two_builds_in_the_same_second_get_different_ids(cfg, live, clock):

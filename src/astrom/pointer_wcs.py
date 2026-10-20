@@ -17,6 +17,7 @@ from astropy.stats import SigmaClip, sigma_clipped_stats
 from astropy.units import Quantity
 from astropy.wcs.utils import WCS, pixel_to_skycoord
 from calibration.pipeutils import get_instrument_parameters, resolve_plate_scale
+from utils import orchard_version
 from photutils.background import Background2D, MedianBackground
 from photutils.detection import DAOStarFinder
 from scipy import ndimage
@@ -807,6 +808,8 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 if verbose:
                     print("Clearing any existing WCS headers...")
                 removed = clear_wcs_headers(header, wcs_keywords, verbose=verbose)
+                if removed:     # written back on close whether or not the solve below succeeds
+                    orchard_version.record_edit(header, 'T7', 'inherited WCS removed')
                 if verbose and removed > 0:
                     print(f"Removed {removed} existing WCS headers")
                 elif verbose:
@@ -1026,6 +1029,7 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                         print(f"  {key}: {wcs_header[key]}")
 
                 header.update(wcs_header)
+                orchard_version.record_edit(header, 'T7', 'WCS solved')
 
                 # Extract WCS values for return
                 result['crpix'] = (header['CRPIX1'], header['CRPIX2'])

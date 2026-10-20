@@ -5,6 +5,7 @@ import numpy as np
 import glob
 from calibration.pipeutils import get_instrument_parameters, apply_image_slice, open_fits_file, frame_telescope
 from calibration import readout, shutter_detect
+from utils import orchard_version
 from astropy.io import fits
 from astropy.stats import sigma_clip
 from reporting.QC import main as QC
@@ -104,6 +105,7 @@ def biasmaker(inlist, biasname, outdir, reportdir, run, targ):
         bias = np.float32(np.mean(mastermatrix, axis=0))
 
         phdu = fits.PrimaryHDU(bias)
+        orchard_version.stamp(phdu.header)
         outname = outdir + biasname
         # command = 'rm -f '+outname
         # os.system(command)
