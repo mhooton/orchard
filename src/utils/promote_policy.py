@@ -50,7 +50,7 @@ THRESHOLDS = {
 
 PROMOTE, REJECT, REPROCESS, PERSON = 'promote', 'reject', 'reprocess', 'person'
 
-CODES = re.compile(r'\b(S1|S2|P1|A1|A2|A3|A4|A5|R1|R2|R3)\b')
+CODES = re.compile(r'\b(S1|S2|P1|O1|O2|O3|A1|A2|A3|A4|A5|R1|R2|R3)\b')
 DIFF = re.compile(r'_(\d+)_diff\.fits$')
 MCMC = re.compile(r'_(\d+)_MCMC$')
 # astrometry.py's per-frame summary: '[i/n] <frame> SUCCESS - Sources: a→b Gaia: c→d Matches: m CRPIX=... CRVAL=...'
@@ -176,7 +176,7 @@ def decide(verdict, metrics, reasons, incumbent, stale, files, losses, th=THRESH
     verdict    'HOLD' or 'REJECT' (a PROMOTE needs no policy)
     metrics    promote_check.assess() row for the candidate (c_*, i_*, raw_frames, points_ratio, scatter_ratio)
     reasons    the verdict's reasons ('; '-joined, each starting with its check code: A1-A5 and R1-R3 from the
-               checker, S1, S2 and P1 from promote.py)
+               checker, S1, S2, P1 and O1-O3 (restaged reruns) from promote.py)
     incumbent  whether v2 has a directory for the target-night
     stale      relative paths of the candidate's files that predate its science run (None if no run is known)
     files      how many files the candidate holds
@@ -205,6 +205,14 @@ def decide(verdict, metrics, reasons, incumbent, stale, files, losses, th=THRESH
     if 'S2' in cs:
         return Decision(PERSON, 'no-run', 'no pipeline run of the night covering the target was found, so its '
                         'files cannot be checked against the run')
+    # a rerun from a late stage on a night restaged from v2 (utils/restage.py): its inputs must still be what was
+    # restaged, and v2 what it was then
+    if 'O1' in cs or 'O3' in cs:
+        return Decision(PERSON, 'restage-inputs', "the rerun's inputs are not what was restaged (or a file of it is "
+                        "another release's): look before anything moves; restage.py show lists them")
+    if 'O2' in cs:
+        return Decision(REPROCESS, 'v2-changed-since-restage', 'v2 changed after the night was restaged: clear the '
+                        'restage, restage again and rerun', rerun=True)
     if 'P1' in cs:
         return Decision(REPROCESS, 'pwv-lost', "the run made no PWV correction and v2's curve has one: v2 stays "
                         'until a rerun gets PWV', rerun=True)
