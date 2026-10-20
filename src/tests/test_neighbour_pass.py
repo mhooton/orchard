@@ -103,7 +103,7 @@ def test_no_neighbour_too_far_away_or_without_a_solution():
 import numpy as np                                                      # noqa: E402
 import astropy.wcs                                                       # noqa: E402
 from astrom import wcs_cache                                            # noqa: E402
-from test_wcs_cache import Night, STARS, _truth, solver                 # noqa: E402,F401
+from test_wcs_cache import Night, STARS, _truth, _verifies, solver      # noqa: E402,F401
 
 
 def _hard_frame(monkeypatch, path):
@@ -134,7 +134,7 @@ def _row_is_the_solution(row, path):
 
 
 def test_the_second_pass_solves_from_a_frame_solved_this_run_and_caches_it(tmp_path, solver, monkeypatch, capsys):
-    night = Night(tmp_path, n=3)
+    night = Night(tmp_path, n=3, checksums=True)                # T6's frames: the raw frames' checksums, stale
     hard = night.procs[1]
     _hard_frame(monkeypatch, hard)
     night.t7()
@@ -144,6 +144,7 @@ def test_the_second_pass_solves_from_a_frame_solved_this_run_and_caches_it(tmp_p
     assert ' procIo_001.fits SUCCESS' in out and 'Method: neighbour' in out
     assert 'Successfully plate solved: 3' in out and 'Failed plate solving: 0' in out
     assert _solved_right(hard, solver[-1])                      # its query is the last one: frames 0 and 2 went first
+    assert _verifies(hard)                                      # written as any solve writes (astrom/header_write.py)
     rows = night.rows()
     assert set(rows) == {'Io_000.fits', 'Io_001.fits', 'Io_002.fits'}
     assert _row_is_the_solution(rows['Io_001.fits'], hard)
