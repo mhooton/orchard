@@ -46,11 +46,11 @@ describes, are recorded in `shutter.json`, printed as warnings in the T2/T4/T6 l
 morning digest ("Shutter state measured against the headers", nights reduced in the last 24 h).
 
 **The measurement changes what is de-smeared only where `"detect_auto_apply": true` is set under `"smear"` in
-`instrument_config.json`, and only for unambiguous segments.** It is `false` for all four telescopes until the
-thresholds below are agreed. Until then the decision stays override, CAMSHUTT, default, and the measurement is
-reported only.
+`instrument_config.json`, and only for unambiguous segments.** It is `true` for all four SSO telescopes since
+2026-10-20 (decisions below). Where it is off, the decision stays override, CAMSHUTT, default, and the measurement
+is reported only.
 
-## Thresholds to agree
+## The rules
 
 Each rule below makes a segment **unambiguous**, i.e. eligible for auto-application. Everything else is
 `probable` or `inconclusive` and is reported only. The numbers are the module constants in `shutter_detect.py`.
@@ -70,19 +70,18 @@ quadrature to the statistical error. Shutterless rates are intervals, 0.9–1.35
 inflates the trail. Hypotheses are consistent within 3σ and excluded beyond it. Without READOUTM the hypotheses are
 shuttered, 1 MHz and 3 MHz; with READOUTM on every frame, shuttered and the rate it names.
 
-**Decisions to take before `detect_auto_apply` goes on:**
+**Decisions (Matthew, 2026-10-20), in force from v4.2.0:**
 
-1. **Rules C, D and E** (two twilights agree; one twilight confirmed by the science; a split between disagreeing
-   twilights). These carried every unambiguous answer in the validation, all correct. Recommended: enable.
-2. **Rule F** (science alone). Recommended: leave off. At 4σ it would have auto-applied the three verified
-   science-only shutterless nights (Ganymede 20250408, 20250409, 20260216; margins 4.0–4.9σ), but those are in the
-   override table anyway, and the −5.1 s bias above says a shuttered night could one day pass. The cost of leaving it
-   off is ~1% noise on such a night until someone adds an override window, which the digest prompts.
-3. **Which telescopes.** The switch is per telescope (`"smear"` in `instrument_config.json`); Ganymede is the only
-   one that has been shutterless.
-4. **3 MHz without flats.** Without READOUTM the trail test cannot tell 3 MHz from shuttered (both sit within the PSF
-   bias), so a 3 MHz night without both twilights stays probable or inconclusive. Astra writes READOUTM from
-   2026-10-18, which removes this for new frames.
+1. **Rules C, D and E are applied** (two twilights agree; one twilight confirmed by the science; a split between
+   disagreeing twilights). These carried every unambiguous answer in the validation, all correct.
+2. **Rule F is not**: a night is never settled by its science alone (`SCIENCE_ALONE_SIGMA = inf`). The three
+   verified science-only shutterless nights (Ganymede 20250408, 20250409, 20260216; margins 4.0–4.9σ) are in the
+   override table; the −5.1 s bias above says a shuttered night could one day pass. Such a night costs ~1% noise until
+   someone adds an override window, which the digest prompts.
+3. **All four SSO telescopes** (`"detect_auto_apply": true` under each `"smear"`). Artemis has no smear model.
+4. **3 MHz without flats is accepted as it is.** Without READOUTM the trail test cannot tell 3 MHz from shuttered
+   (both sit within the PSF bias), so a 3 MHz night without both twilights stays probable or inconclusive and falls
+   back to CAMSHUTT. Astra writes READOUTM from 2026-10-18, which narrows the hypotheses for new frames.
 
 ## Validation
 

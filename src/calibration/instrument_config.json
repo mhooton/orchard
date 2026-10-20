@@ -25,7 +25,7 @@
           "readout_time": {"NORMAL": 4.33, "FAST": 1.5},
           "readout_rate_time": {"1MHz": 4.33, "3MHz": 1.5},
           "n_shifts": 2048,
-          "detect_auto_apply": false
+          "detect_auto_apply": true
         }
       }
     },
@@ -54,7 +54,7 @@
           "readout_time": {"NORMAL": 4.33, "FAST": 1.5},
           "readout_rate_time": {"1MHz": 4.33, "3MHz": 1.5},
           "n_shifts": 2048,
-          "detect_auto_apply": false
+          "detect_auto_apply": true
         }
       }
     },
@@ -83,7 +83,7 @@
           "readout_time": {"NORMAL": 4.33, "FAST": 1.5},
           "readout_rate_time": {"1MHz": 4.33, "3MHz": 1.5},
           "n_shifts": 2048,
-          "detect_auto_apply": false
+          "detect_auto_apply": true
         }
       }
     },
@@ -112,7 +112,7 @@
           "readout_time": {"NORMAL": 4.33, "FAST": 1.5},
           "readout_rate_time": {"1MHz": 4.33, "3MHz": 1.5},
           "n_shifts": 2048,
-          "detect_auto_apply": false
+          "detect_auto_apply": true
         }
       },
       "spirit": {

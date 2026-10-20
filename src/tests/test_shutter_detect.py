@@ -549,11 +549,13 @@ def test_correct_frame_cards_and_measured_readout_time():
     assert '(measured)' in h.comments['SMEARTRD']
 
 
-def test_shipped_config_does_not_auto_apply():
+def test_shipped_config_auto_applies_on_the_sso_andors_only():
+    """Matthew, 2026-10-20: rules C, D and E apply on all four SSO telescopes; never the science alone."""
     cfg = pipeutils.load_instrument_config()
-    for tel, instruments in cfg['telescopes'].items():
-        for name, params in instruments.items():
-            assert not smear.auto_apply(params), (tel, name)
+    on = {(tel, name) for tel, instruments in cfg['telescopes'].items()
+          for name, params in instruments.items() if smear.auto_apply(params)}
+    assert on == {('SPECULOOS-%s' % t, 'andor') for t in ('IO', 'EUROPA', 'GANYMEDE', 'CALLISTO')}
+    assert sd.SCIENCE_ALONE_SIGMA == float('inf')
 
 
 def test_t4_desmears_flats_on_the_measurement_when_enabled(tmp_path, small, monkeypatch):
