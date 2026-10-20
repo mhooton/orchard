@@ -22,8 +22,8 @@ from contextlib import contextmanager
 
 import numpy as np
 
-from download.raw_provenance import (CHUNK, array_datasum, claimed_datasum, data_sum, read_header_bytes,
-                                     set_checksum)
+from download.raw_provenance import (CHUNK, array_datasum, claimed_datasum, data_sum, header_bytes,
+                                     read_header_bytes, set_checksum)
 
 
 def writeto(hdulist, path):
@@ -31,6 +31,10 @@ def writeto(hdulist, path):
     T6: hdulist.writeto(path), with the primary HDU's CHECKSUM and DATASUM valid. Room for the two cards is made in
     the header first (placeholders where the header lacks them), so setting them afterwards is a header write in place.
     DATASUM comes from the data in memory when it is a plain float32 array, as T6's is, and otherwise from the file.
+
+    The cards are set on the header in memory, which is what astropy has just written. Parsing the file's header
+    instead would cost ~5 ms a frame, most of it astropy checking every card again. If the two ever differ, the
+    file's header is used.
     """
     header = hdulist[0].header
     if 'DATASUM' not in header:
@@ -39,7 +43,15 @@ def writeto(hdulist, path):
         header.set('CHECKSUM', '0' * 16, 'HDU checksum', before='DATASUM')
     hdulist.writeto(path)
     data = hdulist[0].data
-    set_checksums(path, array_datasum(data) if type(data) is np.ndarray and data.dtype == np.float32 else None)
+    datasum = array_datasum(data) if type(data) is np.ndarray and data.dtype == np.float32 else None
+    old_raw = header_bytes(path)
+    if header.tostring(padding=True).encode('ascii') != old_raw:
+        set_checksums(path, datasum)
+        return
+    if datasum is None:
+        datasum = data_sum(path, len(old_raw), header)
+    set_checksum(header, datasum)
+    _replace(path, header.tostring(padding=True).encode('ascii'), old_raw)
 
 
 def set_checksums(path, datasum=None):

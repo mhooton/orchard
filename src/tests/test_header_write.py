@@ -360,6 +360,28 @@ def test_t6_sums_the_file_for_anything_but_a_float32_array(tmp_path, sums, data)
     assert len(sums) == 1 and verifies(new)
 
 
+def test_t6_sets_the_cards_on_the_header_astropy_just_wrote(tmp_path, monkeypatch):
+    raw = raw_frame(str(tmp_path / 'raw.fits'))
+    monkeypatch.setattr(hw, 'read_header_bytes', no_data_sum)              # the file's header is never parsed
+    monkeypatch.setattr(hw, 'data_sum', no_data_sum)
+    assert verifies(t6_write(raw, str(tmp_path / 'proc.fits'), hw.writeto))
+
+
+class LateCard(fits.HDUList):
+    """An HDUList whose header in memory gains a card after it was written, so it is not what the file holds."""
+
+    def writeto(self, *args, **kwargs):
+        super().writeto(*args, **kwargs)
+        self[0].header['LATE'] = 1
+
+
+def test_t6_uses_the_files_header_if_it_is_not_the_one_in_memory(tmp_path):
+    f = str(tmp_path / 'proc.fits')
+    hdul = LateCard([fits.PrimaryHDU(np.ones(SHAPE, np.float32))])
+    hw.writeto(hdul, f)
+    assert verifies(f) and 'LATE' not in fits.getheader(f)
+
+
 def test_t7_trusts_what_t6_wrote(tmp_path, monkeypatch):
     raw = raw_frame(str(tmp_path / 'raw.fits'))
     f = t6_write(raw, str(tmp_path / 'proc.fits'), hw.writeto)

@@ -50,8 +50,8 @@ def stamp_ingest(header, script):
 
 # --- FITS checksums by hand, for a header written as bytes ---------------------------------------------------------
 
-def read_header_bytes(path):
-    """The primary header exactly as stored (to the END card, padded to whole blocks), and its parse."""
+def header_bytes(path):
+    """The primary header exactly as stored: to the END card, padded to whole blocks."""
     chunks = []
     with open(path, 'rb') as f:
         while True:
@@ -60,8 +60,13 @@ def read_header_bytes(path):
                 raise ValueError('{}: no END card before the end of the file'.format(path))
             chunks.append(block)
             if any(block[i:i + 8] == b'END     ' for i in range(0, BLOCK, 80)):
-                raw = b''.join(chunks)
-                return raw, fits.Header.fromstring(raw.decode('ascii'))
+                return b''.join(chunks)
+
+
+def read_header_bytes(path):
+    """The primary header exactly as stored (header_bytes), and its parse."""
+    raw = header_bytes(path)
+    return raw, fits.Header.fromstring(raw.decode('ascii'))
 
 
 def ones_add(a, b):
