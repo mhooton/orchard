@@ -16,14 +16,16 @@ share it spent slewing (`SLEWING`), and whether it was parked (`TELPARK`). A lig
 neither for at least half the exposure (`1 - TRACKING - SLEWING >= 0.5`, or parked) was exposed on a stopped mount.
 Its stars trail by 15 arcsec per second.
 
-The rest of the header agrees. The header RA is the mount's position, so it runs at the sidereal rate (15.04 deg/h),
-while `ALTITUDE`, `AZIMUTH` and `AIRMASS` stay fixed to 1e-7. Astra's own WCS is empty (`CRVAL` 0) and T7 fails every
-such frame.
+The rest of the header agrees. `ALTITUDE`, `AZIMUTH` and `AIRMASS` stay fixed to 1e-6 or better. Before Astra 1.0 the
+header RA is the mount's position, so it runs at the sidereal rate (15.04 deg/h) and Astra's own WCS is empty
+(`CRVAL` 0). From Astra 1.0 (2026) RA is the target's and does not move, and Astra's WCS is frozen. On the two 2025
+nights T7 failed 569 of the 570 and 332 of the 333 stopped frames.
 
 | Measured | Stopped | Frames | Header |
 |---|---|---|---|
 | Ganymede 2025-07-16 TOI-4336 c | 00:30–03:11 UT | 570 of 916 | RA 15.02 deg/h, airmass 1.1187153 |
 | Ganymede 2025-08-25 Sp1954+1801 | 00:32–04:42 UT | 333 of 446 | RA 15.03 deg/h, airmass 1.5547; next target 04:52 |
+| Ganymede 2026-06-30 Sp2253-4801 (Astra 1.0.1) | 07:12–09:43 UT | 103 | RA fixed; altitude 58.5196, azimuth 144.5753, airmass 1.17191 |
 
 The first frame of a block often starts while the mount still slews (`TRACKING` 0.74 with `SLEWING` 0.26). That is
 not a stop. Sky flats move between exposures and are not light frames.
@@ -78,8 +80,8 @@ Each frame's WCS comes from the first of these that has one:
   where the frames cannot say (MaxIm DL headers for tracking; no solved frame for drift). Each episode gets a line
   under the table, for example:
 
-  > TOI-4336 c: tracking stopped 00:30–03:11 UT, frames 347–916 of 916 (570 frames); header RA ran 15.0 deg/h at
-  > constant airmass 1.119
+  > TOI-4336 c: tracking stopped 00:30–03:11 UT, frames 347–916 of 916 (570 frames); header RA ran 15.0 deg/h,
+  > airmass fixed at 1.119
 
   > Sp1356+4342: pointing jumped 4.3' at 01:34 UT; 01:34–06:54 UT, frames 90–648 of 648 (559 frames); no frame
   > solved after 01:49 UT

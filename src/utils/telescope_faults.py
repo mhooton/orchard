@@ -13,7 +13,8 @@ Tracking stopped
     every frame the share of the exposure the mount spent tracking (TRACKING) and slewing (SLEWING), and whether it
     was parked (TELPARK). A light frame for which the mount did neither for IDLE_MIN of the exposure was exposed on
     a stopped mount, and its stars trail 15 arcsec per second. Its header RA, the mount's position, then runs at the
-    sidereal rate while ALTITUDE, AZIMUTH and AIRMASS stay fixed, and Astra's own WCS is empty (CRVAL 0). Measured:
+    sidereal rate (before Astra 1.0; since then RA is the target's) while ALTITUDE, AZIMUTH and AIRMASS stay fixed,
+    and Astra's own WCS is empty or frozen. Measured:
     Ganymede 2025-07-16 TOI-4336 c 00:30-03:11 UT (570 frames) and 2025-08-25 Sp1954+1801 00:32-04:42 UT (333).
     MaxIm DL frames (Artemis, and SSO before Astra) have no TRACKING and compute ALTITUDE from the target
     coordinates, so there only T7 can tell, by failing frames as "Sources trailed" (astrom/pointer_wcs.py, v4.1.0).
@@ -49,7 +50,9 @@ TRAIL_MIN_FRAMES = 3      # T7 'Sources trailed' frames in a row that make an ep
 DRIFT_ARCMIN = 1.0        # pointing this far from home: a drift (guided, it stays within seconds of arc)
 DRIFT_MIN_SOLVED = 3      # solved frames in a row beyond DRIFT_ARCMIN that make a drift
 REF_RADIUS_ARCMIN = 0.5   # the block's home: where the most solved frames sat within this of each other
-SETTLE_MINUTES = 10.0     # an episode over within this of a block's first frame is the pointing settling
+SETTLE_MINUTES = 10.0     # an episode over within this of a block's start, or of a pause, is the pointing settling
+PAUSE_MINUTES = 2.0       # frames this far apart (and PAUSE_CADENCES of the block's cadence): the telescope paused
+PAUSE_CADENCES = 4.0
 BLOCK_GAP_MINUTES = 20.0  # without the night's other frames, a gap this long between frames starts a block
 ROT_TOL = 3.0             # deg: a solution turned further from the block's orientation (or its flip) is wrong
 SCALE_TOL = 0.03          # a solution whose plate scale is this far from the block's is wrong
@@ -651,7 +654,8 @@ def drift_episodes(target, frames, index):
     """Where the block's pointing sat more than DRIFT_ARCMIN from home (drift_track), on DRIFT_MIN_SOLVED solved
     frames in a row (in a running median of three); the unsolved frames among them count with them, and an episode
     with no solved frame after it runs to the end of the block. One over within SETTLE_MINUTES of the block's first
-    frame is the telescope settling on the field, not a fault. Returns (episodes, solved frames measured)."""
+    frame, or of the end of a pause (_pauses), is the telescope settling on the field and the guider bringing it
+    back, not a fault. Returns (episodes, solved frames measured)."""
     point = _pointing(frames)
     if point is None:
         return [], 0
@@ -660,6 +664,7 @@ def drift_episodes(target, frames, index):
         return [], len(track)
     drift = [t[1] for t in track]
     smooth = [_median(drift[max(0, k - 1):k + 2]) for k in range(len(drift))]
+    pauses = _pauses(frames)
     out = []
     for k0, k1 in _runs([d >= DRIFT_ARCMIN for d in smooth]):
         while k0 < k1 and drift[k0] < DRIFT_ARCMIN:   # the median can start a run on its last frame below
@@ -670,8 +675,9 @@ def drift_episodes(target, frames, index):
         last = track[k1][0]
         after = track[k1 + 1][0] if k1 + 1 < len(track) else None
         i1 = len(frames) - 1 if after is None else after - 1
-        if frames[0].time and frames[i1].time and \
-                frames[i1].time - frames[0].time <= dt.timedelta(minutes=SETTLE_MINUTES):
+        resumed = _resumed(frames, i0, pauses)
+        if resumed is not None and frames[i1].time and \
+                frames[i1].time - resumed <= dt.timedelta(minutes=SETTLE_MINUTES):
             continue
         peak = max(range(k0, k1 + 1), key=lambda k: drift[k])
         detail = {'max_arcmin': round(drift[peak], 1), 'max_at': _iso(frames[track[peak][0]]),
@@ -695,6 +701,23 @@ def drift_episodes(target, frames, index):
 
 def _iso(frame):
     return frame.time.isoformat() if frame.time else None
+
+
+def _pauses(frames):
+    """Indices of the block's frames that end a pause: the first frame, and each frame more than PAUSE_MINUTES and
+    PAUSE_CADENCES cadences after the one before (an autofocus, a cloud, a re-acquisition)."""
+    times = [f.time for f in frames]
+    steps = [(b - a).total_seconds() for a, b in zip(times, times[1:]) if a and b]
+    cadence = _median(steps) or 0.0
+    limit = max(60.0 * PAUSE_MINUTES, PAUSE_CADENCES * cadence)
+    return [0] + [i for i in range(1, len(frames)) if times[i] and times[i - 1] and
+                  (times[i] - times[i - 1]).total_seconds() > limit]
+
+
+def _resumed(frames, i, pauses):
+    """When the block last started again at or before frame i (its start, or the end of a pause)."""
+    j = max((p for p in pauses if p <= i), default=None)
+    return frames[j].time if j is not None else None
 
 
 def target_faults(target, frames, processed=None, t7=None, cached=None):
@@ -799,9 +822,9 @@ def describe(e, frames_total=None):
         if d.get('parked'):
             why.append('{} with the telescope parked'.format(d['parked']))
         if d.get('ra_rate') is not None and abs(d['ra_rate'] - SIDEREAL_DEG_PER_H) < 1.5:
-            why.append('header RA ran {:.1f} deg/h'.format(d['ra_rate']) +
-                       (' at constant airmass {:.3f}'.format(d['airmass']) if d.get('airmass_span', 1) < 1e-3
-                        else ''))
+            why.append('header RA ran {:.1f} deg/h'.format(d['ra_rate']))
+        if d.get('airmass_span', 1) < 1e-3:
+            why.append('airmass fixed at {:.3f}'.format(d['airmass']))
         if d.get('altitude') is not None and d['altitude'] < LOW_ALTITUDE:
             why.append('at altitude {:.0f} deg'.format(d['altitude']))
         return '{}: tracking stopped {}, {}{}'.format(e['target'] or '?', _span(e), frames,

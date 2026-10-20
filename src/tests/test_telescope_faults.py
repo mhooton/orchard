@@ -241,7 +241,7 @@ def test_tracking_stop_is_found_with_its_frames_and_times(tmp_path):
     assert tf.flags(res) == ('Y', 'N')
     text = tf.describe(e, toi['frames'])
     assert text.startswith('TOI-4336 c: tracking stopped 23:11–23:19 UT, frames 41–70 of 70 (30 frames)')
-    assert 'header RA ran 15.0 deg/h at constant airmass 1.119' in text
+    assert 'header RA ran 15.0 deg/h, airmass fixed at 1.119' in text
     assert tf.digest_text(res) == 'telescope: tracking stopped on TOI-4336 c 23:11–23:19 UT (30 frames)'
 
 
@@ -367,6 +367,27 @@ def test_settling_then_steady_is_no_drift(tmp_path):
     track_night(str(tmp_path), [(1010.0, 1032.0)] * 6 + [(1010 + 80 * k, 1032 - 75 * k) for k in range(1, 5)] +
                 [(1339.0, 734.0)] * 150)
     assert tf.episodes(tf.night(str(tmp_path))) == []
+
+
+def test_guider_bringing_the_field_back_after_a_pause_is_no_drift(tmp_path):
+    """Io 2024-12-19 Sp0642-6707: after a 4.5-minute pause the field came back 1.3' off, and the guider walked it home
+    in 40-px steps within six minutes. A jump without a pause, and one that stays, are still drifts."""
+    home = [(1202.0, 1154.0)] * 60
+    back = [(1429.0, 1173.0)] * 2 + [(1385.0, 1209.0)] * 3 + [(1350.0, 1165.0)] * 3 + [(1312.0, 1150.0)] * 3 + \
+        [(1272.0, 1149.0)] * 3 + [(1232.0, 1149.0)] * 3
+    d = str(tmp_path / 'a')
+    os.makedirs(d)
+    track_night(d, home + [None] * 8 + back + home)     # None: no frame solved... still frames, so no pause
+    assert len(tf.episodes(tf.night(d))) == 1
+    d = str(tmp_path / 'b')
+    os.makedirs(d)
+    t = dt.datetime(2024, 12, 19, 4, 0, 0)
+    for i, xy in enumerate(home + back + home):
+        ti = t + dt.timedelta(seconds=20 * i + (270 if i >= 60 else 0))       # the pause: 4.5 min after frame 60
+        name = maxim_frame(d, i, ti)
+        write_fits(os.path.join(d, name), list(tf.read_header(os.path.join(d, name)).items()) +
+                   wcs_cards(RA_ART, DEC_ART, xy[0], xy[1], rot=0.6, parity=1.0))
+    assert tf.episodes(tf.night(d)) == []
 
 
 def test_excursions_off_the_field_and_back(tmp_path):
