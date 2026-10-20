@@ -281,23 +281,25 @@ class Chooser:
             got = self.pick({nd: v[e] for nd, v in by_night.items() if e in v}, MIN_DARK, temp_ok)
             if got is not None:
                 best[e] = got
+        # one night with darks at every exposure that has any (an exposure no night has does not count)
         covering = None
-        cover_groups = {nd: sum((v[e] for e in exposures), []) for nd, v in by_night.items()
-                        if exposures and all(len(v.get(e, [])) >= MIN_DARK for e in exposures)}
+        matched = sorted(best)
+        cover_groups = {nd: sum((v[e] for e in matched), []) for nd, v in by_night.items()
+                        if len(matched) > 1 and all(len(v.get(e, [])) >= MIN_DARK for e in matched)}
 
         def covers(nd, members):
             if not temp_ok(nd, members):
                 return False
             return all(sum(1 for m in members if cr.exposure_key(m.get('exptime')) == e and self.resolve(m))
-                       >= MIN_DARK for e in exposures)
-        got = self.pick(cover_groups, MIN_DARK * len(exposures), covers) if cover_groups else None
-        if got is not None and best:
+                       >= MIN_DARK for e in matched)
+        got = self.pick(cover_groups, MIN_DARK * len(matched), covers) if cover_groups else None
+        if got is not None:
             nd, ok = got
             d_cover = abs(_delta(ok[0][0]['night'], self.night))
             if all(d_cover <= abs(_delta(b[1][0][0]['night'], self.night)) + COVERING_SLACK_DAYS
                    for b in best.values()):
                 covering = nd
-                for e in exposures:
+                for e in matched:
                     best[e] = (nd, [(m, p) for m, p in ok if cr.exposure_key(m.get('exptime')) == e])
         frames, by_exp = [], {}
         for e in exposures:

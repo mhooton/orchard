@@ -243,10 +243,13 @@ def _image_hdu(hdul):
 
 
 def _section(hdu, r0, r1, c0, c1):
+    """Rows r0:r1, columns c0:c1 of the image, reading whole rows (one contiguous read: astropy reads a
+    column-trimmed section one row at a time)."""
     try:
-        return np.asarray(hdu.section[r0:r1, c0:c1], dtype=float)
+        rows = hdu.section[r0:r1, :]
     except Exception:
-        return np.asarray(hdu.data[r0:r1, c0:c1], dtype=float)
+        rows = hdu.data[r0:r1, :]
+    return np.asarray(rows[:, c0:c1], dtype=float)
 
 
 def frame_kind(imagetyp):
@@ -689,28 +692,58 @@ def majority_detector(rows):
     return max(sorted(counts), key=lambda k: counts[k])
 
 
+_WORKER_THROTTLE = None
+
+
+def _init_worker(rate):
+    """Each builder process paces its own file opens (its share of the build's rate)."""
+    global _WORKER_THROTTLE
+    _WORKER_THROTTLE = Throttle(rate)
+
+
+def _scan(args):
+    path, telescope, night, stats = args
+    if _WORKER_THROTTLE is not None:
+        _WORKER_THROTTLE()
+    return read_frame(path, telescope, night, stats=stats)
+
+
 def build_night_rows(telescope, night_dir, night_path, relpaths, science_relpaths=(), method='night', workers=4,
-                     throttle=None, n_files=None, log=print):
-    """(night row, frame rows) for one night: reads the given candidate files (and science samples)."""
+                     throttle=None, n_files=None, executor=None, log=print):
+    """(night row, frame rows) for one night: reads the given candidate files (and science samples).
+
+    Frames are read by `workers` threads, or by the builder's process pool (`executor`): the scan is mostly
+    Python (headers, sigma-clipped overscan statistics), so threads cannot run more than ~15 frames a second.
+    """
     night = night_of(night_dir)
     scanned_at = utcnow_iso()
 
-    def one(rel, stats=True):
-        if throttle is not None:
-            throttle()
-        info = read_frame(os.path.join(night_path, rel), telescope, night, stats=stats)
+    def finish(rel, info):
         info.update({'telescope': telescope, 'night_dir': night_dir, 'night': night, 'relpath': rel,
                      'stem': strip_suffix(rel), 'compressed': int(is_compressed(rel)), 'scanned_at': scanned_at})
         return info
 
+    def read_all(pool, rels, stats=True):
+        rels = list(rels)
+        if executor is not None:
+            infos = executor.map(_scan, [(os.path.join(night_path, r), telescope, night, stats) for r in rels],
+                                 chunksize=4)
+        else:
+            def one(rel):
+                if throttle is not None:
+                    throttle()
+                return read_frame(os.path.join(night_path, rel), telescope, night, stats=stats)
+            infos = pool.map(one, rels)
+        return [finish(r, i) for r, i in zip(rels, infos)]
+
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        infos = list(pool.map(one, relpaths))
-        sci = list(pool.map(lambda r: one(r, stats=False), science_relpaths))
+        infos = read_all(pool, relpaths)
+        sci = read_all(pool, science_relpaths, stats=False)
         missed = [s['relpath'] for s in sci if s.get('kind') in KINDS]
         if missed:
             log('{} {}: {} sampled frame(s) the prefilter skipped are calibration frames, e.g. {}'.format(
                 telescope, night_dir, len(missed), missed[0]))
-            infos += list(pool.map(one, missed))
+            infos += read_all(pool, missed)
     cal = [i for i in infos if i.get('kind') in KINDS]
     science = [i for i in infos if i.get('kind') == 'light'] + [s for s in sci if s.get('kind') == 'light']
     # one row per stem: a frame stored twice (x.fits and x.fits.fz) keeps the uncompressed copy
@@ -916,10 +949,24 @@ def build(register, basedir, telescopes, eso_index=None, since=None, until=None,
           rescan=False, nights=None, log=print):
     """Register every night of the telescopes (resumable: a night already registered by the builder with the
     same number of files is skipped unless rescan)."""
+    from concurrent.futures import ProcessPoolExecutor
     eso_types, cubes = load_eso_index(eso_index)
-    throttle = Throttle(rate)
+    workers = max(1, workers)
+    executor = ProcessPoolExecutor(max_workers=workers, initializer=_init_worker,
+                                   initargs=((rate / workers) if rate else 0.0,))
     totals = {'nights': 0, 'skipped': 0, 'files_read': 0, 'cal': 0}
     t_start = time.time()
+    try:
+        _build(register, basedir, telescopes, eso_types, cubes, executor, since, until, rescan, nights, totals,
+               t_start, log)
+    finally:
+        executor.shutdown()
+    log('done: {}'.format(totals))
+    return totals
+
+
+def _build(register, basedir, telescopes, eso_types, cubes, executor, since, until, rescan, nights, totals,
+           t_start, log):
     for telescope in telescopes:
         images = os.path.join(basedir, 'Observations', telescope, 'images')
         try:
@@ -945,7 +992,7 @@ def build(register, basedir, telescopes, eso_index=None, since=None, until=None,
             cands = candidate_paths(telescope, night_dir, relpaths, eso_types, cubes)
             samples = science_samples(relpaths, cands)
             night_row, rows = build_night_rows(telescope, night_dir, path, cands, samples, method='build',
-                                               workers=workers, throttle=throttle, n_files=len(relpaths), log=log)
+                                               n_files=len(relpaths), executor=executor, log=log)
             register.put_night(night_row, rows)
             totals['nights'] += 1
             totals['files_read'] += len(cands) + len(samples)
@@ -955,8 +1002,6 @@ def build(register, basedir, telescopes, eso_index=None, since=None, until=None,
                 log('{} {}: {} nights, {} files read ({:.0f}/s), {} calibration frames'.format(
                     telescope, night_dir, totals['nights'], totals['files_read'],
                     totals['files_read'] / max(el, 1e-6), totals['cal']))
-    log('done: {}'.format(totals))
-    return totals
 
 
 def reflag(register, telescope=None, log=print):

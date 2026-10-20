@@ -346,6 +346,11 @@ def test_spirit_prefers_one_night_covering_every_exposure_within_a_few_days():
     rows = spirit_darks('20250407', [10]) + spirit_darks('20250406', [60]) + spirit_darks('20250320', [10, 60])
     d = chooser(rows, profile=SPIRIT_PROFILE, dark_matching=True).darks()
     assert d['covering_night'] is None and d['by_exposure']['10']['night'] == '20250407'
+    # an exposure no night has darks at does not stop a covering night being used for the others
+    profile = dict(SPIRIT_PROFILE, exposures={3: 20, 10: 100, 60: 50})
+    rows = spirit_darks('20250407', [10]) + spirit_darks('20250406', [60]) + spirit_darks('20250405', [10, 60])
+    d = chooser(rows, profile=profile, dark_matching=True).darks()
+    assert d['covering_night'] == '20250405' and d['missing_exposures'] == [3]
 
 
 def test_spirit_exposure_without_darks_is_flagged_not_dropped():
