@@ -79,7 +79,7 @@ The file-level ones never raise: a stamp that fails is logged, and the stage car
 |---|---|---|---|
 | `<run>_MasterBias.fits`, `_MasterDark*.fits`, `_MasterFlat_<filt>.fits` | T2–T4 | yes | — |
 | `<run>_BadPixelMap.fits`, `hot/cold/flatbad_pixel_map.fits` | T5 | yes | — |
-| `proc*.fits` (calibrated frames) | T6 | yes | T7 `inherited WCS removed`, `WCS solved`; T8/T9 `wcsfit: WCS refit` (or `... failed`); framepack (`ORCHMOD` only; its own `framepack:` card is the record) |
+| `proc*.fits` (calibrated frames) | T6 | yes | T7 `inherited WCS removed`, `WCS solved` or `WCS from cache` ([wcs-cache.md](wcs-cache.md)); T8/T9 `wcsfit: WCS refit` (or `... failed`); framepack (`ORCHMOD` only; its own `framepack:` card is the record) |
 | `<target>/1_initial-catalogue.fits`, `proc*.cat` | T8/T9 | yes | — |
 | `*_outstack_<filt>.fits` (+ `_conf`), `*_stack_catalogue_<filt>.fits` | T8 | yes | A backup catalogue restored for a later night: `catalogue_fov: target roles for <night>`. Fallback crossmatch: `proper_motion: Gaia crossmatch` |
 | `*_stack_catalogue_pm_<filt>.fits` | T9 | yes | — |
@@ -132,8 +132,9 @@ How to read a raw frame's header:
   - a frame orchard wrote before raw frames were versioned. These carry `ASTRAROT`/`ASTRAMIR` and the
     descriptive HISTORY cards, and nothing more. The archive is not retrofitted.
 
-One write is not recorded: T7's copy of its plate solution into raw light frames (`copy_wcs_to_raw`). It is
-being replaced by a WCS cache outside the raw tree.
+One write was never recorded: T7's copy of its plate solution into raw light frames (`copy_wcs_to_raw`). T7 no
+longer writes raw frames; it keeps its solutions in a cache outside the raw tree ([wcs-cache.md](wcs-cache.md)).
+Light frames solved before that still carry orchard's WCS cards, with no `ORCHMOD` to say so.
 
 The descriptive cards stay exactly as they were, because the repair scripts read them back:
 

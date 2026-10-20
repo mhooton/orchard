@@ -18,6 +18,7 @@ from astropy.units import Quantity
 from astropy.wcs.utils import WCS, pixel_to_skycoord
 from calibration.pipeutils import get_instrument_parameters, resolve_plate_scale
 from utils import orchard_version
+from astrom import known_scale
 from photutils.background import Background2D, MedianBackground
 from photutils.detection import DAOStarFinder
 from scipy import ndimage
@@ -42,6 +43,19 @@ warnings.filterwarnings("ignore", message=".*Input data contains invalid values.
 # those 23 on exactly 4 matches - the class that sits 183 arcsec off the field
 # centre - and no frame has ever solved from four or fewer catalogue stars.
 TWIRL_ASTERISM = 4
+
+# Star trails: a frame that fails with its brightest sources stretched this far in one common direction
+# (known_scale.trail_ellipticity) is reported as trailed, the sky's loss rather than the pipeline's. That was the
+# telescope not tracking on Ganymede 20250716 after 00:30 UT and 20250825 after 00:41 UT (header RA advancing at the
+# sidereal rate at constant airmass, Astra's own solve empty): their frames measure 0.75-0.78 and no solver verifies
+# them. It only words the failure: a bright star's bleed trails measure up to 0.69 (Io 20260509, HD98800), and those
+# frames solve.
+TRAILED_ELLIPTICITY = 0.7
+
+# Whether a twirl solution must also pass known_scale.verified(). twirl is only reached when the known-scale solve
+# found nothing verified, and what it then accepts is mostly what the old gates let through wrongly: on bulge fields
+# its solutions put 1-8 of 100 sources on catalogue stars, chance level.
+VERIFY_TWIRL = True
 
 
 def ra_is_sexagesimal(ra) -> bool:
@@ -461,6 +475,34 @@ def image_field_of_view(shape: Tuple[int, int], plate_scale: float, dec_rad: flo
     ])
 
 
+def inside_query_box(radecs: np.ndarray, center: Tuple[float, float], fov) -> np.ndarray:
+    """Mask of the (ra, dec) rows that gaia_db_query would return for this centre and (RA extent, Dec extent) box."""
+    if len(radecs) == 0:
+        return np.zeros(0, bool)
+    ra, dec = center
+    ra_fov, dec_fov = np.asarray(fov, float)
+    return ((radecs[:, 0] >= ra - ra_fov / 2) & (radecs[:, 0] <= ra + ra_fov / 2) &
+            (radecs[:, 1] >= dec - dec_fov / 2) & (radecs[:, 1] <= dec + dec_fov / 2))
+
+
+def inherited_wcs(header):
+    """The sky WCS a frame arrived with (Astra's own solve, or an earlier T7 solution copied into the raw frame), or
+    None. Only ever a starting point for the known-scale solve, which keeps it only if it verifies."""
+    ctype = str(header.get('CTYPE1', ''))
+    if not ctype.startswith('RA') or not header.get('CRVAL1') or not header.get('CRVAL2'):
+        return None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            wcs = WCS(header, naxis=2)
+        if not wcs.has_celestial:
+            return None
+        known_scale.solved_scale(wcs)
+    except Exception:
+        return None
+    return wcs
+
+
 @dataclass
 class PointingCorrection:
     """Class to store the pointing correction between the desired target center and the plating center."""
@@ -696,7 +738,7 @@ def clear_wcs_headers(header, wcs_keywords, verbose=False):
 
 def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, verbose=False,
                 max_stars=16, plate_scale_tolerance=0.1, min_matches=4, asterism=TWIRL_ASTERISM,
-                progress=None):
+                progress=None, known_scale_solve=True, use_inherited_wcs=True, verify_twirl=VERIFY_TWIRL):
     """
     Perform WCS solving on a FITS file using local Gaia database and multiscale star detection.
 
@@ -704,6 +746,10 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
     - Local Gaia database instead of online queries
     - Multiscale star detection instead of simple peak finding
     - No dark frame subtraction (assumes pre-reduced images)
+
+    The solve itself is astrom.known_scale's (the plate scale held fixed, the solution verified against the
+    catalogue); twirl is the fallback when that finds nothing verified. The frame's inherited WCS, if it has one,
+    is tried first as a starting point and kept only if it verifies.
 
     Parameters
     ----------
@@ -741,6 +787,13 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
         how far it got and which stage was running. Without it a killed frame
         reports zeros for stages that never ran, which reads as a stage that ran
         and found nothing.
+    known_scale_solve : bool, optional
+        Solve with astrom.known_scale before trying twirl (default). False gives the old twirl-only solve.
+    use_inherited_wcs : bool, optional
+        Try the WCS the frame arrived with as the known-scale solve's starting point. It is refined and has to
+        verify like any other solution, so a wrong one costs only the attempt.
+    verify_twirl : bool, optional
+        Hold a twirl solution to the same verification as a known-scale one (VERIFY_TWIRL by default).
 
     Returns
     -------
@@ -751,10 +804,14 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
         - crpix: tuple or None, (CRPIX1, CRPIX2) if successful
         - crval: tuple or None, (CRVAL1, CRVAL2) if successful
         - sources_detected: int, number of sources detected in image
-        - sources_used: int, number of sources used for WCS (after limiting)
-        - gaia_queried: int, number of Gaia sources returned from query
-        - gaia_used: int, number of Gaia sources used for WCS (after limiting)
-        - matches: int, number of successful star matches
+        - sources_used: int, number of sources used for WCS (after limiting); for a known-scale solution, the
+          brightest sources its verification tested
+        - gaia_queried: int, number of Gaia sources in the 1.2-field query box
+        - gaia_used: int, number of Gaia sources used for WCS (after limiting); for a known-scale solution, the
+          catalogue stars inside the frame
+        - matches: int, number of successful star matches; for a known-scale solution, how many of the tested
+          sources sit within known_scale.VERIFY_RADIUS px of a catalogue star
+        - method: 'prior', 'pairs' or 'grid' (known-scale solve) or 'twirl', once solved
     """
     # Initialize return dictionary. When the caller supplies `progress` we
     # populate that dict in place, so a solve killed part-way through (the
@@ -771,6 +828,7 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
         'gaia_queried': 0,
         'gaia_used': 0,
         'matches': 0,
+        'method': None,
         'stage': 'starting',
     })
 
@@ -802,6 +860,9 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 total_elapsed = current_time - start_time
                 print(f"[TIMING] Opened FITS file: {elapsed:.3f}s (Total: {total_elapsed:.3f}s)")
                 last_time = current_time
+
+            # Read before it is cleared: only ever a starting point, kept if the known-scale solve verifies it
+            prior_wcs = inherited_wcs(header) if (known_scale_solve and use_inherited_wcs) else None
 
             # Clear existing WCS headers if requested
             if clear_existing_wcs and wcs_keywords:
@@ -933,7 +994,8 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                     )
                     return result
 
-                # Limit number of stars to prevent memory issues
+                # The known-scale solve uses up to its own limit of detections; twirl only the brightest max_stars
+                all_stars_in_image = stars_in_image
                 star_limit = min(max_stars, len(stars_in_image))
                 stars_in_image = stars_in_image[0:star_limit]
                 result['sources_used'] = len(stars_in_image)
@@ -945,84 +1007,129 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 if verbose:
                     print(f"Querying local Gaia database...")
 
+                # One query, in the known-scale solve's bigger box. Its stars inside the 1.2-field box are the ones
+                # the query used to return, and they are what twirl gets and what the log's "Gaia: N" counts.
                 result['stage'] = 'gaia_query'
-                gaia_stars = gaia_db_query(
+                catalogue = gaia_db_query(
                     center=(center.ra.deg, center.dec.deg),
-                    fov=1.2 * fov,  # 20% margin
+                    fov=known_scale.CATALOGUE_BOX * fov,
                     tmass=True,
                     dateobs=dateobs,
-                    limit=2 * star_limit,
                     db_path=db_path
                 )
+                inner = inside_query_box(catalogue, (center.ra.deg, center.dec.deg), known_scale.INNER_BOX * fov)
+                gaia_stars = catalogue[inner]
                 result['gaia_queried'] = len(gaia_stars)
 
                 if verbose:
-                    print(f"Found {len(gaia_stars)} Gaia stars in the field of view. with limit={2 * star_limit}")
+                    print(f"Found {len(gaia_stars)} Gaia stars in the field of view "
+                          f"({len(catalogue)} in the {known_scale.CATALOGUE_BOX}-field box)")
                     current_time = time.time()
                     elapsed = current_time - last_time
                     total_elapsed = current_time - start_time
                     print(f"[TIMING] Gaia database query: {elapsed:.3f}s (Total: {total_elapsed:.3f}s)")
                     last_time = current_time
 
-                if len(gaia_stars) <= asterism:
-                    result['error'] = (
-                        f"Not enough Gaia stars found in field: {len(gaia_stars)} "
-                        f"(more than {asterism} are needed to match an "
-                        f"{asterism}-star asterism)"
-                    )
-                    return result
-
-                # Limit Gaia stars
-                gaia_limit = min(2 * star_limit, len(gaia_stars))
-                gaia_stars = gaia_stars[0:gaia_limit]
-                result['gaia_used'] = len(gaia_stars)
-
-                if verbose:
-                    print(f"Using {len(gaia_stars)} Gaia stars (limited from {result['gaia_queried']})")
-                    print(
-                        f"Using {len(stars_in_image)} image stars and {len(gaia_stars)} Gaia stars for WCS solution...")
-
-                # Create image star mapping and compute WCS
-                if verbose:
-                    print(f"Starting WCS computation...")
-
                 result['stage'] = 'star_matching'
-                image_star_mapping = ImageStarMapping.from_gaia_coordinates(
-                    stars_in_image, gaia_stars,
-                    expected_plate_scale=plate_scale,
-                    plate_scale_tolerance=plate_scale_tolerance,
-                    asterism=asterism
-                )
+                trail = known_scale.trail_ellipticity(image_clean, all_stars_in_image)
+                solution = None
+                if known_scale_solve:
+                    try:
+                        solution = known_scale.solve(
+                            all_stars_in_image, catalogue[:, 0], catalogue[:, 1], (center.ra.deg, center.dec.deg),
+                            plate_scale, image_clean.shape, inner=inner, prior=prior_wcs, trail=trail)
+                    except Exception as e:      # never worse than the twirl-only solve
+                        solution = dict(success=False, wcs=None, method=None, verification=None, candidates=0,
+                                        error=f"known-scale solve raised {type(e).__name__}: {e}")
+                    if verbose:
+                        print(f"Known-scale solve: success={solution['success']} method={solution['method']} "
+                              f"verification={solution['verification']} candidates={solution['candidates']}")
 
-                if verbose:
-                    print(f"WCS computation complete")
-                    current_time = time.time()
-                    elapsed = current_time - last_time
-                    total_elapsed = current_time - start_time
-                    print(f"[TIMING] WCS computation (star matching): {elapsed:.3f}s (Total: {total_elapsed:.3f}s)")
-                    last_time = current_time
+                if solution is not None and solution['success']:
+                    solved_wcs = solution['wcs']
+                    result['method'] = solution['method']
+                    result['matches'] = solution['matches']
+                    result['sources_used'] = solution['tested']
+                    result['gaia_used'] = solution['verification']['in_frame']
+                else:
+                    # twirl, as before, when the known-scale solve has nothing verified to offer
+                    known = solution['verification'] if solution is not None else None
 
-                # Validate star matching
-                matches = image_star_mapping.number_of_matched_stars(pixel_threshold=10)
-                result['matches'] = matches
+                    def no_solution(reason):
+                        if trail is not None and trail >= TRAILED_ELLIPTICITY:
+                            return (f"Sources trailed (axis ratio {known_scale.axis_ratio(trail):.1f}, all one way),"
+                                    f" the telescope was probably not tracking; twirl: {reason}")
+                        if known is not None:
+                            return (f"No verified solution (best {known['matched']} of {known['tested']} sources "
+                                    f"on catalogue stars); twirl: {reason}")
+                        return reason
 
-                if verbose:
-                    print(f"Number of matched stars: {matches}")
+                    if len(gaia_stars) <= asterism:
+                        result['error'] = no_solution(
+                            f"Not enough Gaia stars found in field: {len(gaia_stars)} "
+                            f"(more than {asterism} are needed to match an "
+                            f"{asterism}-star asterism)")
+                        return result
 
-                if matches < min_matches:
-                    result['error'] = f"Plate solve failed, not enough stars matched ({matches}/{min_matches})"
-                    return result
+                    # Limit Gaia stars
+                    gaia_limit = min(2 * star_limit, len(gaia_stars))
+                    gaia_stars = gaia_stars[0:gaia_limit]
+                    result['gaia_used'] = len(gaia_stars)
 
-                # Get plating center
-                plating_ra, plating_dec = image_star_mapping.get_plating_center(
-                    image_shape=image_clean.shape
-                )
+                    if verbose:
+                        print(f"Using {len(gaia_stars)} Gaia stars (limited from {result['gaia_queried']})")
+                        print(f"Using {len(stars_in_image)} image stars and {len(gaia_stars)} Gaia stars "
+                              f"for WCS solution...")
+                        print(f"Starting WCS computation...")
+
+                    try:
+                        image_star_mapping = ImageStarMapping.from_gaia_coordinates(
+                            stars_in_image, gaia_stars,
+                            expected_plate_scale=plate_scale,
+                            plate_scale_tolerance=plate_scale_tolerance,
+                            asterism=asterism
+                        )
+                    except ValueError as e:
+                        result['error'] = no_solution(str(e))
+                        return result
+
+                    if verbose:
+                        print(f"WCS computation complete")
+                        current_time = time.time()
+                        elapsed = current_time - last_time
+                        total_elapsed = current_time - start_time
+                        print(f"[TIMING] WCS computation (star matching): {elapsed:.3f}s (Total: {total_elapsed:.3f}s)")
+                        last_time = current_time
+
+                    # Validate star matching
+                    matches = image_star_mapping.number_of_matched_stars(pixel_threshold=10)
+                    result['matches'] = matches
+
+                    if verbose:
+                        print(f"Number of matched stars: {matches}")
+
+                    if matches < min_matches:
+                        result['error'] = no_solution(
+                            f"Plate solve failed, not enough stars matched ({matches}/{min_matches})")
+                        return result
+
+                    if verify_twirl:
+                        check = known_scale.verify(image_star_mapping.wcs, all_stars_in_image, catalogue[:, 0],
+                                                   catalogue[:, 1], image_clean.shape)
+                        if not known_scale.verified(check, trail):
+                            result['error'] = no_solution(
+                                f"solution on {matches} matches failed verification ({check['matched']} of "
+                                f"{check['tested']} sources on catalogue stars)")
+                            return result
+
+                    solved_wcs = image_star_mapping.wcs
+                    result['method'] = 'twirl'
 
                 # Update header with WCS information
                 if verbose:
                     print(f"Updating FITS header with WCS information...")
 
-                wcs_header = image_star_mapping.wcs.to_header()
+                wcs_header = solved_wcs.to_header()
                 if verbose:
                     print(f"Generated WCS header with {len(wcs_header)} keywords")
                     for key in wcs_header:
@@ -1047,8 +1154,8 @@ def pointer_wcs(filepath, db_path, wcs_keywords=None, clear_existing_wcs=False, 
                 # Create diagnostic plots if verbose
                 if verbose:
                     print(f"Creating diagnostic plots...")
-                    _create_diagnostic_plots(filepath, data, image_clean, stars_in_image,
-                                             image_star_mapping.gaia_stars_in_image, image_star_mapping.wcs)
+                    gaia_pixels = np.array(SkyCoord(gaia_stars, unit="deg").to_pixel(solved_wcs)).T
+                    _create_diagnostic_plots(filepath, data, image_clean, stars_in_image, gaia_pixels, solved_wcs)
 
                 if verbose:
                     print(f"WCS solution completed successfully!")
