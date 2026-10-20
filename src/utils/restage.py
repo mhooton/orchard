@@ -58,7 +58,7 @@ SUPERSEDED = 'superseded'
 EX_TEMPFAIL = 75
 FITS = ('.fits', '.fit', '.fts')
 CARDS = ('ORCHVER', 'ORCHREL', 'ORCHMOD')
-FRAME_LISTS = ('1/*_processed.dat',)   # lists of calibrated frames by absolute path: copied, pointed at the copies
+FRAME_LISTS = stages.FRAME_LISTS      # lists of calibrated frames by absolute path: copied, pointed at the copies
 
 
 class RestageError(Exception):

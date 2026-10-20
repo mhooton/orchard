@@ -103,7 +103,7 @@ def test_a_rerun_from_t9_copies_the_frames_it_edits_and_links_what_it_reads():
     got = {(s, p): ln for s, p, _, ln in stages.restage_inputs(9)}
     assert got[(stages.TARGET, stages.FRAMES)] is False                  # T9's wcsfit writes into them
     assert got[(stages.TARGET, '1/*_processed.dat')] is True
-    assert got[(stages.TARGET, '*_stack_catalogue_*.fits')] is True
+    assert got[(stages.TARGET, '*_stack_catalogue_*.fits')] is False     # condense opens it read-write
     assert (stages.TARGET, '*_{night}_output.fits') not in got           # T9 makes it
     assert stages.edited_by_rerun('1/procX.fits', 9) and not stages.edited_by_rerun('1/procX.fits', 10)
     assert stages.is_output('599_Io_andor_{}_stack_catalogue_pm_I+z.fits'.format(NIGHT), 9, night=NIGHT)

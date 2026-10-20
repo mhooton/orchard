@@ -66,6 +66,7 @@ def W(scope, pattern, what=''):
 
 
 FRAMES = '1/proc*.fits'      # calibrated frames: made by T6, WCS written into them by T7, T8 and T9
+FRAME_LISTS = ('1/*_processed.dat',)   # name the frames by absolute path: restaged as copies pointed at the copies
 
 STAGES = OrderedDict((s.n, s) for s in [
     Stage(1, 'lists', 'create_input_lists', 'main/createlists.py',
@@ -97,7 +98,8 @@ STAGES = OrderedDict((s.n, s) for s in [
     Stage(7, 'astrometry', 'check_astrometry', 'astrom/astrometry.py',
           [R(TARGET, '1/*_processed.dat', 6), R(TARGET, FRAMES, 6), R(REDUCTION, '1_image_{target}.list', 1),
            R(DATA, 'Gaia database', what='$GAIADATABASEPATH')],
-          [], [R(TARGET, FRAMES, 6, 'WCS'), R(RAW, '*', what='WCS, until the WCS cache (PR #64)')], ''),
+          [], [R(TARGET, FRAMES, 6, 'WCS'), R(RAW, '*', what='WCS: before PR #64 (on main since 2026-10-20) replaced it '
+                                                                   'with a WCS cache')], ''),
     Stage(8, 'stack', 'create_stack_image', 'photometry/catalogue_fov.py',
           [R(TARGET, '1/*_processed.dat', 6), R(TARGET, FRAMES, 6), R(OBS, 'schedule/**', what='plan files'),
            R(DATA, 'ml_40pc_v2.csv', what='the 40 pc target list'),
@@ -258,7 +260,8 @@ def restage_inputs(first):
     its own copy of every frame. A file a stage of the rerun writes is never an input, whatever pattern it matches
     (T9's *_stack_catalogue_pm_*.fits matches what T9 reads of T8's): restage.py leaves those out.
     From T7 back a rerun is not restaged: T7 writes each frame's WCS into the raw frame its image list names (an
-    absolute path, so a rerun anywhere would write production raw) until the WCS cache (PR #64) replaces that, and
+    absolute path, so a rerun anywhere would write production raw) in the code this was built on; PR #64's WCS cache
+    (on main since 2026-10-20) ends that, which makes T7 the next stage to try, and
     from T6 back the frames themselves are new, so a run from raw costs the same."""
     edited = [(e.scope, e.pattern) for n in rerun_stages(first) for e in STAGES[n].edits]
     out, seen = [], set()
@@ -335,7 +338,9 @@ def markdown():
     for n in RESTAGE:
         lines += ['', '| Rerun from T{}: input | Made by | Restaged as |'.format(n), '|---|---|---|']
         for scope, pattern, made_by, link in restage_inputs(n):
-            lines.append('| `{}` {} | T{} | {} |'.format(scope, pattern, made_by, 'hard link' if link else 'copy'))
+            how = 'copy, each path pointed at the restaged frame' if pattern in FRAME_LISTS else \
+                'hard link' if link else 'copy'
+            lines.append('| `{}` {} | T{} | {} |'.format(scope, pattern, made_by, how))
     return '\n'.join(lines) + '\n'
 
 
