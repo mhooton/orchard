@@ -390,6 +390,26 @@ def test_guider_bringing_the_field_back_after_a_pause_is_no_drift(tmp_path):
     assert tf.episodes(tf.night(d)) == []
 
 
+def test_scattered_wrong_solutions_are_unknown_not_drift(tmp_path):
+    """Callisto 2024: solutions of frames 17 s apart land hundreds of pixels apart, inside the orientation and
+    scale filters. The solutions are moving, not the pointing: the block cannot be judged."""
+    import random
+    rnd = random.Random(1)
+    track_night(str(tmp_path), [(980 + rnd.uniform(-450, 450), 910 + rnd.uniform(-450, 450)) for _ in range(120)])
+    r = tf.night(str(tmp_path))['Sp1356+4342']
+    assert r['episodes'] == [] and r['solved'] == 0 and r['noisy'] == 120
+    assert tf.flags({'Sp1356+4342': r}) == ('unknown', 'unknown')
+
+
+def test_a_run_of_scattered_solutions_inside_a_steady_block_is_no_drift(tmp_path):
+    import random
+    rnd = random.Random(2)
+    bad = [(1023 + rnd.choice((-1, 1)) * rnd.uniform(300, 700), 1021 + rnd.uniform(-700, 700)) for _ in range(8)]
+    track_night(str(tmp_path), [(1023.0, 1021.0)] * 100 + bad + [(1023.0, 1021.0)] * 100)
+    r = tf.night(str(tmp_path))['Sp1356+4342']
+    assert r['episodes'] == [] and r['solved'] == 208 and r['noisy'] == 0
+
+
 def test_excursions_off_the_field_and_back(tmp_path):
     """Io 2017-07-05 trappist-1: groups of frames 9-17' away (the target off the detector), then back home."""
     home = [(1023.0, 1021.0)] * 100

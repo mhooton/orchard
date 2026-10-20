@@ -62,6 +62,11 @@ Solutions are filtered before they count:
 - **Scale.** A solution whose plate scale is more than 3% off the block's is wrong.
 - **Meridian flip.** The field turns 180 degrees and the pointing lands elsewhere on the detector, all at once. Each
   side of a flip has its own home.
+- **Coherence.** A pointing that moves does so coherently. Guided, consecutive frames agree to a few pixels, and a
+  jump is one step followed by steady frames. Wrong solutions scatter: in Callisto's 2024 products, frames 17 s apart
+  land hundreds of pixels apart, with plate scales from 0.336 to 0.354 arcsec/px, inside the orientation and scale
+  filters. A block whose median frame-to-frame step exceeds 0.25 arcmin cannot be judged: its drift is `unknown`, and
+  its frames are counted as `noisy`. A drift episode must be as coherent itself.
 
 An episode is a *jump* when the displacement arrives between solved frames under 5 minutes apart, and a *drift*
 otherwise. The report also gives the largest displacement, when it was reached, and when the target left the field.
@@ -111,4 +116,6 @@ CENSUS
 | `SETTLE_MINUTES` | 10 | an episode over this soon after a block starts is settling |
 | `ROT_TOL`, `SCALE_TOL` | 3 deg, 3% | a solution further off the block's orientation or scale is wrong |
 | `JUMP_MINUTES` | 5 | a displacement arriving between solved frames this close is a jump |
+| `NOISY_STEP_ARCMIN` | 0.25 | median frame-to-frame step above which the solutions, not the pointing, are moving |
+| `PAUSE_MINUTES`, `PAUSE_CADENCES` | 2 min, 4 | frames this far apart mark a pause, after which settling is allowed |
 | `LOW_ALTITUDE` | 25 deg | a stop below this has its altitude given (it may be the mount's limit) |

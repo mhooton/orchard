@@ -57,6 +57,7 @@ BLOCK_GAP_MINUTES = 20.0  # without the night's other frames, a gap this long be
 ROT_TOL = 3.0             # deg: a solution turned further from the block's orientation (or its flip) is wrong
 SCALE_TOL = 0.03          # a solution whose plate scale is this far from the block's is wrong
 JUMP_MINUTES = 5.0        # a drift that arrives between solved frames this close together is a jump
+NOISY_STEP_ARCMIN = 0.25  # median frame-to-frame move above this: the solutions, not the pointing, are moving
 SIDEREAL_DEG_PER_H = 15.041
 LOW_ALTITUDE = 25.0       # deg: a stop this low may be the mount's altitude limit; the report says the altitude
 
@@ -622,7 +623,7 @@ def _home(points, scale):
 
 
 def drift_track(frames, point):
-    """[(frame index, arcmin from home, x, y, shape)]: where `point` falls on each of the block's solved frames,
+    """[(frame index, arcmin from home, x, y, shape, arcsec/px)]: where `point` falls on each of the block's solved frames,
     measured from where it sat longest (_home), so frames taken while the telescope still settled on the field do not
     make the rest of the block look displaced. Solutions turned more than ROT_TOL from the block's orientation, or
     with a plate scale SCALE_TOL off the block's, are wrong (old twirl solutions, accepted before the plate-scale
@@ -646,8 +647,15 @@ def drift_track(frames, point):
     out = []
     for p in good:
         hx, hy = home[_turn(p[4], axis) > 90.0]
-        out.append((p[0], math.hypot(p[1] - hx, p[2] - hy) * p[3] / 60.0, p[1], p[2], p[5]))
+        out.append((p[0], math.hypot(p[1] - hx, p[2] - hy) * p[3] / 60.0, p[1], p[2], p[5], p[3]))
     return out
+
+
+def _steps(track, k0=1, k1=None):
+    """Arcmin between consecutive points of a drift track, from point k0 to k1."""
+    k1 = len(track) - 1 if k1 is None else k1
+    return [math.hypot(track[k][2] - track[k - 1][2], track[k][3] - track[k - 1][3]) * track[k][5] / 60.0
+            for k in range(max(1, k0), k1 + 1)]
 
 
 def drift_episodes(target, frames, index):
@@ -655,13 +663,21 @@ def drift_episodes(target, frames, index):
     frames in a row (in a running median of three); the unsolved frames among them count with them, and an episode
     with no solved frame after it runs to the end of the block. One over within SETTLE_MINUTES of the block's first
     frame, or of the end of a pause (_pauses), is the telescope settling on the field and the guider bringing it
-    back, not a fault. Returns (episodes, solved frames measured)."""
+    back, not a fault.
+
+    A pointing that moves does so coherently: guided, consecutive frames agree to a few pixels, and a jump is one
+    step followed by steady frames. Solutions that are wrong scatter from frame to frame (Callisto 2024: hundreds of
+    pixels between frames 17 s apart). A block whose median step exceeds NOISY_STEP_ARCMIN cannot be judged, and
+    an episode must be as coherent itself. Returns (episodes, frames measured, frames too noisy to judge)."""
     point = _pointing(frames)
     if point is None:
-        return [], 0
+        return [], 0, 0
     track = drift_track(frames, point)
     if len(track) < DRIFT_MIN_SOLVED:
-        return [], len(track)
+        return [], len(track), 0
+    noise = _median(_steps(track))
+    if noise is not None and noise > NOISY_STEP_ARCMIN:
+        return [], 0, len(track)
     drift = [t[1] for t in track]
     smooth = [_median(drift[max(0, k - 1):k + 2]) for k in range(len(drift))]
     pauses = _pauses(frames)
@@ -670,6 +686,8 @@ def drift_episodes(target, frames, index):
         while k0 < k1 and drift[k0] < DRIFT_ARCMIN:   # the median can start a run on its last frame below
             k0 += 1
         if k1 - k0 + 1 < DRIFT_MIN_SOLVED:
+            continue
+        if (_median(_steps(track, k0 + 1, k1)) or 0.0) > NOISY_STEP_ARCMIN:
             continue
         i0 = track[k0][0]
         last = track[k1][0]
@@ -696,7 +714,7 @@ def drift_episodes(target, frames, index):
                 detail['off_field_at'] = _iso(frames[track[k][0]])
                 break
         out.append(_episode('drift', target, frames, i0, i1, index, detail))
-    return out, len(track)
+    return out, len(track), 0
 
 
 def _iso(frame):
@@ -721,23 +739,25 @@ def _resumed(frames, i, pauses):
 
 
 def target_faults(target, frames, processed=None, t7=None, cached=None):
-    """{'frames', 'tracking_known', 'solved', 'episodes'} for one target's light frames of a night, in time order:
-    how many frames, whether their headers say if the mount tracked, on how many frames the pointing was measured,
-    and the episodes (tracking, trailed, drift)."""
+    """{'frames', 'tracking_known', 'solved', 'noisy', 'episodes'} for one target's light frames of a night, in time
+    order: how many frames, whether their headers say if the mount tracked, on how many frames the pointing was
+    measured, on how many the solutions scattered too much to measure it, and the episodes (tracking, trailed,
+    drift)."""
     t7 = t7 or {}
     for f in frames:
         f.t7 = t7.get(f.key)
     index = {f.key: i for i, f in enumerate(frames)}
-    episodes, solved = [], 0
+    episodes, solved, noisy = [], 0, 0
     for block in target_blocks(frames):
         episodes += tracking_episodes(target, block, index)
         solve_frames(block, processed, cached)
-        found, n = drift_episodes(target, block, index)
+        found, n, bad = drift_episodes(target, block, index)
         episodes += found
         solved += n
+        noisy += bad
     episodes.sort(key=lambda e: (e['i0'], e['kind']))
     return {'frames': len(frames), 'tracking_known': any(f.tracking is not None for f in frames),
-            'solved': solved, 'episodes': episodes}
+            'solved': solved, 'noisy': noisy, 'episodes': episodes}
 
 
 def night(raw_dir, log_paths=(), processed=None, cache=None, frames=None):
