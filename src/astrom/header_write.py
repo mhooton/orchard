@@ -4,12 +4,12 @@ read and written as bytes. CHECKSUM and DATASUM are left valid, and the pixels a
 stays 16-bit.
 
 astropy's update mode recomputes CHECKSUM and DATASUM on close when the header has them. For DATASUM it sums the data
-unit in 2880-byte steps, in Python: 47 ms for a 16 MB frame on appct, most of the 20-60 ms a cache hit cost (PR #64),
-and paid again after every solve. A header edit cannot change the data, so here:
+unit in 2880-byte steps, in Python: on appct, 136 ms for a 16.7 MB Andor frame and 48 ms for a 5.3 MB SPIRIT frame,
+most of what a cache hit cost and paid again after every solve. A header edit cannot change the data, so here:
 
   - DATASUM is taken from the header when the old CHECKSUM agrees with it (download/raw_provenance.claimed_datasum,
     as repair_astra_wcs does for raw frames). This reads the header only.
-  - Otherwise DATASUM is summed from the data bytes, in large chunks (raw_provenance.data_sum), ~10 ms for 16 MB.
+  - Otherwise DATASUM is summed from the data bytes, in 4 MB chunks (raw_provenance.data_sum): ~10 ms for 16.7 MB.
   - CHECKSUM is computed from the new header and that DATASUM (raw_provenance.set_checksum).
 
 The second case is the usual one on a fresh night. T6 (calibration/pipered.py) writes with checksum=False, which
