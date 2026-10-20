@@ -97,9 +97,12 @@ STAGES = OrderedDict((s.n, s) for s in [
           'a target with nothing calibrated skips T7-T10'),
     Stage(7, 'astrometry', 'check_astrometry', 'astrom/astrometry.py',
           [R(TARGET, '1/*_processed.dat', 6), R(TARGET, FRAMES, 6), R(REDUCTION, '1_image_{target}.list', 1),
+           R(RAW, '*', what='headers of the frames the image list names'),
+           R(DATA, 'PipelineOutput/wcs_cache/{tel}/{night}.ecsv', what="earlier runs' solutions"),
            R(DATA, 'Gaia database', what='$GAIADATABASEPATH')],
-          [], [R(TARGET, FRAMES, 6, 'WCS'), R(RAW, '*', what='WCS: before PR #64 (on main since 2026-10-20) replaced it '
-                                                                   'with a WCS cache')], ''),
+          [W(DATA, 'PipelineOutput/wcs_cache/{tel}/{night}.ecsv', 'the WCS cache (PR #64): raw frames are no '
+                                                                  'longer written')],
+          [R(TARGET, FRAMES, 6, 'WCS')], ''),
     Stage(8, 'stack', 'create_stack_image', 'photometry/catalogue_fov.py',
           [R(TARGET, '1/*_processed.dat', 6), R(TARGET, FRAMES, 6), R(OBS, 'schedule/**', what='plan files'),
            R(DATA, 'ml_40pc_v2.csv', what='the 40 pc target list'),
@@ -259,10 +262,9 @@ def restage_inputs(first):
     shared. From T9 back, the calibrated frames get new WCS headers (wcsfit writes into the file), so a rerun needs
     its own copy of every frame. A file a stage of the rerun writes is never an input, whatever pattern it matches
     (T9's *_stack_catalogue_pm_*.fits matches what T9 reads of T8's): restage.py leaves those out.
-    From T7 back a rerun is not restaged: T7 writes each frame's WCS into the raw frame its image list names (an
-    absolute path, so a rerun anywhere would write production raw) in the code this was built on; PR #64's WCS cache
-    (on main since 2026-10-20) ends that, which makes T7 the next stage to try, and
-    from T6 back the frames themselves are new, so a run from raw costs the same."""
+    From T7 back a rerun is not restaged yet: T7 wrote each frame's WCS into the raw frame its image list names until
+    PR #64's WCS cache replaced that (2026-10-20), so T7 is the next stage to try; from T6 back the frames
+    themselves are new, so a run from raw costs the same."""
     edited = [(e.scope, e.pattern) for n in rerun_stages(first) for e in STAGES[n].edits]
     out, seen = [], set()
     for n in rerun_stages(first):

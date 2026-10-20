@@ -37,7 +37,7 @@ masters of T2-T4). Every stage also adds rows to `reports/Pipeline_Report` and w
 | T4 master flat | `create_master_flat` | `calibration/pipeflat.py` | `reduction` 1_flat_*.list (T1)<br>`reduction` 1_MasterBias.fits (T2)<br>`reduction` 1_MasterDark*.fits (T3)<br>`raw` * | `reduction` 1_MasterFlat_*.fits<br>`reduction` datafile.dat<br>`reduction` expdata.dat<br>`reduction` flats/** | - |
 | T5 bad pixel map | `create_bad_pixel_map` | `calibration/pipebadpixel.py` | `reduction` 1_image_{target}.list (T1)<br>`reduction` 1_Master*.fits (T4) | `reduction` 1_BadPixelMap.fits<br>`reduction` hot_pixel_map.fits<br>`reduction` cold_pixel_map.fits<br>`reduction` flatbad_pixel_map.fits<br>`reduction` darkcurrent.dat | - |
 | T6 calibrate | `reduce_science_images` | `calibration/pipered.py` | `reduction` 1_image_{target}.list (T1)<br>`reduction` 1_Master*.fits (T4)<br>`reduction` 1_BadPixelMap.fits (T5)<br>`reduction` *.dat (T5)<br>`reduction` readout.json (T2)<br>`raw` * | `target` 1/proc*.fits<br>`target` 1/*_processed.dat | - |
-| T7 astrometry | `check_astrometry` | `astrom/astrometry.py` | `target` 1/*_processed.dat (T6)<br>`target` 1/proc*.fits (T6)<br>`reduction` 1_image_{target}.list (T1)<br>`data` Gaia database | - | `target` 1/proc*.fits<br>`raw` * |
+| T7 astrometry | `check_astrometry` | `astrom/astrometry.py` | `target` 1/*_processed.dat (T6)<br>`target` 1/proc*.fits (T6)<br>`reduction` 1_image_{target}.list (T1)<br>`raw` *<br>`data` PipelineOutput/wcs_cache/{tel}/{night}.ecsv<br>`data` Gaia database | `data` PipelineOutput/wcs_cache/{tel}/{night}.ecsv | `target` 1/proc*.fits |
 | T8 stack | `create_stack_image` | `photometry/catalogue_fov.py` | `target` 1/*_processed.dat (T6)<br>`target` 1/proc*.fits (T6)<br>`obs` schedule/**<br>`data` ml_40pc_v2.csv<br>`data` PipelineOutput/v2/StackImages/** | `target` 1/*_stacked.dat<br>`target` 1/*.cat<br>`target` 1_initial-catalogue.fits<br>`target` *_outstack_*.fits<br>`target` *_stack_catalogue_*<br>`target` .expected_stack_catalogue<br>`target` .active_stack_catalogue_*<br>`data` PipelineOutput/v2/StackImages/** | `target` 1/proc*.fits |
 | T9 photometry | `perform_aperture_photometry` | `photometry/ZLP_app_photom.py, condense/condense_photometry.py` | `target` 1/*_processed.dat (T6)<br>`target` 1/proc*.fits (T6)<br>`target` .active_stack_catalogue_* (T8)<br>`target` .expected_stack_catalogue (T8)<br>`target` *_stack_catalogue_*.fits (T8)<br>`obs` schedule/**<br>`data` ml_40pc_v2.csv<br>`data` Gaia database | `target` 1/*.cat<br>`target` 1/*.phot<br>`target` 1/*.ell<br>`target` 1/*.png<br>`target` 1/*_processed.dat_phot<br>`target` 1_initial-catalogue.fits<br>`target` *_stack_catalogue_pm_*.fits<br>`target` *_{night}_output.fits<br>`telescope` output/StackImages/already_run.txt | `target` 1/proc*.fits<br>`target` *_stack_catalogue_*.fits<br>`telescope` output/*_output.fits |
 | T10 light curves | `perform_differential_photometry` | `diff_photometry/SPlightcurve.py` | `target` *_{night}_output.fits (T9)<br>`reduction` 1_image_{target}.list (T1)<br>`raw` *<br>`data` ml_40pc_v2.csv<br>`data` pwv/PWV_grids/*<br>`data` tests/targetListTeffEsts.csv<br>`data` ESO LHATPRO | `target` *_diff.fits<br>`target` *_pwv_original.fits<br>`target` *_pwv_processed.fits<br>`target` *_pwv_interpolated.fits<br>`target` lightcurves/** | - |
@@ -105,9 +105,11 @@ and catalogue. Such nights also have target-named catalogues (`SP1054-5431_stack
 of the one T9 used; for a rerun from T9 of a night that has exactly one catalogue per filter, restage writes the
 `.active_stack_catalogue_<filter>` record T8 writes today, naming it, and refuses to guess between several.
 
-**Why not from T7 back.** In the code this was built on, T7 writes each frame's new WCS into the raw frame its image
-list names, by absolute path, so a rerun anywhere would write production raw frames. PR #64 (on main since 2026-10-20)
-replaces that with a WCS cache, which makes T7 the next stage to add; it has not been tried.
+**Why not from T7 back.** Until PR #64 (merged 2026-10-20) T7 wrote each frame's new WCS into the raw frame its
+image list names, by absolute path, so a rerun anywhere would have written production raw frames. T7 now keeps its
+solutions in a WCS cache (`PipelineOutput/wcs_cache/<TEL>/<NIGHT>.ecsv`) instead, which makes it the next stage to
+add (a cache hit re-applies a solution, so such a rerun is for a solver change or `--force-platesolve`); it has not
+been tried. From T6 back the frames themselves are made anew, so a rerun costs what a run from raw does.
 From T6 back the frames themselves are made anew, so a rerun costs what a run from raw does.
 
 ## `--from_TN` and the log
