@@ -539,6 +539,62 @@ def test_createlists_readonly_register_is_left_unchanged(callisto_archive, monke
     reg.close()
 
 
+# ------------------------------------------------------------------------------------- calcompare
+
+def test_old_lists_are_read_whatever_prefix_they_used(tmp_path):
+    from calibration import calcompare as cc
+    assert cc.source('/import/appct/SPECULOOSPipeline/Telescopes/Io/images/20180315/Calibration/Bias-001.fts') \
+        == ('20180315', 'Calibration/Bias-001.fts')
+    assert cc.source('/data/SPECULOOSPipeline/Observations/Callisto/images/20230908/SPECU4.x.fits') \
+        == ('20230908', 'SPECU4.x.fits')
+    red = tmp_path / 'reduction'
+    red.mkdir()
+    (red / '1_bias.list').write_text('/data/SPECULOOSPipeline/Observations/Io/images/20240101/b1.fits\n')
+    (red / '1_flat_I+z.list').write_text('/x/images/20240101/f1.fits\n/x/images/20231230/f2.fits\n')
+    (red / '1_image_Sp0000.list').write_text('/x/images/20240101/s.fits\n')
+    lists = cc.read_lists(str(red))
+    assert lists['bias'] == [('20240101', 'b1.fits')] and lists['dark'] is None
+    assert lists['flat'] == {'I+z': [('20240101', 'f1.fits'), ('20231230', 'f2.fits')]}
+
+
+def test_comparison_outcomes():
+    from calibration import calcompare as cc
+    new = {'night': '20240105', 'delta_days': 4, 'n': 5}
+    assert cc.classify({'20240105': 6}, '20240101', new) == 'same'
+    assert cc.classify({}, '20240101', new) == 'old: none'
+    assert cc.classify({'20240101': 2}, '20240101', new) == 'old own night, new borrows'
+    assert cc.classify({'20231201': 9}, '20240101', new) == 'new nearer'
+    assert cc.classify({'20240101': 2, '20231231': 3}, '20240101', new) == 'old: several nights'
+    assert cc.classify({'20240101': 2}, '20240101', None) == 'new: none'
+
+
+def test_comparison_finds_the_job_1043_cross_camera_flats(callisto_archive, tmp_path, monkeypatch):
+    """The old v3 lists of 20250407 held ANDOR Clear flats of 20230908: reported as another camera."""
+    from calibration import calcompare as cc
+    monkeypatch.setattr(cr, 'mount_fstype', lambda path, mounts_file=None: None)
+    root = callisto_archive
+    reg = cr.Register(cr.default_register_path(str(root)), check_local=False)
+    cr.register_night(reg, str(root), 'Callisto', '20250407')
+    red = root / 'PipelineOutput/v3/Callisto/output/20250407/reduction'
+    img = root / 'Observations/Callisto/images'
+    (red / '1_flat_Clear.list').write_text('\n'.join(str(p) for p in sorted((img / '20230908').glob('*23:01*'))))
+    (red / '1_flat_zYJ.list').write_text('\n'.join(str(p) for p in sorted((img / '20250407').glob('*10:20*'))))
+    (red / '1_bias.list').write_text('\n'.join(str(p) for p in sorted((img / '20250407').glob('*10:48*'))))
+    (red / '1_dark.list').write_text('\n'.join(str(p) for p in sorted((img / '20250407').glob('*10:49*'))))
+    res = cc.compare(reg, str(root), ['Callisto'], versions=('v3',),
+                     science={('Callisto', '20250407'): {10: 6, 60: 12}}, log=lambda *a: None)
+    reg.close()
+    (r,) = res
+    assert [c['from_night'] for c in r['cross'] if c['other_camera']] == ['20230908']
+    assert r['types']['flat']['Clear']['outcome'] == 'new: none'
+    assert r['types']['dark']['by_exposure']['10']['old_state'] == 'matched'
+    assert r['types']['dark']['by_exposure']['60']['old_state'] == 'combined fallback'
+    assert r['types']['dark']['by_exposure']['60']['new']['night'] == '20250405'
+    s = cc.write_report(res, str(tmp_path / 'cmp'))
+    assert len(s['cross_camera']) == 1
+    assert 'Clear' in (tmp_path / 'cmp' / 'changes.csv').read_text()
+
+
 # ------------------------------------------------------------------------------------- pipedark
 
 def test_pipedark_groups_rounded_exposures_and_keeps_the_longest_as_fallback(tmp_path):
