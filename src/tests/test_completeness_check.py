@@ -78,7 +78,9 @@ def test_processed_night_row(tmp_path):
 
     lines, rows = _rows(os.path.join(root, 'report'))
     assert rows[0][4] == 'Pipeline (v2) Started'
-    assert set(rows[1][0]) == {'-'}
+    # the dashed test row, cut to the column widths as under Python 2 (16 and 11 dashes become 11 and 7)
+    assert [len(cell) for cell in rows[1]] == [8, 9, 50, 12, 11, 7, 7, 10, 16, 11, 7, 30]
+    assert set(''.join(rows[1])) == {'-'}
     row = [r for r in rows if r[:2] == ['20170807', 'Europa']]
     assert row == [['20170807', 'Europa', 'Sp0000-0000', '1', '1', '1', '1', '1', '1', '1', '1', '']]
     # nights with no images after a telescope's first night get a blank row

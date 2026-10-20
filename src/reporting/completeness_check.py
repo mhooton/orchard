@@ -31,13 +31,14 @@ def create_file(fname,dir,all_nights,version):
     hdr = ['Night','Telescope','Targets','Images Exist','Pipeline ('+version+') Started','Calibration','Science','All Images','Pipeline ('+version+') Completed','Lightcurves','Reports','Notes']
     # column data types:
     dtypes = ['U8','U9','U50','U12','U11','U7','U16','U10','U16','U11','U7','U30']
-    # Under Python 2 numpy cut longer values to these widths (e.g. a night's Targets to 50 characters).
-    # astropy 5 widens the column instead, which would change every line of the report, so cut them here.
+    # Under Python 2 numpy cut longer values to these widths (e.g. a night's Targets to 50 characters, and the
+    # test row's 16 and 11 dashes under Started and Calibration). astropy 5 widens the column instead, which
+    # would change the report, so cut them here.
     widths = [int(d[1:]) for d in dtypes]
 
     # create the table, add the test row and first row to the table and write to report file
     report = Table(names=hdr,dtype=dtypes)
-    report.add_row(test_row)
+    report.add_row([v[:w] for v,w in zip(test_row,widths)])
 
     for i in range(int(len(dates))):
         row = [dates[i],tel[i]," ".join(targets[i]),images[i],pipeline[i],c_images[i],s_images[i],all_im[i]," ".join(outputfits[i])," ".join(lcurves[i])," ".join(r[i]),notes[i]]
