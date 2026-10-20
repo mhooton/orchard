@@ -39,6 +39,11 @@ Whether a frame was taken without the shutter comes from the CAMSHUTT header
 (written by Astra on all ANDORs since 2026-07-17, but set by hand, so it can be
 wrong) unless shutter_overrides.csv says otherwise for that telescope and time.
 A CAMSHUTT value that cannot be read is reported and taken as shutter used.
+Each night's shutter state is also measured on its own frames
+(calibration/shutter_detect.py, at T2). The measurement is written into every
+frame as SHUTD* cards and compared with CAMSHUTT; it decides the de-smear,
+between the override table and CAMSHUTT, only for an unambiguous measurement
+and only where "detect_auto_apply" is set under "smear".
 
 The readout rate is not in the raw header either. Ganymede was read out in
 ~1.5 s, consistent with 3 MHz, for its last shutterless nights in
@@ -389,24 +394,27 @@ def _shipped_overrides():
     return tuple(load_shutter_overrides())
 
 
-def shutter_state(header, overrides=None):
+def shutter_state(header, overrides=None, detection=None, auto_apply=False):
     """
     Was the mechanical shutter used for this frame?
 
     An override row for this TELESCOP whose [start_utc, end_utc) window holds
-    DATE-OBS wins; then the CAMSHUTT header; with neither, the shutter is
-    assumed used, which is true of almost every frame taken before July 2026.
+    DATE-OBS wins; then, with auto_apply, an unambiguous measurement of the
+    frame's night (detection, the night's shutter_detect record); then the
+    CAMSHUTT header; with none of these, the shutter is assumed used, which is
+    true of almost every frame taken before July 2026.
 
     An override row can also give the readout time, for windows where the
-    camera was read out at a different rate (nothing in the header says so).
+    camera was read out at a different rate (nothing in the header says so); a
+    measured shutterless segment always does.
 
     A CAMSHUTT value that cannot be read is reported and taken as shutter
     used, with source 'CAMSHUTT?'.
 
     Returns:
         (shutter_used, source, readout_time) with source one of 'override',
-        'CAMSHUTT', 'CAMSHUTT?', 'default', and readout_time None unless an
-        override sets it
+        'measured (<evidence>)', 'CAMSHUTT', 'CAMSHUTT?', 'default', and
+        readout_time None unless an override or the measurement sets it
     """
     if overrides is None:
         overrides = _shipped_overrides()
@@ -417,6 +425,14 @@ def shutter_state(header, overrides=None):
         for row in overrides:
             if row['telescope'] == telescope and row['start'] <= when < row['end']:
                 return row['camshutt'], 'override', row.get('readout_time')
+    if detection is not None and auto_apply:
+        from calibration import shutter_detect
+        seg = shutter_detect.segment_for(detection, date_obs)
+        if seg and seg['confidence'] == shutter_detect.UNAMBIGUOUS:
+            if seg['state'] == shutter_detect.SHUTTERED:
+                return True, 'measured (%s)' % seg['source'], None
+            if seg['state'] == shutter_detect.SHUTTERLESS and seg.get('t_read') is not None:
+                return False, 'measured (%s)' % seg['source'], float(seg['t_read'])
     if 'CAMSHUTT' in header:
         used = _parse_camshutt(header['CAMSHUTT'])
         if used is None:
@@ -427,11 +443,18 @@ def shutter_state(header, overrides=None):
     return True, 'default', None
 
 
-def shutterless(header, params, overrides=None):
+def auto_apply(params):
+    """Does a measured shutter state decide the de-smear for this instrument?
+    Off until the detection thresholds are agreed ("detect_auto_apply" under
+    "smear" in instrument_config.json)."""
+    return bool(((params or {}).get('smear') or {}).get('detect_auto_apply', False))
+
+
+def shutterless(header, params, overrides=None, detection=None):
     """Will correct_frame() treat this frame as shutterless (and has the instrument smear parameters)?"""
     if not params or not params.get('smear'):
         return False
-    return not shutter_state(header, overrides)[0]
+    return not shutter_state(header, overrides, detection, auto_apply(params))[0]
 
 
 def mode_readout_time(smear, mode):
@@ -471,11 +494,12 @@ def readoutm_rate(value):
     return READOUTM_RATES[int(index)]
 
 
-def readout_time(header, smear, override_time=None):
+def readout_time(header, smear, override_time=None, override_source='override'):
     """
     The readout time to de-smear a shutterless frame with.
 
-    In order: an override window's own readout_time; Astra's READOUTM card
+    In order: an override window's own readout_time (or the measured one, with
+    override_source naming the measurement); Astra's READOUTM card
     (the camera's readout rate, from 2026-10-18), looked up in the smear
     config's "readout_rate_time"; T6's READMODE (inferred from the overscan,
     calibration/readout.py), looked up in its "readout_time". A frame whose
@@ -484,11 +508,11 @@ def readout_time(header, smear, override_time=None):
     did, the overscan only suggests it.
 
     Returns:
-        (seconds or None, source): source is 'override', 'READOUTM <i> (<rate>)'
-        or 'READMODE <mode>'
+        (seconds or None, source): source is override_source, 'READOUTM <i>
+        (<rate>)' or 'READMODE <mode>'
     """
     if override_time is not None:
-        return float(override_time), 'override'
+        return float(override_time), override_source
     if 'READOUTM' in header:
         value = header['READOUTM']
         rate = readoutm_rate(value)
@@ -524,7 +548,7 @@ def clip_threshold(header, params, pedestal=0.0):
     return None, None
 
 
-def correct_frame(signal, header, params, raw=None, overrides=None, pedestal=0.0):
+def correct_frame(signal, header, params, raw=None, overrides=None, pedestal=0.0, detection=None):
     """
     De-smear one bias- and dark-subtracted frame if it was taken shutterless.
 
@@ -536,6 +560,11 @@ def correct_frame(signal, header, params, raw=None, overrides=None, pedestal=0.0
     not known is returned unchanged, with SMEARCOR = F and the reason in
     SMEARERR.
 
+    With detection (the frame's night's shutter_detect record) the frame also
+    gets the measured state as SHUTD* cards, SHUTDIS when it disagrees with
+    CAMSHUTT; the measurement decides the de-smear only as shutter_state()
+    allows.
+
     Args:
         signal: bias/dark-subtracted, trimmed frame, not yet flat-fielded
         header: the frame's FITS header, updated in place
@@ -545,6 +574,7 @@ def correct_frame(signal, header, params, raw=None, overrides=None, pedestal=0.0
         overrides: shutter override rows (shutter_overrides.csv if None)
         pedestal: what was subtracted from raw to make signal's zero
             (overscan + master-bias median), the zero of the SATURATE card
+        detection: the night's shutter_detect record, or None
 
     Returns:
         the de-smeared frame, or signal unchanged
@@ -553,15 +583,27 @@ def correct_frame(signal, header, params, raw=None, overrides=None, pedestal=0.0
     if not smear:
         return signal
 
-    shutter_used, source, override_time = shutter_state(header, overrides)
+    if detection is not None:
+        from calibration import shutter_detect
+        for key, value, comment in shutter_detect.header_cards(detection, header):
+            header[key] = (value, comment)
+        if header.get('SHUTDIS'):
+            telescope = str(header.get('TELESCOP', '')).strip()
+            _warn(f'{telescope} {detection.get("night")}: frames measure {header["SHUTDET"]} '
+                  f'({header["SHUTDCNF"]}, from {header["SHUTDSRC"]}) but CAMSHUTT = {header["CAMSHUTT"]}')
+
+    shutter_used, source, override_time = shutter_state(header, overrides, detection, auto_apply(params))
     if shutter_used:
         if source == 'CAMSHUTT?':
             header['SMEARCOR'] = (False, 'Not removed: CAMSHUTT unreadable, shutter used')
         else:
             header['SMEARCOR'] = (False, 'Readout smear not removed (shutter used)')
+        if detection is not None:
+            header['SMEARSRC'] = (source, 'Where the shutter state came from')
         return signal
 
-    t_read, t_source = readout_time(header, smear, override_time)
+    t_read, t_source = readout_time(header, smear, override_time,
+                                    'measured' if source.startswith('measured') else 'override')
     if t_read is None:
         telescope = str(header.get('TELESCOP', '')).strip()
         header['SMEARCOR'] = (False, 'Shutterless, but readout smear NOT removed')

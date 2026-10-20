@@ -371,10 +371,11 @@ class Notifier:
                 "SELECT * FROM notify_incidents WHERE state = 'resolved' AND resolved_at > ? ORDER BY id", (since,))]
         report = os.path.join(queue_paths(self.cfg)['reports'], 'report_{}.md'.format(self.now.strftime('%Y%m%d')))
         failed_since = self.store.kv_get('notify_last_digest') or iso(self.now - dt.timedelta(days=7))
+        shutter = D.shutter_notes(D.Context(self.cfg, self.store, self.now))
         subject, body = D.render_digest(self.cfg, night, statuses, q, disk_list, open_now, resolved, self.now,
                                         report_path=report if os.path.exists(report) else None,
                                         undelivered=self.undelivered(failed_since), undelivered_since=failed_since,
-                                        outbox=self.delivery.outbox)
+                                        outbox=self.delivery.outbox, shutter=shutter)
         if dry_run:
             return subject + '\n\n' + body
         status, _ = self._deliver('digest', subject, body)

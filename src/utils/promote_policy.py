@@ -60,7 +60,9 @@ SUMMARY = re.compile(r'(?P<name>proc\S+?\.fits(?:\.fz)?) (?P<state>SUCCESS|FAILE
                      r'(?:\d+|\?) Gaia: (?:\d+|\?)\D+?(?:\d+|\?) Matches: (?:\d+|\?)(?P<rest>.*?)'
                      r'(?=\s*\[\d+/\d+\]\s+proc|\s+proc\S+?\.fits(?:\.fz)? (?:SUCCESS|FAILED) - |$)')
 TARGET_LINE = re.compile(r'^TARGET: (\S+)')
-DATA_ERRORS = ('Not enough stars detected', 'too few stars')
+# 'Sources trailed': T7 (astrom.pointer_wcs) found the brightest sources stretched all one way, as when the telescope
+# stopped tracking (Ganymede 20250716 and 20250825), and no solution verified. A rerun cannot recover those frames.
+DATA_ERRORS = ('Not enough stars detected', 'too few stars', 'Sources trailed')
 
 
 class Decision(object):

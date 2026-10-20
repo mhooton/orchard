@@ -1551,8 +1551,7 @@ src/
 │
 ├── reporting/                 # Reports & QC (T11)
 │   ├── pdf_report_catriona.py
-│   ├── QC.py                 # Quality metrics tracking
-│   └── email_eon.py          # Status notifications
+│   └── QC.py                 # Quality metrics tracking
 │
 ├── condense/                  # Data aggregation
 │   └── zlp_condense.py       # Photometry file merging
