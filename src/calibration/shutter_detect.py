@@ -45,8 +45,10 @@ confidence:
                   disagrees with the ramp
     inconclusive  nothing usable, or the evidence contradicts itself
 Only an unambiguous segment can change what is de-smeared, and only where
-the instrument's "smear" config sets "detect_auto_apply": true. Until then
-the measurement is reported (SHUTD* cards, warnings, the digest) and the
+the instrument's "smear" config sets "detect_auto_apply": true (on for the
+four SSO telescopes since 2026-10-20, Matthew's decision; a night is never
+settled by its science alone, SCIENCE_ALONE_SIGMA). Without it the
+measurement is only reported (SHUTD* cards, warnings, the digest) and the
 decision stays override, CAMSHUTT, default. The risks are asymmetric:
 de-smearing a shuttered 6-8 s flat puts a ramp of tens of per cent into it,
 while leaving a shutterless night smeared costs about 1% in noise.

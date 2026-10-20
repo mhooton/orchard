@@ -299,7 +299,8 @@ def queue_summary(ctx, hours=24):
     }
 
 
-DEFAULT_LABELS = {'pipeline': 'reruns', 'download': 'downloads', 'fetch': 'downloads', 'framepack': 'frame packing'}
+DEFAULT_LABELS = {'pipeline': 'reruns', 'download': 'downloads', 'fetch': 'downloads', 'framepack': 'frame packing',
+                  'restage': 'reruns'}
 
 
 def tidy_note(note, limit=40):
