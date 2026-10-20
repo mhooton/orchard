@@ -111,10 +111,13 @@ writes it back:
 
 astropy's update mode, which T7 used before, re-summed the data unit in 2880-byte Python steps on every close.
 
-**T6's frames do not verify.** `calibration/pipered.py` writes with `writeto(checksum=False)`, which keeps the raw
-frame's `CHECKSUM`/`DATASUM`: ESO's, computed for the raw header and pixels. So T7's first write to a frame always sums
-the data. After that the frame verifies, and a later T7 write trusts it. Artemis frames carry neither card, and get
-none.
+**T6 writes both cards valid** (`header_write.writeto`, from `calibration/pipered.py`):
+- It used to write with `writeto(checksum=False)`. That kept the raw frame's `CHECKSUM`/`DATASUM` (ESO's, computed
+  for the raw header and pixels), so every calibrated frame was stale until T7 wrote it.
+- Now `DATASUM` is summed from the float32 array in memory, and both cards are set in the file just written, in
+  place. Artemis frames, whose raw frames carry neither card, get them too.
+- So every T7 write trusts `DATASUM` and never reads the pixels.
+- Frames calibrated by older code are still stale. T7 sums their data once, after which they verify.
 
 Measured on appct (2026-10-20) under production load (load average ~55), on copies of the scratch nights' frames
 (`mh_scratch/t7-checksum/bench.py`). Each figure is ms per frame: the mean of the medians of two alternating rounds,

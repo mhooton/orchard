@@ -130,6 +130,20 @@ def data_sum(path, offset, header):
     return total
 
 
+def array_datasum(data):
+    """The DATASUM of the data unit astropy writes for `data`, a numpy array of floats or of signed integers wider
+    than a byte (which astropy writes unscaled), from memory: nothing is read from disk. A 32-bit word has the same
+    value whichever byte order holds it, so 4-byte items are summed as they are; other sizes go through their
+    big-endian bytes (a copy)."""
+    a = np.ascontiguousarray(data)
+    if a.dtype.kind not in 'fi' or a.dtype.itemsize < 2:
+        raise ValueError('astropy writes {} data scaled; sum the file instead'.format(a.dtype))
+    if a.dtype.itemsize == 4:
+        words = a.view(np.dtype('u4').newbyteorder(a.dtype.byteorder))
+        return ones_add(0, int(words.sum(dtype=np.uint64)))
+    return ones_sum(a.astype(a.dtype.newbyteorder('>')).tobytes())
+
+
 def claimed_datasum(raw_header, header):
     """The DATASUM a header claims, when its CHECKSUM agrees with it, else None. Reads header bytes only, so it
     cannot tell a valid pair from one that went stale together, which no writer produces: astropy computes both

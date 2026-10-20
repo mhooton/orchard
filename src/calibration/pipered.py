@@ -4,6 +4,7 @@ import argparse
 import os
 import numpy as np
 from astropy.io import fits as pyfits
+from astrom import header_write
 from calibration.pipeutils import (get_instrument_parameters, apply_image_slice, clean_bad_pixels, open_fits_file,
                                    create_dark_dict, create_flat_dict, frame_telescope, proc_name)
 from calibration import readout
@@ -142,7 +143,9 @@ def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, 
 
             if os.path.exists(outname):
                 os.remove(outname)
-            hdulist.writeto(outname)
+            # writeto(checksum=False) would keep the raw frame's CHECKSUM/DATASUM, which no longer match;
+            # checksum=True would re-sum the pixels in Python, holding the GIL this thread pool shares
+            header_write.writeto(hdulist, outname)
 
     # except Exception as e:
     #     print("*** ERROR with file " + filename + ". Removing this file from analysis.***")
