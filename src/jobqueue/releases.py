@@ -14,7 +14,8 @@ A deploy is then:
 
     build     copy the live tree (minus caches, logs, core dumps) and lay the staged commit over it. Files
               identical to the previous release are hard links to it, so a release costs only what changed.
-    test      run the suite from the release (optional, needs a pytest pylib)
+    test      run the suite from the release (optional, needs a pytest pylib), its temporary files on the data
+              disk next to the release, removed after
     activate  repoint `current`: every job started from now on runs the new code; running jobs carry on,
               each on the release it started with
     sync      bring the live tree (/opt/orchard/src) up to the release, for what does not go through the
@@ -45,6 +46,7 @@ from .util import iso, utcnow
 CURRENT = 'current'
 RELEASE_JSON = 'RELEASE.json'
 TESTS_JSON = 'tests.json'
+TEST_TMP = 'pytest-tmp'            # <release>/pytest-tmp: the suite's temporary files while it runs
 SYNC_KEY = 'release_sync'          # kv: the live tree still has to be brought up to the current release
 HISTORY = 'history.jsonl'
 # the tree's own record of which orchard it is, filled in by `git archive` (utils/orchard_version.py)
@@ -360,8 +362,37 @@ def tree_version(src):
 
 # --------------------------------------------------------------------------- testing
 
+def suite_tmp_dir(cfg, rel):
+    """Where a release's suite keeps its temporary files: on the data disk, never the container's /tmp. That is
+    appct's 20 GB /var; a full suite left ~1.1 GB in /tmp/pytest-of-unknown, pytest keeps three runs, and on
+    2026-10-19 /var filled and production jobs died with Errno 28."""
+    base = cfg.get('test_tmp')
+    return os.path.join(base, rel['id']) if base else os.path.join(rel['path'], TEST_TMP)
+
+
+def remove_tree(path):
+    """rm -rf a directory, also through read-only directories a suite leaves behind. True if it is gone."""
+    def writable(p):
+        try:
+            os.chmod(p, stat.S_IMODE(os.lstat(p).st_mode) | stat.S_IRWXU)
+        except OSError:
+            pass
+    if os.path.isdir(path) and not os.path.islink(path):
+        writable(path)
+        for dirpath, dirs, _ in os.walk(path):      # top-down: a subdirectory is made readable before it is listed
+            for d in dirs:
+                if not os.path.islink(os.path.join(dirpath, d)):
+                    writable(os.path.join(dirpath, d))
+        shutil.rmtree(path, ignore_errors=True)
+    return not os.path.lexists(path)
+
+
 def run_tests(cfg, rid, log=print):
-    """Run the test suite from the release, as the deploy scripts did from a staged tree. Returns the exit code."""
+    """Run the test suite from the release, as the deploy scripts did from a staged tree. Returns the exit code.
+
+    pytest's --basetemp and TMPDIR point into suite_tmp_dir (outside the release's src, so no later build copies
+    it), which is removed when the run ends, however it ends. tests.log and tests.json stay in the release.
+    """
     rel = read_release(cfg, rid)
     if not rel:
         raise ReleaseError('no release {}'.format(rid))
@@ -370,14 +401,23 @@ def run_tests(cfg, rid, log=print):
         raise ReleaseError('no pytest pylib at {!r} (config test_pylib); the container has no pytest of its own'
                            .format(pylib))
     paths = [p for p in cfg.get('test_paths') or ('tests',) if os.path.isdir(os.path.join(rel['src'], p))]
+    tmp = suite_tmp_dir(cfg, rel)
+    remove_tree(tmp)                    # what a killed run left
+    basetemp, tmpdir = os.path.join(tmp, 'basetemp'), os.path.join(tmp, 'tmp')
+    os.makedirs(tmpdir, exist_ok=True)  # pytest empties basetemp when it starts, so TMPDIR is not inside it
     env = os.environ.copy()
     env.update({'PYTHONPATH': os.pathsep.join([pylib, rel['src']]), 'ORCHARD_PATH': rel['src'],
-                'PYTHONDONTWRITEBYTECODE': '1'})
+                'PYTHONDONTWRITEBYTECODE': '1', 'TMPDIR': tmpdir})
     out = os.path.join(rel['path'], 'tests.log')
-    cmd = ['nice', '-n', '15', cfg['python'], '-m', 'pytest', '-q', '-p', 'no:cacheprovider', '-rs'] + paths
-    log('running the suite from {} ({}); log {}'.format(rel['src'], ' '.join(paths), out))
-    with open(out, 'w') as f:
-        rc = subprocess.call(cmd, cwd=rel['src'], env=env, stdout=f, stderr=subprocess.STDOUT)
+    cmd = ['nice', '-n', '15', cfg['python'], '-m', 'pytest', '-q', '-p', 'no:cacheprovider', '-rs',
+           '--basetemp', basetemp] + paths
+    log('running the suite from {} ({}); log {}; temporary files in {}'.format(rel['src'], ' '.join(paths), out, tmp))
+    try:
+        with open(out, 'w') as f:
+            rc = subprocess.call(cmd, cwd=rel['src'], env=env, stdout=f, stderr=subprocess.STDOUT)
+    finally:
+        if not remove_tree(tmp):
+            log('warning: could not remove {}: delete it by hand'.format(tmp))
     with open(out) as f:
         lines = [line.strip() for line in f if line.strip()]
     # pytest's last line is the count ("308 passed in 128.57s"); the lines before it are progress dots
