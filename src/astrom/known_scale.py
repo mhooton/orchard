@@ -65,10 +65,12 @@ ROUND_BELOW = 0.5            # trail_ellipticity below which a frame's sources c
 SPARSE_MIN_MATCHES = 5
 SPARSE_MIN_COMPLETENESS = 0.8   # of min(detections tested, catalogue stars in the frame)
 # A frame taken close in time to one that solved (solve_from_neighbour) needs fewer matches: the neighbour's solution
-# fixes rotation, scale and pointing to within a few pixels, so 4 sources on catalogue stars within this shift of it
-# cannot be chance. Faint frames of sparse SPIRIT fields have only 5-7 sources: on Callisto 20261012 v4.1.0 refused 63
-# frames whose old solutions gave normal photometry, with 4 of 5, 4 of 6 or 5 of 7 on catalogue stars.
-NEIGHBOUR_MIN_MATCHES = 4
+# fixes rotation, scale and pointing to within a few pixels, so 3 sources on catalogue stars within this shift of it
+# cannot be chance (the offset vote searches a 100 px square). Faint frames of sparse SPIRIT fields have only 5-7
+# sources: on Callisto 20261012 v4.1.0 refused 63 frames whose old photometry was normal. Their consecutive frames,
+# 6-18 s apart, put 3 of their 5 sources on catalogue stars; twirl's "4 of 5" was its own quad, fitted.
+NEIGHBOUR_MIN_MATCHES = 3
+NEIGHBOUR_MAX_LOG10_CHANCE = -8.0
 NEIGHBOUR_SHIFT = 50.0          # px between this frame's solution and its neighbour's, at the frame centre
 NEIGHBOUR_ROTATION = 0.5        # degrees
 NEIGHBOUR_SCALE = 0.01          # fractional
@@ -471,9 +473,10 @@ def agrees(wcs, neighbour, shape, max_shift=NEIGHBOUR_SHIFT, max_rotation=NEIGHB
 def solve_from_neighbour(sources, ra, dec, neighbour, scale_deg, shape, trail=None):
     """Solve a frame from the solution of a frame taken close to it in time (astrometry.py's second pass).
 
-    The neighbour's WCS is recentred by an offset vote within NEIGHBOUR_SHIFT px and refined. The result is accepted
-    if it verifies on its own, or, when the sources are round, if NEIGHBOUR_MIN_MATCHES or more sit on catalogue stars
-    at the usual chance limit and the solution agrees with the neighbour's. Trailed frames get no such allowance: a
+    The neighbour's WCS is recentred by an offset vote within NEIGHBOUR_SHIFT px and refined (or, with too few
+    matches to refit, kept as recentred). The result is accepted if it verifies on its own, or, when the sources are
+    round, if NEIGHBOUR_MIN_MATCHES or more sit on catalogue stars at chance 10^NEIGHBOUR_MAX_LOG10_CHANCE or less and
+    the solution agrees with the neighbour's. Trailed frames get no such allowance: a
     trail passes through every star's position at some instant. Returns a dict as solve() does (method
     'neighbour')."""
     out = dict(success=False, wcs=None, method=None, matches=0, tested=0, verification=None, candidates=0,
@@ -486,15 +489,18 @@ def solve_from_neighbour(sources, ra, dec, neighbour, scale_deg, shape, trail=No
         out['error'] = "the neighbour's solution is not at the expected scale"
         return out
     out['candidates'] = 1
-    wcs, _ = refine(sources, ra, dec, _recentred(neighbour, sources, ra, dec, search=NEIGHBOUR_SHIFT))
-    if wcs is None or not _scale_ok(wcs, scale_deg):
+    start = _recentred(neighbour, sources, ra, dec, search=NEIGHBOUR_SHIFT)
+    wcs, _ = refine(sources, ra, dec, start)
+    if wcs is None:
+        wcs = start             # too few matches to refit: the neighbour's solution, moved by the offset vote
+    if not _scale_ok(wcs, scale_deg):
         out['error'] = "nothing matched near the neighbour's solution"
         return out
     v = verify(wcs, sources, ra, dec, shape)
     out['verification'] = v
     round_sources = trail is not None and trail < ROUND_BELOW
     if verified(v, trail) or (round_sources and v['matched'] >= NEIGHBOUR_MIN_MATCHES and
-                              v['log10_chance'] <= VERIFY_MAX_LOG10_CHANCE and agrees(wcs, neighbour, shape)):
+                              v['log10_chance'] <= NEIGHBOUR_MAX_LOG10_CHANCE and agrees(wcs, neighbour, shape)):
         out.update(success=True, wcs=wcs, method='neighbour', matches=v['matched'], tested=v['tested'])
     else:
         out['error'] = "no verified solution near the neighbour's"

@@ -395,6 +395,26 @@ def test_a_faint_frame_solves_from_its_neighbour():
     assert hits >= 3
 
 
+def test_three_sources_on_catalogue_stars_solve_from_a_neighbour_seconds_away():
+    # Callisto 20261012: 5 sources, 3 of them catalogue stars, the frame 6 s from one that solved
+    shape = (1280, 1024)
+    hits = 0
+    for seed in range(70, 76):
+        src, ra, dec, inner, truth, in_frame = faint_frame(seed, n_real=3, n_spurious=2)
+        if in_frame < 8:
+            continue
+        out = ks.solve_from_neighbour(src, ra, dec, shifted(truth, 1.5, -0.8), SCALE, shape, trail=0.05)
+        assert out['success'] and out['method'] == 'neighbour', (seed, out)
+        assert out['matches'] == 3
+        assert max_error_arcsec(out['wcs'], truth, shape) < 1.0
+        # two are not enough
+        two, ra2, dec2, _, truth2, _ = faint_frame(seed, n_real=2, n_spurious=3)
+        assert not ks.solve_from_neighbour(two, ra2, dec2, shifted(truth2, 1.5, -0.8), SCALE, shape,
+                                           trail=0.05)['success']
+        hits += 1
+    assert hits >= 3
+
+
 def test_the_neighbour_allowance_has_limits():
     shape = (1280, 1024)
     src, ra, dec, inner, truth, _ = faint_frame(61)

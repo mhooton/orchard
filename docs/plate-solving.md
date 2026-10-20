@@ -27,13 +27,14 @@ pixels.
 6. **A second pass** (`astrometry.py`), after every frame has had its turn. A frame that failed with 5 or more round
    sources, not trailed and not timed out, is tried again from the solution of the frame nearest to it in time that
    has one: solved this run, or applied from the WCS cache, and no more than 2 hours away. The neighbour's WCS is
-   recentred within 50 px and refined (`known_scale.solve_from_neighbour`). The result is kept if it verifies as
-   below, or if 4 or more sources sit on catalogue stars at chance 10^-10 or less and it agrees with the neighbour's
-   solution (centre within 50 px, rotation within 0.5 degrees, scale within 1%). Faint frames of sparse fields have
-   only 5-7 sources, and 4 or 5 on catalogue stars is all they can give; alone they cannot verify. On Callisto
-   20261012 (SPIRIT) v4.1.0 refused 63 such frames whose old solutions had given normal photometry. A frame the second
-   pass cannot solve goes through steps 3-5 again and keeps its first failure message. Solved lines say
-   `Method: neighbour`.
+   recentred within 50 px and refined (`known_scale.solve_from_neighbour`; with too few matches to refit, it is kept
+   as recentred). The result is kept if it verifies as below, or if the sources are round and 3 or more sit on
+   catalogue stars at chance 10^-8 or less and the solution agrees with the neighbour's (centre within 50 px,
+   rotation within 0.5 degrees, scale within 1%). Faint frames of sparse fields have only 5-7 sources, and alone they
+   cannot verify. On Callisto 20261012 (SPIRIT) v4.1.0 refused 63 such frames whose old photometry was normal; their
+   consecutive frames, 6-18 s apart, put 3 of their 5 sources on catalogue stars (twirl's "4 of 5" was its own fitted
+   quad). A frame the second pass cannot solve goes through steps 3-5 again and keeps its first failure message.
+   Solved lines say `Method: neighbour`.
 
 ## The verification
 
