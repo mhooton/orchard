@@ -265,6 +265,17 @@ def test_parked_light_frames_are_stops(tmp_path):
     assert tf.describe(e).endswith('at altitude 20 deg')
 
 
+def test_tracking_zero_while_the_airmass_moves_is_no_stop(tmp_path):
+    """Callisto 2024-12-09 Sp0903+0540: TRACKING 0 for half an hour while the airmass rose 2.031 -> 2.019, as only a
+    tracking mount's does. Astra's flag was wrong; a stopped mount's airmass stays fixed."""
+    d = str(tmp_path)
+    t = T0
+    for i in range(30):
+        astra_frame(d, i, t, tracking=0.0 if i >= 10 else 1.0, airmass=2.031 - 0.0004 * i)
+        t += dt.timedelta(minutes=1)
+    assert tf.episodes(tf.night(d)) == []
+
+
 def test_maxim_frames_cannot_say_but_trailed_solves_can(tmp_path):
     """Without TRACKING the headers cannot tell; T7's 'Sources trailed' failures can, three in a row."""
     d = str(tmp_path)

@@ -46,6 +46,7 @@ BLOCK, CARD = 2880, 80
 RAW_EXTENSIONS = ('.fits', '.fts', '.fit')
 
 IDLE_MIN = 0.5            # share of an exposure with the mount neither tracking nor slewing: a stopped mount
+MOVING_AIRMASS = 1e-3     # airmass change over a 'stop' of 2 min or more that says the mount moved after all
 TRAIL_MIN_FRAMES = 3      # T7 'Sources trailed' frames in a row that make an episode (one can be a bright star)
 DRIFT_ARCMIN = 1.0        # pointing this far from home: a drift (guided, it stays within seconds of arc)
 DRIFT_MIN_SOLVED = 3      # solved frames in a row beyond DRIFT_ARCMIN that make a drift
@@ -534,11 +535,22 @@ def _tracking_detail(run):
     return detail
 
 
+def _moved(run):
+    """True if the airmass changed over the run as only a moving mount's does: a stopped mount's stays fixed to 1e-6.
+    Callisto 2024-12-09 Sp0903+0540 had TRACKING 0 for half an hour while the airmass rose as if tracking."""
+    timed = [f for f in run if f.time and f.airmass]
+    if len(timed) < 2 or (timed[-1].time - timed[0].time) < dt.timedelta(minutes=2):
+        return False
+    return max(f.airmass for f in timed) - min(f.airmass for f in timed) > MOVING_AIRMASS
+
+
 def tracking_episodes(target, frames, index):
-    """Frames exposed with the mount stopped (Astra's TRACKING/SLEWING/TELPARK) and, where the headers cannot say,
-    runs of TRAIL_MIN_FRAMES or more frames T7 failed as trailed."""
+    """Frames exposed with the mount stopped (Astra's TRACKING/SLEWING/TELPARK, unless the airmass says the mount
+    moved) and, where the headers cannot say, runs of TRAIL_MIN_FRAMES or more frames T7 failed as trailed."""
     out = []
     for i0, i1 in _runs([f.stopped for f in frames]):
+        if _moved(frames[i0:i1 + 1]):
+            continue
         out.append(_episode('tracking', target, frames, i0, i1, index, _tracking_detail(frames[i0:i1 + 1])))
     for i0, i1 in _runs([f.trailed and not f.stopped for f in frames]):
         if i1 - i0 + 1 >= TRAIL_MIN_FRAMES:
