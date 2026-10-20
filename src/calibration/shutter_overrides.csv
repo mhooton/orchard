@@ -7,7 +7,9 @@
 # readout_time: seconds, only when the camera was read out at a rate other than
 # the one in instrument_config.json; blank means the configured value.
 # Only add a window after confirming it with calibration/smear_check.py (star
-# trails on science frames, the readout ramp on flats). Guessing wrong
+# trails on science frames, the readout ramp on flats); every night's own
+# measurement (calibration/shutter_detect.py, reduction/shutter.json) is
+# compared with these windows and a disagreement is reported. Guessing wrong
 # de-smears a shuttered frame, or leaves a shutterless one uncorrected, and on a
 # 6-8 s flat a wrong window puts a ramp of tens of percent into the master flat.
 # Window edges sit in daytime between the last frame of one state and the first
