@@ -114,5 +114,7 @@ def test_causes_resolve_to_their_first_stage():
 
 
 def test_the_design_note_shows_the_map_the_code_holds():
+    if not os.path.exists(DOC):
+        pytest.skip('no docs/ beside src/ (a release or scratch tree is `git archive ... src`)')
     doc = open(DOC, encoding='utf-8').read()
     assert stages.markdown() in doc, 'docs/rerun-from-stage.md: paste `python utils/stages.py --markdown` again'

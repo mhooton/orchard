@@ -280,6 +280,11 @@ with `--promote` runs with `--no_T12`, and a **promote** job follows it:
 The daily report lists the holds and rejects waiting for a decision, and any promotion that did not finish. The
 nightly runs from the watcher and the look-back still use T12 until `promote.nightly` is turned on.
 
+**Reruns from a late stage** (`q add --from T10 --promote`, or `--from pwv`; [rerun-from-stage.md](rerun-from-stage.md))
+queue a **restage** job first (`utils/restage.py`: hard links of the rerun's inputs from v2 into v3, 1 core, the night
+lock, a second or two), then the pipeline job with `--from_T10 --no_T12` for the restaged targets, which runs only if
+the restage succeeded, then the promote job, which overlays v2 with what the rerun wrote.
+
 ## The command line
 
 Inside the container it is `python -m jobqueue <command>`; on appct, `src/jobqueue/cron/q` does the
@@ -298,6 +303,8 @@ q add --class P2 --from-file backlog.csv --promote --campaign "ESO backfill reru
 q add --class P2 --telescope Europa --night 20251016 --promote             # one night the same way
 q add --class P2 --kind promote --after 1544-1670                          # promote jobs after pipeline jobs already queued
 q add --class P2 --kind promote --telescope Europa --night 20251016        # judge one night against its latest run
+q add --class P3 --telescope Europa --night 20260703 --from pwv --promote [--dry-run]   # restage, rerun T10+T11, overlay
+q add --class P3 --from-file nights.csv --from T10 --promote --campaign "PWV outage reruns"  # PROCESS-only lines
 q promote list                 # holds and rejects waiting for a decision (q promote = python utils/promote.py)
 q promote show 12              # q promote accept 12 --reason "..." [--apply]; q promote reject 12 --reason "..."
 q add --class P3 --kind sweep --cores 2 --no-disk-heavy --estimate 30 -- python tools/x.py

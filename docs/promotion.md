@@ -166,6 +166,17 @@ candidate rejected by a person, or by the policy, is left alone on later runs wh
 is judged again unchanged keeps its verdict, rather than getting a new one each run. A verdict whose candidate
 changes, or leaves v3, becomes *outdated*.
 
+## Restaged reruns: the overlay
+
+A night whose products are already in v2 can be rerun from a late stage (T10 or T11) without a run from raw: the
+restage step puts the rerun's inputs back into v3 as hard links to v2's files and records them, and the promotion of
+such a candidate is an **overlay** that replaces only the files the rerun wrote, sets v2's replaced files aside under
+`superseded/<TEL>/<NIGHT>/<TARGET>/<stamp>-overlay/`, and leaves v2's directory, reduction and every other file as
+they are. S1 judges only what the rerun wrote; O1-O3 hold a candidate whose inputs or v2 changed after the restage.
+After a run that started at a later stage without a restage (`--from_T10`, `--no_T1 ... --no_T9`), S1 likewise
+leaves alone the products of the stages it did not run. The design, steps and checks are in
+[rerun-from-stage.md](rerun-from-stage.md).
+
 ## Crashes
 
 The journal (`<queue_root>/promote.sqlite`, SQLite in WAL mode on appct's local disk, opened only inside

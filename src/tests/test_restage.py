@@ -205,7 +205,8 @@ def test_a_rerun_from_t10_is_overlaid_on_v2_and_nothing_else_in_v2_changes(env):
     before = snapshot(v2dir)
     assert stage(env, '--apply') == 0
     rerun_t10(env, A)
-    written = {r: restage.file_sha1(env.v3('output', NIGHT, A, r)) for r in restage.walk_files(env.v3('output', NIGHT, A))
+    d = env.v3('output', NIGHT, A)
+    written = {r: restage.file_sha1(os.path.join(d, r)) for r in restage.walk_files(d)
                if r.endswith('_diff.fits') or r.startswith('lightcurves') or 'pwv' in r}
     assert promote_night(env) == 0
     (v,) = verdicts(env)
@@ -333,7 +334,8 @@ def test_a_night_restaged_in_place_is_published_whole_without_s1_holds(env):
     assert 'S1 6 of its' in v['reasons'] and '_psf.png' in v['reasons'] and '_diff' not in v['reasons']
     assert os.path.isdir(env.v2('output', NIGHT, A)) and not os.path.exists(env.v3('output', NIGHT, A))
     assert restage.load_record(env.base, TEL, NIGHT, A) is None       # the record went with the promotion
-    assert any(os.path.exists(os.path.join(env.sup(NIGHT, A), d, 'restage.json')) for d in os.listdir(env.sup(NIGHT, A)))
+    assert any(os.path.exists(os.path.join(env.sup(NIGHT, A), d, 'restage.json'))
+               for d in os.listdir(env.sup(NIGHT, A)))
 
 
 # ---------------------------------------------------------------------------- S1 after a run from a later stage

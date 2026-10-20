@@ -46,6 +46,12 @@ For each target-night, the candidate is a v3 target directory holding a *_diff.f
              hand, and `reject <id> --reason` records a person's decision.  --no-policy leaves every one for a
              person.
 
+A candidate restaged for a rerun from a late stage (utils/restage.py, docs/rerun-from-stage.md) carries a record of
+its inputs. S1 then judges only what the rerun wrote (its manifest), and, when the inputs came from v2, the PROMOTE
+steps are an overlay instead: the manifest's files replace or join v2's, the v2 files they replace are set aside
+under superseded/<TEL>/<NIGHT>/<TARGET>/<stamp>-overlay/, and v2's directory, reduction and every other file stay as
+they are.  O1-O3 hold a restaged candidate whose inputs, or v2, changed after the restage.
+
 Each promotion is journalled before and after each step.  One cut short by a crash is listed by `list`
 and in the queue's daily report, and finished by `resume`; `run --apply` finishes those of a night before
 judging the night again.  Everything is a dry run unless --apply is given.  A night is left alone while a
@@ -101,8 +107,8 @@ PROC = '/proc'                      # where night_busy looks for pipeline runs o
 STEPS = ('check', 'aside', 'supersede', 'publish', 'touch', 'reduction', 'records', 'thin', 'unstage')
 # a night restaged from v2 for a rerun from a late stage (utils/restage.py): only what the rerun wrote goes into v2
 OVERLAY_STEPS = ('check', 'install', 'touch', 'records', 'leftover', 'thin')
-OVERLAY = '-overlay'                # superseded/<TEL>/<NIGHT>/<TARGET>/<stamp>-overlay/: the v2 files an overlay replaced
-RESTAGED = '-restage'               # superseded/<TEL>/<NIGHT>/<TARGET>/<stamp>-restage/: the restaged inputs, afterwards
+OVERLAY = '-overlay'                # superseded/<TEL>/<NIGHT>/<TARGET>/<stamp>-overlay/: v2 files an overlay replaced
+RESTAGED = '-restage'               # superseded/<TEL>/<NIGHT>/<TARGET>/<stamp>-restage/: the restaged inputs, after
 STALE = '-stale'                    # superseded/<TEL>/<NIGHT>/<TARGET>/<stamp>-stale/: files set aside before publishing
 RANK = {'PROMOTE': 0, 'HOLD': 1, 'REJECT': 2}
 EPOCH = dt.datetime(1970, 1, 1)
@@ -897,7 +903,8 @@ class Promoter(object):
         i = scan_dir(dest)
         m = restage_mod.manifest(rec, run['start'] if run and run.get('start') else None)
         early = set(m['early'])
-        install = [{k: e[k] for k in ('rel', 'size', 'mtime_ns', 'sha1')} for e in m['written'] if e['rel'] not in early]
+        install = [{k: e[k] for k in ('rel', 'size', 'mtime_ns', 'sha1')} for e in m['written']
+                   if e['rel'] not in early]
         names = {e['rel'] for e in install}
         have = set(restage_mod.walk_files(dest)) if os.path.isdir(dest) else set()
         orphans = sorted(rel for rel in have - names
@@ -1510,8 +1517,8 @@ class Promoter(object):
         j['plan'] = plan
         if plan.get('mode') == 'overlay':
             problems = overlay_access_problems(plan)
-            return 'would overlay v2 with the {} files the rerun from T{} wrote ({} replacing v2\'s, {} new; {} of v2\'s ' \
-                'no longer written set aside); the {} restaged inputs go to the superseded tree{}'.format(
+            return 'would overlay v2 with the {} files the rerun from T{} wrote ({} replacing v2\'s, {} new; {} of ' \
+                'v2\'s no longer written set aside); the {} restaged inputs go to the superseded tree{}'.format(
                     len(plan['install']), plan['from_stage'], len(plan['replace']),
                     len(plan['install']) - len(plan['replace']), len(plan['orphans']), plan['inputs'],
                     '; BUT {}'.format('; '.join(problems)) if problems else '')
@@ -1782,10 +1789,11 @@ def cmd_run(a, cfg, paths):
         p.close_gone(a.telescope, a.night, set())
     for (tel, night), targets in found.items():
         results += p.night(tel, night, targets, only)
+    want = {norm_target(x) for x in only or ()}
     for tel in tels or ():
         for night in nights or ():
             for t in restage_mod.restaged_targets(a.base, tel, night):
-                if t not in found.get((tel, night), ()) and (not only or norm_target(t) in {norm_target(x) for x in only}):
+                if t not in found.get((tel, night), ()) and (not want or norm_target(t) in want):
                     print('{:8} {} {:16} -       restaged for a rerun, but v3 holds no light curves of it to promote '
                           '(the rerun has not run, or failed): requeue it, or retire the restage with '
                           'utils/restage.py clear'.format(tel, night, t))

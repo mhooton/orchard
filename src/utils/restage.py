@@ -350,7 +350,8 @@ class Restager(object):
         for name, ln in reduction_inputs(first, red_v2, night, target):
             red.append((name, ln, 'present' if os.path.isfile(os.path.join(red_v3, name)) else 'place'))
         have = {name for name, _, _ in red}
-        red += [(name, ln, 'present') for name, ln in reduction_inputs(first, red_v3, night, target) if name not in have]
+        red += [(name, ln, 'present') for name, ln in reduction_inputs(first, red_v3, night, target)
+                if name not in have]
         if first <= 10 and not any(n == '{}_image_{}.list'.format(RUNNAME, target) for n, _, _ in red):
             raise RestageError('no {}_image_{}.list in the v3 or v2 reduction of the night: T10 needs it'.format(
                 RUNNAME, target))
