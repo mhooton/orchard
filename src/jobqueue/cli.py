@@ -286,7 +286,8 @@ def queue_rerun(cfg, store, cls, tel, night, first, targets=None, priority=0.0, 
     spec = jobspec.pipeline_job(
         cfg, cls, tel, night, lock_targets=targets, run_targets=targets, frames=frames,
         est_minutes=jobspec.rerun_estimate(cfg, tel, night, frames, first), source='cli', priority=priority,
-        no_t12=True, extra_flags=list(extra_flags or ()) + ['--from_T{}'.format(first)], note=note, cores=cores)
+        no_t12=True, extra_flags=list(extra_flags or ()) + ['--from_T{}'.format(first)], note=note,
+        cores=cores or min(jobspec.RERUN_CORES, int(cfg['pipeline_cores'])))
     rid, jid, created, pid = jobspec.add_rerun(store, cfg, spec, first, promote=promote, campaign=campaign)
     log('{} {} {}: restage job {}, then {} pipeline job {} (--from_T{}, {}){}'.format(
         cls, tel, night, rid, 'queued' if created else 'already queued as', jid, first, ' '.join(targets),

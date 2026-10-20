@@ -467,6 +467,10 @@ def clear(base, tel, night, target, reason, apply=False, now_fn=utcnow):
             return 'would move the record to {} (the directory stays in v3; what was set aside stays there)'.format(dst)
         os.makedirs(dst, exist_ok=True)
         os.rename(rec['_path'], os.path.join(dst, 'restage.json'))
+        try:
+            os.rmdir(os.path.dirname(rec['_path']))
+        except OSError:
+            pass
         return 'record moved to {}'.format(dst)
     dst = superseded_dir(base, tel, night, target, stamp + '-restage')
     if not apply:
@@ -478,6 +482,10 @@ def clear(base, tel, night, target, reason, apply=False, now_fn=utcnow):
         os.makedirs(dst, exist_ok=True)
         dropped = 0
     os.rename(rec['_path'], os.path.join(dst, 'restage.json'))
+    try:
+        os.rmdir(os.path.dirname(rec['_path']))         # .restage/, if no other target of the night is restaged
+    except OSError:
+        pass
     write_note(dst, {'cleared_at': iso(now_fn()), 'reason': reason, 'was': rec['dest'], 'links_dropped': dropped})
     return 'moved to {} ({} links to v2 dropped)'.format(dst, dropped)
 

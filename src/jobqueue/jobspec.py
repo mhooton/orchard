@@ -123,9 +123,12 @@ def promote_job(cfg, cls, telescope, night, after=None, targets=(), source='cli'
 
 
 # A rerun from a late stage costs this share of a full run's estimate (minutes per 1000 frames): T10 is six
-# SPlightcurve.py runs per target, T11 the PDF (which aligns every frame for its stack panel). Measured on the
-# scratch trial of 2026-10-20 (docs/rerun-from-stage.md).
-RERUN_SHARE = {10: 0.3, 11: 0.2}
+# SPlightcurve.py runs per target, T11 the PDF (which aligns every frame for its stack panel). The scratch trial of
+# 2026-10-20 (docs/rerun-from-stage.md) took 10-32% of the original full runs for T10 + T11, 2-7% for T11.
+RERUN_SHARE = {10: 0.3, 11: 0.1}
+# A rerun from T10 reserves fewer cores than a full run: SPlightcurve.py is one process, and only T11's alignment of the
+# frames for its stack panel runs in parallel (the trial ran with 8)
+RERUN_CORES = 8
 
 
 def rerun_estimate(cfg, telescope, night, frames, first):

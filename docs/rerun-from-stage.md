@@ -179,25 +179,73 @@ q add --class P3 --from-file pwv_v2_nights.txt --from T10 --promote --campaign "
 3. **promote**, as for any `--promote` run.
 
 `--from` needs `--promote` (or `--no-T12` to keep the rerun in v3): T12 would sweep the restaged inputs into v2.
-It refuses `--download`, and a `--from-file` line with DOWNLOAD=1. A rerun's estimate is a share of a full run's
-(`jobspec.RERUN_SHARE`).
+It refuses `--download`, and a `--from-file` line with DOWNLOAD=1. A rerun is queued with a share of a full run's
+estimate (`jobspec.RERUN_SHARE`); at launch the dispatcher re-estimates it from the frames like any pipeline job, so
+its timeout stays a full run's.
 
 ## Verified
 
-Scratch trial, 2026-10-20 (`mh_scratch/rerun_from_stage/` on appct; nothing written outside it): copies of three
-PWV-lost v2 nights, the code of this branch as a `git archive` snapshot, `restage --apply`, `ZLP_pipeline.sh
---from_T10 --no_T12`, `promote.py run --apply`, and v2 compared file by file before and after.
+Scratch trial, 2026-10-20 (`mh_scratch/rerun_from_stage/` on appct; nothing written outside it). The scratch root
+holds copies of five PWV-lost v2 nights (and what production v3 holds for them), raw frames and schedules by symlink;
+the code is this branch as a `git archive` snapshot. Per night: `restage.py stage --apply`, `ZLP_pipeline.sh
+--from_T10 --no_T12`, `promote.py run --apply`, and v2 compared file by file before and after (`trial.sh`,
+`compare.py`; each night's report is `trial/<TEL>_<NIGHT>/compare.txt`).
 
-RESULTS
+| Night | Target | Frames | Stars | Restage | Rerun (T10 + T11) | Promote | v2 files untouched | Installed | Night's PDF |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| Europa 20260703 | Sp2338-4726 | 99 | 150 | 1 s | 144 s (105 + 39) | 2 s | 812 of 900 | 88 + 17 new | replaced: the only target |
+| Io 20241211 | Sp0409-0605 | 135 | 146 | 1 s | 157 s (105 + 52) | 3 s | 9,199 of 9,287 | 88 + 17 new | kept: Sp0642-6707 (16.8 GB, untouched) has products |
+| Callisto 20241209 | Sp0314+2840 | 379 | 53 | 2 s | 218 s (132 + 86) | 3 s | 2,509 of 2,597 | 88 + 17 new | replaced: Sp0903+0540 has none |
+| Callisto 20250317 | Sp0830+0947 | 1,691 | 22 | 3 s | 478 s (367 + 111) | 6 s | 13,515 of 13,603 | 88 + 17 new | replaced |
+| Europa 20250820 | Sp1804-1616 | 54 | 6,606 | 1 s | 673 s (630 + 43) | 2 s | 226 of 314 | 88 + 17 new | replaced |
+
+- **Only the manifest changed.** On every night the files that changed in v2 are exactly the ones the promotion
+  journal lists as installed (the 6 curves, 6 MCMC files, the plots and best-aperture files, and 17 new: the three
+  `*_pwv_*.fits`, the `*_pwv.png` plots, `*_bestap_pwv.txt`). Every other file has its inode, size, mtime and (frames
+  aside) sha1 as before; v2's directory keeps its inode; the frames' link counts are back to 1; nothing left v2. The
+  replaced files are under `superseded/.../<stamp>-overlay/`, the restaged inputs under `<stamp>-restage/`.
+- **The curves gained PWV and nothing else of substance.** In every replaced `_diff.fits`, IMAGELIST, CATALOGUE,
+  LIGHTCURVE_n, ERROR_n and ALC_n are identical to v2's; the PWV table went from 0 rows to 453-589 and
+  PWV_LIGHTCURVE_n from NaN to finite. In every MCMC file every column is identical except DIFF_FLUX_PWV, finite at
+  every point now (0 before). Two more differences come from code released after the original runs (5c79fa0,
+  b383cd7 and f854bc4, all before 2026-10-19 12:26 UTC), not from the rerun: a SMEARED / SMEAR_FLAG column (#55,
+  the smear-trail flag) and ORCHVER in the header (#56, versioning).
+- **Verdicts**: three PROMOTE; two HOLD that the policy published, as v2 itself was: Callisto 20241209 (A4, 287 of
+  379 raw frames, the same points and scatter as v2: `better-than-v2`) and Europa 20250820 (15 points on a
+  bad-weather night: `few-points`).
+- **Dry run over all 95 production nights** (`dryrun95/`, nothing written): all 123 target-nights restage from v2,
+  no refusals, 124,923 hard links; every night's v3 reduction already has the image lists and masters. The
+  `--from-file` list is `dryrun95/pwv_v2_nights.txt`.
+- The suite in orchard-server (67df8e9, `--basetemp` on /data): 770 passed, 2 skipped.
 
 ## What it costs: the 95 PWV-lost nights in v2
 
-COST
+Their original full runs (the queue jobs that lost PWV, `cost/v2_nights.csv`) took **68.9 job-hours** (median 33
+min a night, 20 cores each: 1,378 reserved core-hours), read **0.70 TB** of raw frames (157,229 files) and wrote
+**0.46 TB** of calibrated frames, which a full rerun would do again.
+
+A rerun from T10, from the five trial nights: each took 10-32% of its night's original run. T10 scales with the
+curve's points and the field's stars, T11 with the frames; fitted to the trials (`estimate.py`), T10 per aperture =
+12.3 s + 0.029 s per point + 0.014 s per star, and T11 = 47 s + 0.040 s per frame. Over the 95 nights' 125 curves:
+
+| | Full reruns (as originally run) | Reruns from T10 |
+|---|---:|---:|
+| job time | 68.9 h | **~15 h** (T10 12.6 h, T11 2.6 h): 22% |
+| cores reserved | 20 per job: 1,378 core-hours | 8 per job: ~120 core-hours (9%) |
+| longest night | Callisto 20251224: 4 h 14 min | ~1 h |
+| raw frames read | 0.70 TB | one header per target |
+| calibrated frames written | 0.46 TB | none (hard links); ~105 small files per curve |
+| restage and promotion | - | seconds a night (1-3 s and 2-6 s) |
+| ESO LHATPRO queries | ~6 per curve | the same |
+
+With the queue running several nights at once (they hold only their night locks), that is a few hours of wall clock.
+The largest uncertainty is the crowded bulge fields of Sp1804-1616 (up to 11,072 stars; the trial's had 6,606):
+the model puts their T10 at up to ~17 minutes each.
 
 ## Not done
 
 - **Reruns from T9 or earlier** of promoted nights (see "Why restage stops at T10").
-- **The archive PWV campaign** (3,541 nights, [the parked PWV reprocessing]): its nights were reduced by older
+- **The archive PWV campaign** (the parked reprocessing of 3,541 nights): its nights were reduced by older
   pipelines, and their image lists can name paths that no longer exist (`/import/appct/...`); T10 opens the list's
   first frame. Restage would have to copy such a list with its paths rewritten. Their v2 directories may also lack
   frames (T11's stack panel then says so; the curves are unaffected).

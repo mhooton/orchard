@@ -76,6 +76,7 @@ def test_q_add_from_t10_queues_the_restaged_targets(cfg, capsys):
     pl = jobs[1]
     assert pl['targets'] == '{} Sp2209-3707'.format(TARGET) and '--from_T10' in pl['argv']
     assert pl['est_minutes'] >= cfg['min_estimate_minutes']
+    assert pl['cores'] == min(jobspec.RERUN_CORES, cfg['pipeline_cores'])
     assert 'restage job' in capsys.readouterr().out
 
 
