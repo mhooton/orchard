@@ -21,8 +21,6 @@ import os
 import shutil
 from contextlib import contextmanager
 
-from astropy.io import fits
-
 from download.raw_provenance import CHUNK, claimed_datasum, data_sum, read_header_bytes, set_checksum
 
 
@@ -43,18 +41,17 @@ def write(path, header, old_raw, datasum=None):
     Write `header` over the primary header of `path`, whose bytes on disk are `old_raw`. Returns False, having written
     nothing, if the header is unchanged.
 
-    If the old header had CHECKSUM or DATASUM, both are set for `datasum` (the data unit's sum, which the caller
-    trusts) or, when it is None, for the sum of the data bytes. A header that still fills the same number of 2880-byte
-    blocks is written in place. Otherwise the file is rewritten through a temporary file, with the bytes after the
-    header copied unchanged, and swapped in with os.replace, keeping its mode.
+    If the header has CHECKSUM or DATASUM, both are set for `datasum` (the data unit's sum, which the caller trusts)
+    or, when it is None, for the sum of the data bytes. A header that still fills the same number of 2880-byte blocks
+    is written in place. Otherwise the file is rewritten through a temporary file, with the bytes after the header
+    copied unchanged, and swapped in with os.replace, keeping its mode.
     """
     new_raw = header.tostring(padding=True).encode('ascii')
     if new_raw == old_raw:
         return False
-    old = fits.Header.fromstring(old_raw.decode('ascii'))
-    if 'CHECKSUM' in old or 'DATASUM' in old:
-        if datasum is None:
-            datasum = data_sum(path, len(old_raw), old)
+    if 'CHECKSUM' in header or 'DATASUM' in header:
+        if datasum is None:     # a header-only edit leaves BITPIX and NAXISn, so the data unit, as they were
+            datasum = data_sum(path, len(old_raw), header)
         set_checksum(header, datasum)
         new_raw = header.tostring(padding=True).encode('ascii')
     if len(new_raw) == len(old_raw):
