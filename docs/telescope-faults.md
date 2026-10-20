@@ -39,7 +39,7 @@ are stretched one way as `Sources trailed (...)`. Three such frames in a row mak
 ## Pointing drift
 
 Each solved frame's WCS puts the block's pointing (its header target position) on the detector. Guided, it stays
-within a few pixels: in the archive, 98% of blocks keep 95% of their frames within 0.25 arcmin. When the pointing
+within a few pixels: in the archive, 97% of blocks keep 95% of their frames within 0.25 arcmin. When the pointing
 walks away, the target slides across the field and can leave it.
 
 Measured on Artemis 2024-02-11 Sp1356+4342, the pointing sat at one place to 01:33 UT, jumped 4.3 arcmin at 01:34 and
@@ -102,7 +102,82 @@ Each frame's WCS comes from the first of these that has one:
 
 ## The census
 
-CENSUS
+Run over the archive on 2026-10-20, read-only. Every episode is listed in `docs/telescope_faults_census.csv` (212
+rows: telescope, night, kind, target, UT range, frames, minutes, detail). Scripts and raw output are in
+`mh_scratch/telescope_faults/` on appct (`census_tracking.py`, `census_drift.py`, `*.jsonl`).
+
+### Tracking stops
+
+The census read the Astra-era raw headers: 1,615 telescope-nights with light frames and 2.77 million frames. The SSO
+raw names carry each exposure's start, so frames were sampled every 5 minutes without being opened. Each run of stopped
+samples then had its first and last stopped frame found by bisection: 171,000 header reads, where reading every
+header beside the queue's jobs on the busy raw-data array would have taken days. A stop shorter than 5 minutes can
+fall between samples. One false stop, on Callisto 2024-12-09, is not counted: TRACKING was 0 for half an hour, but the airmass
+moved as only a tracking mount's does.
+
+| Year | Io | Europa | Ganymede | Callisto |
+|---|---|---|---|---|
+| 2023 | | | | 1 / 11 |
+| 2024 | | | | 6 / 295 (4 h) |
+| 2025 | | | 7 / 242 (9 h) | 1 / 275 |
+| 2026 | 0 / 92 | 0 / 215 | 2 / 237 (3 h) | 0 / 248 |
+
+*Telescope-nights with a stop / Astra-era nights read (hours of frames lost).*
+
+Seventeen stops on 17 nights, of three kinds:
+
+- **Six long stops mid-sky**, 1,353 frames and about 14 hours in all:
+  - Ganymede 2025-07-16 TOI-4336 c, 570 frames
+  - Ganymede 2025-08-25 Sp1954+1801, 333 frames
+  - Ganymede 2025-09-04 Sp1954+1801 again, 02:59–04:38 UT, 133 frames
+  - Ganymede 2026-05-05 Sp1649+0444, 21 frames
+  - Ganymede 2026-06-30 Sp2253-4801, 103 frames
+  - Callisto 2024-10-12 Sp0002+0115, 02:04–04:22 UT, 193 frames
+- **Six at the mount's altitude limit.** The mount stopped at 20 degrees (airmass 2.898) while the camera kept
+  exposing. These were Chilean and asteroid targets, and Sp0254-1934 on Callisto twice (2024-11-19 and 11-27, 12 and
+  27 frames).
+- **Five single frames**, with the mount idle for 52–85% of the exposure.
+
+### Pointing drifts
+
+The census read the per-target `*_output.fits` imagelists: each photometered frame's WCS, one read per target-night,
+from v2 and, where v2 has none, from v3. That covered 18,177 target-nights on 9,908 telescope-nights.
+
+| Year | Io | Europa | Ganymede | Callisto | Artemis |
+|---|---|---|---|---|---|
+| 2017 | 14 / 46 (10 h) | 16 / 192 (4 h) | | | |
+| 2018 | 6 / 182 (5 h) | 8 / 279 (29 h) | 0 / 55 | 12 / 167 (9 h) | |
+| 2019 | 0 / 280 | 0 / 284 | 3 / 295 (2 h) | 0 / 308 | 0 / 162 |
+| 2020 | 0 / 148 | 0 / 154 | 0 / 141 | 0 / 139 | 1 / 213 |
+| 2021 | 0 / 269 | 0 / 312 | 0 / 292 | 0 / 273 | 2 / 266 (1 h) |
+| 2022 | 0 / 256 | 1 / 270 | 2 / 255 (6 h) | 3 / 56 (14 h) | 1 / 228 (2 h) |
+| 2023 | 2 / 265 | 0 / 274 | 0 / 269 | 0 / 195 | 0 / 181 |
+| 2024 | 1 / 246 (3 h) | 0 / 222 | 0 / 265 | 8 / 194 (1 h) | 6 / 154 (9 h) |
+| 2025 | 0 / 229 | 7 / 266 (11 h) | 12 / 254 (4 h) | 0 / 212 | 1 / 201 (3 h) |
+| 2026 | 0 / 86 | 1 / 217 (1 h) | 0 / 212 | 5 / 226 (3 h) | 0 / 137 |
+
+*Telescope-nights with a drift / telescope-nights with a measured pointing (hours affected).*
+
+There are 195 episodes on 112 telescope-nights. In 71 of them, on 51 nights, the target left the field, and 108
+arrived as jumps.
+
+- **2017–18 commissioning** (Io, Europa, Callisto; 56 nights). The telescope pointed up to 3 degrees away for minutes
+  to hours, with the frames still named for the target and the target off the field.
+- **Artemis, February–March 2024** (6 nights). There were repeated jumps of 2.6–7.6 arcmin, with the target off the
+  field on four of the nights: TOI-5720 on 02-10 and 02-15, Sp1356+4342 on 02-11, Sp1444+3002 on 02-14, and
+  Sp1438+6408 on 03-10 and 03-13.
+- **Ganymede and Europa in 2025** (19 nights, 21 episodes). Fifteen start with their block and last 7–48 minutes at
+  1.2–3.5 arcmin: the telescope settling for longer than the 10 minutes allowed. The others are mid-block, such as
+  Europa 2025-03-20 TOI-1227, 2.8 arcmin over five hours from 04:54 UT.
+- **Callisto 2026-10-14 to 10-16, Sp0439+1615.** Each night from 04:30 to 05:30 UT the target sat just off SPIRIT's
+  field. The pointing then moved 1.7 arcmin and put it on the field.
+
+The census sees photometered frames only. Frames that T7 or the photometry lost are not measured: on Artemis
+2024-02-11, nothing after 01:49. A rerun with the known-scale solver (v4.1.0) measures more of them.
+
+221 target-nights could not be judged, because their stored solutions scatter from frame to frame (163 of them are
+Callisto 2024). Those products were made with wrong WCSs on many frames. This is not a telescope fault but a
+candidate list for reruns: `mh_scratch/telescope_faults/noisy_wcs_target_nights.csv`.
 
 ## Thresholds
 
