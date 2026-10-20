@@ -24,6 +24,16 @@ pixels.
    - The winner is refined by iterative cross-matching: a TAN fit with 10 or more matched stars, a similarity
      (scale, rotation, shift) below that.
 5. **twirl** (the solver until 2026-10), unchanged, only when the known-scale solve has nothing verified.
+6. **A second pass** (`astrometry.py`), after every frame has had its turn. A frame that failed with 5 or more round
+   sources, not trailed and not timed out, is tried again from the solution of the frame nearest to it in time that
+   has one: solved this run, or applied from the WCS cache, and no more than 2 hours away. The neighbour's WCS is
+   recentred within 50 px and refined (`known_scale.solve_from_neighbour`). The result is kept if it verifies as
+   below, or if 4 or more sources sit on catalogue stars at chance 10^-10 or less and it agrees with the neighbour's
+   solution (centre within 50 px, rotation within 0.5 degrees, scale within 1%). Faint frames of sparse fields have
+   only 5-7 sources, and 4 or 5 on catalogue stars is all they can give; alone they cannot verify. On Callisto
+   20261012 (SPIRIT) v4.1.0 refused 63 such frames whose old solutions had given normal photometry. A frame the second
+   pass cannot solve goes through steps 3-5 again and keeps its first failure message. Solved lines say
+   `Method: neighbour`.
 
 ## The verification
 
