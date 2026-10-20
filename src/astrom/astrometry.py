@@ -20,10 +20,17 @@ warnings.filterwarnings('ignore', category=VerifyWarning)
 # The plate solver's generation, recorded in every WCS cache row (astrom/wcs_cache.py, docs/wcs-cache.md). Bump it
 # in any change that alters the solutions T7 writes (pointer_wcs's detection, catalogue query, matching or
 # acceptance, the twirl call), so cached solutions from the old solver are no longer used.
-SOLVER_EPOCH = 1
+# 2: the second pass from the nearest solved frame (neighbour_jobs, known_scale.solve_from_neighbour).
+SOLVER_EPOCH = 2
+
+# The second pass. A frame that failed with at least this many sources is tried again from the solution of the frame
+# nearest to it in time that has one, solved this run or taken from the WCS cache, if that frame is no further away
+# than NEIGHBOUR_MAX_GAP. Trailed and timed-out frames are not retried.
+NEIGHBOUR_MIN_SOURCES = 5
+NEIGHBOUR_MAX_GAP = 7200.0      # seconds
 
 
-def add_astrometry_with_timeout(infile, timeout, ext, db_path, total_files, file_num=None):
+def add_astrometry_with_timeout(infile, timeout, ext, db_path, total_files, file_num=None, neighbour=None):
     """
     Wrapper that runs add_astrometry with a signal-based timeout.
 
@@ -41,6 +48,8 @@ def add_astrometry_with_timeout(infile, timeout, ext, db_path, total_files, file
         Total number of files being processed
     file_num : int, optional
         File number for progress display
+    neighbour : dict, optional
+        WCS cards of the nearest frame with a solution, for the second pass
 
     Returns
     -------
@@ -68,7 +77,7 @@ def add_astrometry_with_timeout(infile, timeout, ext, db_path, total_files, file
     try:
         result = add_astrometry(infile, ext, db_path,
                                 file_num=file_num, total_files=total_files,
-                                progress=progress)
+                                progress=progress, neighbour=neighbour)
         signal.alarm(0)  # Cancel the alarm
         return result
     except TimeoutException as e:
@@ -211,6 +220,64 @@ def store_new_solutions(cache_path, solved, frames, results):
         print(f"WARNING: WCS cache not updated ({cache_path}): {e}", flush=True)
 
 
+def _obs_seconds(header):
+    """A frame's DATE-OBS in seconds (any fixed origin), or None."""
+    from datetime import datetime
+    value = str(header.get('DATE-OBS', '')).strip()
+    for fmt in ('%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S'):
+        try:
+            return (datetime.strptime(value, fmt) - datetime(2000, 1, 1)).total_seconds()
+        except ValueError:
+            pass
+    return None
+
+
+def worth_a_second_pass(result):
+    """A failed frame with enough round sources: not trailed, not cut short by the timeout."""
+    if not result or result.get('success', False):
+        return False
+    error = result.get('error') or ''
+    if error.startswith('Sources trailed') or 'timed out' in error:
+        return False
+    return (result.get('sources_detected') or 0) >= NEIGHBOUR_MIN_SOURCES
+
+
+def neighbour_jobs(to_solve, results, infiles, read_header=fits.getheader):
+    """[(index into to_solve, WCS cards of its neighbour)] for the second pass: each frame worth one, with the frame
+    nearest to it in time that has a solution, solved this run or taken from the WCS cache (every listed frame not
+    in to_solve), and no more than NEIGHBOUR_MAX_GAP away."""
+    retry = [i for i, r in enumerate(results) if worth_a_second_pass(r)]
+    if not retry:
+        return []
+    solving = set(to_solve)
+    solved = {f for f, r in zip(to_solve, results) if r and r.get('success', False)}
+    headers, times = {}, {}
+    for f in [f for f in infiles if f in solved or f not in solving] + [to_solve[i] for i in retry]:
+        try:
+            headers[f] = read_header(f)
+            times[f] = _obs_seconds(headers[f])
+        except Exception:
+            times[f] = None
+    have = [f for f in infiles if (f in solved or f not in solving) and times.get(f) is not None
+            and headers[f].get('CTYPE1')]
+    jobs = []
+    for i in retry:
+        t = times.get(to_solve[i])
+        if t is None or not have:
+            continue
+        nearest = min(have, key=lambda f: abs(times[f] - t))
+        if abs(times[nearest] - t) > NEIGHBOUR_MAX_GAP:
+            continue
+        jobs.append((i, {k: headers[nearest][k] for k in WCS_KEYWORDS if k in headers[nearest]}))
+    return jobs
+
+
+def _second_pass_worker(job, timeout, ext, db_path, total_files):
+    infile, neighbour = job
+    return add_astrometry_with_timeout(infile, timeout=timeout, ext=ext, db_path=db_path, total_files=total_files,
+                                       neighbour=neighbour)
+
+
 def main(args):
     import sys
     sys.stdout.flush()
@@ -299,6 +366,25 @@ def main(args):
                                                        db_path=args.db_path,
                                                        total_files=files_to_process,
                                                        file_num=i))
+
+    # The second pass: failed frames tried again from the nearest frame with a solution (neighbour_jobs)
+    jobs = neighbour_jobs(to_solve, results, infiles)
+    if jobs:
+        print(f"Second pass: {len(jobs)} frames tried again from the nearest frame with a solution", flush=True)
+        work = [(to_solve[i], cards) for i, cards in jobs]
+        worker = partial(_second_pass_worker, timeout=args.timeout, ext=args.ext, db_path=args.db_path,
+                         total_files=files_to_process)
+        if int(args.nproc) > 1:
+            pool = multiprocessing.Pool(processes=int(args.nproc))
+            again = pool.map(worker, work)
+            pool.close()
+            pool.join()
+        else:
+            again = [worker(w) for w in work]
+        for (i, _), result in zip(jobs, again):
+            results[i] = result
+        print(f"Second pass: {sum(1 for r in again if r and r.get('success', False))} of {len(jobs)} solved",
+              flush=True)
 
     # Count successes and failures
     for result in results:
@@ -405,7 +491,7 @@ WCS_KEYWORDS = ['CTYPE1', 'CTYPE2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2',
                 'CDELT2', 'LONPOLE', 'LATPOLE', 'RADESYS']
 
 
-def add_astrometry(f, ext, db_path, file_num=None, total_files=None, progress=None):
+def add_astrometry(f, ext, db_path, file_num=None, total_files=None, progress=None, neighbour=None):
     if fnmatch.fnmatch(f, '*.' + ext):
         file = f
         # print("Add astrometry.net data to header of file: " + file)
@@ -413,7 +499,7 @@ def add_astrometry(f, ext, db_path, file_num=None, total_files=None, progress=No
         # Attempt WCS solving
         # result = twirl_wcs(str(file), verbose=False)
         result = pointer_wcs(str(file), db_path, wcs_keywords=WCS_KEYWORDS, clear_existing_wcs=True,
-                             verbose=False, progress=progress)
+                             verbose=False, progress=progress, neighbour=neighbour)
 
         # Create summary line
         filename = os.path.basename(file)

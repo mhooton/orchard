@@ -64,6 +64,16 @@ ROUND_BELOW = 0.5            # trail_ellipticity below which a frame's sources c
 # Sp2151-1141, 20261008 Sp0218-0617) the old solution and this solve's best candidate agreed, 5 of 5. Four never do.
 SPARSE_MIN_MATCHES = 5
 SPARSE_MIN_COMPLETENESS = 0.8   # of min(detections tested, catalogue stars in the frame)
+# A frame taken close in time to one that solved (solve_from_neighbour) needs fewer matches: the neighbour's solution
+# fixes rotation, scale and pointing to within a few pixels, so 3 sources on catalogue stars within this shift of it
+# cannot be chance (the offset vote searches a 100 px square). Faint frames of sparse SPIRIT fields have only 5-7
+# sources: on Callisto 20261012 v4.1.0 refused 63 frames whose old photometry was normal. Their consecutive frames,
+# 6-18 s apart, put 3 of their 5 sources on catalogue stars; twirl's "4 of 5" was its own quad, fitted.
+NEIGHBOUR_MIN_MATCHES = 3
+NEIGHBOUR_MAX_LOG10_CHANCE = -8.0
+NEIGHBOUR_SHIFT = 50.0          # px between this frame's solution and its neighbour's, at the frame centre
+NEIGHBOUR_ROTATION = 0.5        # degrees
+NEIGHBOUR_SCALE = 0.01          # fractional
 
 # Pair votes
 PAIR_SOURCES = 30
@@ -437,6 +447,63 @@ def solve(sources, ra, dec, centre, scale_deg, shape, inner=None, prior=None, gr
 
     out['verification'] = best['v']
     out['error'] = 'no verified solution'
+    return out
+
+
+def _orientation(wcs, shape):
+    """(sky position of the frame centre, position angle in degrees of the frame's +y axis, scale in degrees per
+    pixel) of a WCS."""
+    h, w = shape
+    x, y = (w - 1) / 2.0, (h - 1) / 2.0
+    c, up = wcs.pixel_to_world([x, x], [y, y + 100.0])
+    return c, float(c.position_angle(up).deg), solved_scale(wcs)
+
+
+def agrees(wcs, neighbour, shape, max_shift=NEIGHBOUR_SHIFT, max_rotation=NEIGHBOUR_ROTATION,
+           max_scale=NEIGHBOUR_SCALE):
+    """Whether a solution sits where its neighbour's does: centre within max_shift px, the frame turned no more than
+    max_rotation degrees, the same scale to max_scale."""
+    c1, pa1, s1 = _orientation(wcs, shape)
+    c2, pa2, s2 = _orientation(neighbour, shape)
+    shift = c1.separation(c2).deg / s2
+    turn = abs((pa1 - pa2 + 180.0) % 360.0 - 180.0)
+    return shift <= max_shift and turn <= max_rotation and abs(s1 / s2 - 1.0) <= max_scale
+
+
+def solve_from_neighbour(sources, ra, dec, neighbour, scale_deg, shape, trail=None):
+    """Solve a frame from the solution of a frame taken close to it in time (astrometry.py's second pass).
+
+    The neighbour's WCS is recentred by an offset vote within NEIGHBOUR_SHIFT px and refined (or, with too few
+    matches to refit, kept as recentred). The result is accepted if it verifies on its own, or, when the sources are
+    round, if NEIGHBOUR_MIN_MATCHES or more sit on catalogue stars at chance 10^NEIGHBOUR_MAX_LOG10_CHANCE or less and
+    the solution agrees with the neighbour's. Trailed frames get no such allowance: a
+    trail passes through every star's position at some instant. Returns a dict as solve() does (method
+    'neighbour')."""
+    out = dict(success=False, wcs=None, method=None, matches=0, tested=0, verification=None, candidates=0,
+               error=None)
+    ra, dec = np.asarray(ra, float), np.asarray(dec, float)
+    if len(sources) <= NEIGHBOUR_MIN_MATCHES or len(ra) <= NEIGHBOUR_MIN_MATCHES:
+        out['error'] = 'too few sources or catalogue stars'
+        return out
+    if not _scale_ok(neighbour, scale_deg):
+        out['error'] = "the neighbour's solution is not at the expected scale"
+        return out
+    out['candidates'] = 1
+    start = _recentred(neighbour, sources, ra, dec, search=NEIGHBOUR_SHIFT)
+    wcs, _ = refine(sources, ra, dec, start)
+    if wcs is None:
+        wcs = start             # too few matches to refit: the neighbour's solution, moved by the offset vote
+    if not _scale_ok(wcs, scale_deg):
+        out['error'] = "nothing matched near the neighbour's solution"
+        return out
+    v = verify(wcs, sources, ra, dec, shape)
+    out['verification'] = v
+    round_sources = trail is not None and trail < ROUND_BELOW
+    if verified(v, trail) or (round_sources and v['matched'] >= NEIGHBOUR_MIN_MATCHES and
+                              v['log10_chance'] <= NEIGHBOUR_MAX_LOG10_CHANCE and agrees(wcs, neighbour, shape)):
+        out.update(success=True, wcs=wcs, method='neighbour', matches=v['matched'], tested=v['tested'])
+    else:
+        out['error'] = "no verified solution near the neighbour's"
     return out
 
 

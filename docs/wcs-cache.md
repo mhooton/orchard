@@ -72,10 +72,12 @@ code) never counts as a solution. Without a usable row, a frame is always solved
    HISTORY card differs from a solve's `T7: WCS solved`. The header is written as after a solve (see
    [Header writes and checksums](#header-writes-and-checksums)): 13–30 ms a frame on appct. That work holds the GIL,
    so threads do not shorten it (tried on the scratch nights: no gain).
-3. Solves the other frames in the pool, as before.
-4. After the pool, the parent reads the solved frames' headers and writes their rows: one read-change-write under
-   `utils/shared_files.locked`, through a temporary file and `os.replace`. Two runs on one night (two targets, a
-   rerun beside the nightly run) lose no rows, and a reader sees the old table or the new one.
+3. Solves the other frames in the pool, as before, then tries the failures again from the frames nearest them in
+   time: the second pass (`docs/plate-solving.md`, step 6). A frame applied from the cache can be the neighbour.
+4. After the pool and the second pass, the parent reads the solved frames' headers and writes their rows, second-pass
+   solutions included: one read-change-write under `utils/shared_files.locked`, through a temporary file and
+   `os.replace`. Two runs on one night (two targets, a rerun beside the nightly run) lose no rows, and a reader sees
+   the old table or the new one.
 
 Nothing here can end a night: T7 runs under `errexit` in ZLP. An unreadable table, a bad row, a missing Gaia
 database or an unwritable directory is a `WARNING: WCS cache ...` line, and the frames are solved. An unreadable
