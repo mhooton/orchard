@@ -228,6 +228,8 @@ T8 a full run's, since their WCS fits and photometry use every core.
 
 ## Verified
 
+### Reruns from T10: the PWV-lost nights
+
 Scratch trial, 2026-10-20 (`mh_scratch/rerun_from_stage/` on appct; nothing written outside it). The scratch root
 holds copies of five PWV-lost v2 nights (and what production v3 holds for them), raw frames and schedules by symlink;
 the code is this branch as a `git archive` snapshot. Per night: `restage.py stage --apply`, `ZLP_pipeline.sh
@@ -261,6 +263,34 @@ the code is this branch as a `git archive` snapshot. Per night: `restage.py stag
   `--from-file` list is `dryrun95/pwv_v2_nights.txt`.
 - The suite in orchard-server (67df8e9, `--basetemp` on /data): 770 passed, 2 skipped.
 
+### Reruns from T9 and T8: the stale-PC nights
+
+Four stale-PC nights still in v2 from before the fix (`trial9/`, `trial8/`; `compare9.py`, `noise.py`), with the code
+of this branch. Ganymede 20260731's catalogue has TARGET_ROLE and was rerun from T9; the three Io nights of March
+2026 have target-named catalogues from before it, so restage refused T9 (as designed) and they were rerun from T8.
+
+| Night | Target | From | Frames | Restage | Rerun | Original run | v2 files untouched | Installed (frames) | Ap-3 scatter, target | Ap-3 scatter, field median |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Ganymede 20260731 | Sp1705-5441 | T9 | 108 | 3 s | 414 s | 19.5 min | 27 of 942 | 918 (108) | 20.0 -> 6.6 ppt | 132 -> 12 ppt |
+| Io 20260223 | Sp1054-5431 | T8 | 174 | 12 s | 656 s | 20.6 min | 14 of 1,467 | 1,456 (174) | 69.8 -> 9.7 ppt | 189 -> 25 ppt |
+| Io 20260307 | Sp1054-5431 | T8 | 101 | 8 s | 523 s | 17.2 min | 308 of 1,171 | 863 (101) | 236 -> 8.3 ppt | 196 -> 19 ppt |
+| Io 20260304 | Sp1054-5431 | T8 | 728 | 46 s | 1,445 s | 51.4 min | 14 of 5,881 | 5,870 (728) | 259 -> 6.7 ppt | 251 -> 31 ppt |
+
+- **Only the manifest changed**, on every night: what changed in v2 is exactly what the journal lists as installed
+  (the frames with their new WCS, their per-frame files, the night's photometry, the curves), and, after a rerun
+  from T8, the 9-12 files of the old target-named stacks and catalogues the rerun no longer writes went to
+  `-overlay/`. The replaced frames and per-frame files there were thinned (750 to 5,754 files a night). What
+  stayed untouched is what no stage of the rerun writes (on Io 20260307 also 294 files of an old
+  `1_postastrometrypy/` copy). The frames lost their stale PC matrix (13 of 1,111 kept one: frames whose WCS fit
+  failed) and came back 16-bit (frame packing).
+- **The stale PC is gone from the curves.** Every target's aperture-3 and -4 scatter fell 3-39 times, and the
+  field's median at every aperture; the note's own figure for Sp1054-5431 (71 -> 7.5 ppt at aperture 3, Ganymede
+  2026-02-23) reappears on Io (69.8 -> 9.7). On Io 20260304 the target's apertures 7 and 8 got somewhat noisier
+  (7.7 -> 9.8 and 6.9 -> 9.9 ppt) while its best aperture improved (6.9 ppt at 8 -> 4.4 at 5).
+- A rerun took 36% of its night's original run from T9 and 48-54% from T8 (T8, the stack and Gaia crossmatch,
+  221-299 s; T10 on these fields is a third of the rerun). Restaging copies frames at ~260 MB/s; promotion took
+  1-30 s (it reads every installed file back).
+
 ## What it costs: the 95 PWV-lost nights in v2
 
 Their original full runs (the queue jobs that lost PWV, `cost/v2_nights.csv`) took **68.9 job-hours** (median 33
@@ -284,6 +314,24 @@ curve's points and the field's stars, T11 with the frames; fitted to the trials 
 With the queue running several nights at once (they hold only their night locks), that is a few hours of wall clock.
 The largest uncertainty is the crowded bulge fields of Sp1804-1616 (up to 11,072 stars; the trial's had 6,606):
 the model puts their T10 at up to ~17 minutes each.
+
+## What it costs: the stale-PC reprocess
+
+The reprocess list (`aperture_centring/reproc/nights.csv`, 1,198 nights) has **1,063 nights (1,742 target-nights)**
+whose v2 products still predate the fix (`cost/pc_nights.csv`, `pc_summary.json`): 913 target-nights can be rerun
+from T9, 829 have a catalogue from before TARGET_ROLE and need T8; 582 nights are T9 throughout. Their frames are
+1.46 million, 11.1 TB.
+
+| | Full reruns (original runs' durations) | Reruns from T9 / T8 |
+|---|---:|---:|
+| job time | ~1,240 h (992 of the nights logged a duration; scaled to all) | **~570 h** (36% of T9 nights' runs, 51% of T8 nights'): 46% |
+| raw frames read | all of them | none (one header per target) |
+| frames written | every frame recalibrated | 11.1 TB of copies (~12 h of copying), packed to 16-bit, the old ones thinned |
+| restage and promotion | - | seconds to a minute a night |
+
+`q add --from stale-pc` takes T9 and falls back to T8 per night when the catalogue predates TARGET_ROLE. The
+`--from-file` list, nothing queued: `stalepc/stale_pc_nights.txt`. Matthew's standing decision (2026-10-17) is not
+to reprocess these until orchard has settled; this only makes the reprocess cheaper when he does.
 
 ## Not done
 

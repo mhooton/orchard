@@ -90,6 +90,23 @@ def test_a_rerun_from_t9_copies_frames_so_its_restage_is_disk_heavy(cfg, store):
     assert '--from_T9' in store.get_job(pl)['argv']
 
 
+def test_a_rerun_from_t9_of_a_night_with_an_old_catalogue_is_queued_from_t8(cfg, capsys):
+    base = cfg['basedir']
+    d = os.path.join(base, 'PipelineOutput', 'v2', 'Europa', 'output', NIGHT, TARGET)
+    os.makedirs(os.path.join(d, '1'))
+    with open(os.path.join(d, '1', 'I+z_processed.dat'), 'w') as f:
+        f.write(os.path.join(d, '1', 'procX.fits') + '\n')
+    open(os.path.join(d, '1', 'procX.fits'), 'w').close()
+    open(os.path.join(d, 'SP0451+0305_stack_catalogue_I+z.fits'), 'w').close()      # no TARGET_ROLE
+    red = os.path.join(base, 'PipelineOutput', 'v2', 'Europa', 'output', NIGHT, 'reduction')
+    os.makedirs(red)
+    open(os.path.join(red, '1_image_{}.list'.format(TARGET)), 'w').close()
+    rc, jobs = add(cfg, '--telescope', 'Europa', '--night', NIGHT, '--from', 'stale-pc', '--promote')
+    assert rc == 0 and [j['kind'] for j in jobs] == ['restage', 'pipeline', 'promote']
+    assert '--from_T8' in jobs[1]['argv'] and jobs[0]['argv'][jobs[0]['argv'].index('--from') + 1] == '8'
+    assert 'predates TARGET_ROLE' in capsys.readouterr().out
+
+
 def test_q_add_from_refuses_what_it_cannot_do(cfg, capsys):
     promoted_night(cfg)
     for args, why in ((['--from', 'T7', '--promote'], 'not supported'),

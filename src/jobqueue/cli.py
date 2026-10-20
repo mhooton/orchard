@@ -274,6 +274,13 @@ def queue_rerun(cfg, store, cls, tel, night, first, targets=None, priority=0.0, 
         log('{} {} {}: not queued: no target of the night has the inputs of a rerun from T{} in v3 or v2'.format(
             cls, tel, night, first))
         return None
+    if first == 9:
+        # a catalogue from before T8 wrote TARGET_ROLE (2026-03-31) cannot be condensed by today's T9: the night is
+        # rerun from T8 instead, which makes a new one
+        _, lines = restage.Restager(cfg['basedir'], apply=False).night(tel, night, first, targets)
+        if any('rerun this night from T8' in line for line in lines):
+            log('{} {} {}: its stack catalogue predates TARGET_ROLE: rerun from T8'.format(cls, tel, night))
+            first = 8
     if dry_run:
         r = restage.Restager(cfg['basedir'], apply=False)
         _, lines = r.night(tel, night, first, targets)
