@@ -338,5 +338,75 @@ def test_report_temp_files_are_per_night():
     assert not [l for l in code if '/reports/temp' in l]
 
 
+# ------------------------------------------ frames lost to the telescope (T11)
+
+def _fault_night(tmp_path, n_stop=30):
+    """A night laid out as ZLP has it: raw frames in <obsdir>/images/<date> (the Ganymede 2025-07-16 tracking stop
+    of test_telescope_faults), a log in <datdir>/logs."""
+    import test_telescope_faults as faults_test
+    base = tmp_path / 'SPECULOOSPipeline'
+    args = _Args(str(base / 'PipelineOutput' / 'v3' / 'Ganymede'))
+    args.obsdir, args.telescope, args.date = str(base / 'Observations' / 'Ganymede'), 'Ganymede', '20250716'
+    raw = os.path.join(args.obsdir, 'images', args.date)
+    os.makedirs(raw)
+    os.makedirs(os.path.join(args.datdir, 'logs'))
+    os.makedirs(os.path.join(args.datdir, 'reports', 'temp'))
+    names, _ = faults_test.ganymede_night(raw, n_stop=n_stop)
+    with open(os.path.join(args.datdir, 'logs', '20250716_1_v3.log'), 'w') as f:
+        f.write('TARGET: TOI-4336--c\n')
+        for n in names[-n_stop:]:
+            f.write(faults_test.t7_line(n, ok=False) + '\n')
+    return args
+
+
+def test_night_faults_reads_the_night_as_zlp_lays_it_out(tmp_path, capsys):
+    if rep.telescope_faults is None:
+        pytest.skip('utils.telescope_faults is not importable here')
+    args = _fault_night(tmp_path)
+    faults = rep.night_faults(args)
+    (e,) = rep.telescope_faults.episodes(faults)
+    assert e['kind'] == 'tracking' and e['n'] == 30 and e['detail']['t7_failed'] == 30
+    lines = rep.fault_lines(faults)
+    assert lines == [rep.telescope_faults.describe(e, 70)]
+    assert 'Telescope fault: TOI-4336 c: tracking stopped' in capsys.readouterr().out
+    # and the record the morning digest reads, under a name T12's '*<TEL>_<date>*' sweep of reports/ cannot take
+    path = rep.telescope_faults.summary_path(args.datdir, args.date)
+    assert path == os.path.join(args.datdir, 'reports', 'telescope_faults', '20250716.json')
+    assert 'Ganymede_20250716' not in os.path.basename(path)
+    doc = rep.telescope_faults.read_summary(path)
+    assert doc['telescope'] == 'Ganymede' and doc['tracking_lost'] == 'Y' and doc['pointing_drift'] == 'N'
+    assert rep.telescope_faults.episodes(doc['targets']) == [e]
+
+
+def test_night_faults_never_takes_the_report_down(tmp_path, monkeypatch):
+    args = _Args(str(tmp_path))
+    args.obsdir = str(tmp_path / 'nowhere')
+    assert rep.night_faults(args) in (None, {})
+    monkeypatch.setattr(rep, 'telescope_faults', None)
+    assert rep.night_faults(args) is None and rep.fault_lines({'x': {}}) == []
+
+
+@pytest.mark.parametrize('n_targets_with_faults', [0, 1, 9])
+def test_make_pdf_with_telescope_faults(tmp_path, n_targets_with_faults):
+    """The events table gains 'Tracking lost' and 'Pointing drift'; page 2 lists up to six episodes."""
+    if rep.telescope_faults is None:
+        pytest.skip('utils.telescope_faults is not importable here')
+    faults = {}
+    for k in range(n_targets_with_faults):
+        args = _fault_night(tmp_path / str(k), n_stop=5)
+        faults.update({'T%d' % k: r for r in rep.night_faults(args).values() if r['episodes']})
+        for e in faults['T%d' % k]['episodes']:
+            e['target'] = 'T%d' % k
+    assert len(rep.fault_lines(faults)) == min(n_targets_with_faults, 7)
+    datdir = str(tmp_path / 'report')
+    os.makedirs(os.path.join(datdir, 'reports', 'temp'))
+    outname = os.path.join(datdir, 'reports', 'Io_20260924.pdf')
+    imgs, vals, jdstart, jdend, nimages, newap, ellip, targs, gaia, flags = _synthetic_inputs(1)
+    order = rep.get_chronological_order(jdstart)
+    rep.make_pdf(imgs, outname, _Args(datdir), [], vals, jdstart, jdend, nimages, newap, flags, ellip, order,
+                 targs, gaia, faults=faults)
+    assert _page_count(outname) == 3 + 3 * 1
+
+
 if __name__ == '__main__':
     sys.exit(pytest.main([__file__, '-v']))

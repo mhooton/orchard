@@ -3,39 +3,41 @@ telescope_faults.py
 ===================
 
 Frames the telescope lost, not the pipeline: for each target of a night, the light frames exposed while the mount
-had stopped tracking, and those taken after the pointing walked away from where the block began. Read-only and
-stdlib only (the job queue's digest imports it), from what the pipeline already has: the raw frames' headers, the
-processed frames' WCS, and T7's per-frame lines in the run's log.
+had stopped tracking, and those taken while the pointing had walked away from where it sat for the rest of the block.
+Read-only and stdlib only (the job queue's digest imports it), from what the pipeline already has: the raw frames'
+headers, T7's solutions (the calibrated frames, its WCS cache) and T7's per-frame lines in the night's logs.
+docs/telescope-faults.md has the measurements behind it and the archive census.
 
 Tracking stopped
-    Astra (SSO: Callisto from 2023-12, Ganymede from 2025-03, Io and Europa from 2026-01) writes into every frame
-    the share of the exposure the mount spent tracking (TRACKING) and slewing (SLEWING), and whether it was parked
-    (TELPARK). A light frame for which the mount did mostly neither was exposed on a stopped mount, and its stars
-    trail 15 arcsec per second. Its header RA, the mount's position, then runs at the sidereal rate (15.04 deg/h)
-    while ALTITUDE, AZIMUTH and AIRMASS stay fixed, and Astra's own WCS is empty (CRVAL 0). Measured: Ganymede
-    2025-07-16 TOI-4336 c from 00:35 UT, and 2025-08-25 Sp1954+1801 from 00:38 UT until the next target at 04:52.
+    Astra (SSO: Callisto from 2023-12-15, Ganymede from 2025-02-27, Io and Europa from 2026-01-28/29) writes into
+    every frame the share of the exposure the mount spent tracking (TRACKING) and slewing (SLEWING), and whether it
+    was parked (TELPARK). A light frame for which the mount did neither for IDLE_MIN of the exposure was exposed on
+    a stopped mount, and its stars trail 15 arcsec per second. Its header RA, the mount's position, then runs at the
+    sidereal rate while ALTITUDE, AZIMUTH and AIRMASS stay fixed, and Astra's own WCS is empty (CRVAL 0). Measured:
+    Ganymede 2025-07-16 TOI-4336 c 00:30-03:11 UT (570 frames) and 2025-08-25 Sp1954+1801 00:32-04:42 UT (333).
     MaxIm DL frames (Artemis, and SSO before Astra) have no TRACKING and compute ALTITUDE from the target
-    coordinates, so there only T7 can tell, by failing a frame as "Sources trailed" (astrom.pointer_wcs, PR #63).
+    coordinates, so there only T7 can tell, by failing frames as "Sources trailed" (astrom/pointer_wcs.py, v4.1.0).
 
 Pointing drift
     Each solved frame's WCS puts the block's pointing (its header target position) somewhere on the detector.
-    Guided, it stays within a few pixels for the whole block. When the pointing walks away, the target slides
-    across the field and out of it: Artemis 2024-02-11 Sp1356+4342 was 0.2' from its target at 00:58 UT, 4.1' at
-    01:50 and about 15' by 04:11, outside the 12' field. A drift is the pointing more than DRIFT_ARCMIN from where it
-    sat at the start of the block, on DRIFT_MIN_SOLVED solved frames in a row (a running median of three, so one
-    wrong solution is not a drift); the unsolved frames among them count with them. The WCS of each frame comes from
-    its processed frame (T7's solution for that run), else the raw header (T7 copies its solutions there, and Astra
-    writes its own), else T7's log line (CRPIX, CRVAL) with the matrix of another frame of the block. A meridian flip
-    turns the field and moves the pointing on the detector at once: it starts a new reference, never a drift.
+    Guided, it stays within a few pixels for the whole block. A drift is the pointing more than DRIFT_ARCMIN from
+    home, where it sat longest, on DRIFT_MIN_SOLVED solved frames in a row (a running median of three, so one wrong
+    solution is not a drift); the unsolved frames among them count with them. Artemis 2024-02-11 Sp1356+4342 jumped
+    4.3' at 01:34 UT and nothing solved after 01:49. Solutions turned or scaled unlike the rest of the block are
+    wrong ones and left out; each side of a meridian flip has its own home; an episode over within SETTLE_MINUTES of
+    the block's start is the telescope settling on the field.
 
-Everything is per target-night: night() reads one night, describe() and digest_text() put its episodes into words
-for the night report (T11) and the morning digest.
+night() reads one night; describe(), flags() and digest_text() put its episodes into words for the night report
+(T11) and the morning digest, and write_summary() leaves them where the digest reads them.
 """
+import csv
 import datetime as dt
 import glob
+import json
 import math
 import os
 import re
+from collections import Counter
 
 from utils import promote_policy
 
@@ -44,13 +46,16 @@ RAW_EXTENSIONS = ('.fits', '.fts', '.fit')
 
 IDLE_MIN = 0.5            # share of an exposure with the mount neither tracking nor slewing: a stopped mount
 TRAIL_MIN_FRAMES = 3      # T7 'Sources trailed' frames in a row that make an episode (one can be a bright star)
-DRIFT_ARCMIN = 1.0        # pointing this far from where the block began: a drift (guided, it stays within seconds)
+DRIFT_ARCMIN = 1.0        # pointing this far from home: a drift (guided, it stays within seconds of arc)
 DRIFT_MIN_SOLVED = 3      # solved frames in a row beyond DRIFT_ARCMIN that make a drift
-REF_SOLVED = 5            # the block's first solved frames whose median position is where it began
+REF_RADIUS_ARCMIN = 0.5   # the block's home: where the most solved frames sat within this of each other
+SETTLE_MINUTES = 10.0     # an episode over within this of a block's first frame is the pointing settling
+BLOCK_GAP_MINUTES = 20.0  # without the night's other frames, a gap this long between frames starts a block
 ROT_TOL = 3.0             # deg: a solution turned further from the block's orientation (or its flip) is wrong
 SCALE_TOL = 0.03          # a solution whose plate scale is this far from the block's is wrong
 JUMP_MINUTES = 5.0        # a drift that arrives between solved frames this close together is a jump
 SIDEREAL_DEG_PER_H = 15.041
+LOW_ALTITUDE = 25.0       # deg: a stop this low may be the mount's altitude limit; the report says the altitude
 
 TRAILED = 'Sources trailed'
 CRPIX = re.compile(r'CRPIX=\(([-\d.eE+]+),([-\d.eE+]+)\)')
@@ -313,8 +318,9 @@ class Frame(object):
         self.tracking, self.slewing = _num(header.get('TRACKING')), _num(header.get('SLEWING'))
         self.parked = bool(_num(header.get('TELPARK')))
         self.wcs = header_wcs(header)
-        self.solved = None          # the WCS used: processed frame, raw header or log line
+        self.solved = None          # the WCS used: processed frame, WCS cache, raw header or log line
         self.t7 = None              # T7's last attempt at the frame, if the log has it
+        self.block = None           # which run of one OBJECT in the night's light frames (night() sets it)
 
     @property
     def idle(self):
@@ -363,6 +369,42 @@ def processed_frames(output_night_dirs):
                            glob.glob(os.path.join(d, '*', '*', 'proc*.fits.fz'))):
             if os.path.basename(os.path.dirname(path)).isdigit():
                 out[frame_key(path)] = path
+    return out
+
+
+def cache_path(basedir, telescope, night_):
+    """T7's WCS cache table of a night (astrom/wcs_cache.py; docs/wcs-cache.md)."""
+    return os.path.join(basedir, 'PipelineOutput', 'wcs_cache', telescope, '{}.ecsv'.format(night_))
+
+
+def wcs_cache(path):
+    """{frame key: WCS} from a night's WCS cache table, read without astropy: an ECSV table (space-separated, quoted
+    with "), one row per raw frame T7 solved, holding the solution's header cards as 80-character card images in the
+    calibrated frame's pixels. {} if the table is missing or unreadable."""
+    out = {}
+    try:
+        with open(path, newline='') as f:
+            rows = csv.reader((line for line in f if not line.startswith('#')), delimiter=' ', quotechar='"')
+            head = next(rows, None)
+            if not head or 'raw' not in head or 'cards' not in head:
+                return out
+            col = {name: i for i, name in enumerate(head)}
+            for row in rows:
+                if len(row) != len(head):
+                    continue
+                cards, hdr = row[col['cards']], {}
+                for i in range(0, len(cards), CARD):
+                    card = cards[i:i + CARD]
+                    if card[8:10] == '= ':
+                        hdr.setdefault(card[:8].rstrip(), _value(card[10:]))
+                for n in ('naxis1', 'naxis2'):
+                    if n in col:
+                        hdr[n.upper()] = _num(row[col[n]])
+                wcs = header_wcs(hdr)
+                if wcs is not None:
+                    out[frame_key(row[col['raw']])] = wcs
+    except (OSError, csv.Error, UnicodeDecodeError):
+        return {}
     return out
 
 
@@ -427,6 +469,24 @@ def blocks(frames):
     return out
 
 
+def target_blocks(frames):
+    """One target's frames (in time) split into its blocks: where another target's frames came between (Frame.block,
+    which night() sets), or, without the night's other frames, at a gap of BLOCK_GAP_MINUTES."""
+    out = []
+    for f in frames:
+        if out:
+            prev = out[-1][-1]
+            if f.block is not None and prev.block is not None:
+                same = f.block == prev.block
+            else:
+                same = not (f.time and prev.time and f.time - prev.time > dt.timedelta(minutes=BLOCK_GAP_MINUTES))
+            if same:
+                out[-1].append(f)
+                continue
+        out.append([f])
+    return out
+
+
 def _runs(flags):
     """[(i0, i1)] inclusive index ranges where flags is true."""
     out, start = [], None
@@ -460,6 +520,9 @@ def _tracking_detail(run):
     if len(airmass) >= 2:
         detail['airmass'] = round(_median(airmass), 4)
         detail['airmass_span'] = round(max(airmass) - min(airmass), 6)
+    alt = [f.alt for f in run if f.alt is not None]
+    if alt:
+        detail['altitude'] = round(_median(alt), 1)
     failed = [f for f in run if f.t7 and f.t7['state'] == 'FAILED']
     if any(f.t7 for f in run):
         detail['t7_failed'] = len(failed)
@@ -491,10 +554,12 @@ def _pointing(frames):
     return _median(ras) % 360.0, _median([f.dec for f in use])
 
 
-def solve_frames(frames, processed=None, t7=None):
-    """Set each frame's .solved: the processed frame's WCS (read from `processed`, {key: path}), else the raw
-    header's, else T7's log line (CRPIX, CRVAL) with the matrix of the nearest frame that has one."""
-    processed = processed or {}
+def solve_frames(frames, processed=None, cached=None):
+    """Set each frame's .solved, the first WCS of: its processed frame (`processed`, {key: path}: T7's solution
+    for the run), T7's WCS cache (`cached`, {key: WCS}), the raw header (Astra's on-site solution, or orchard's
+    from before v4.1.1), T7's log line (CRPIX, CRVAL) with the matrix of the nearest frame that has one. A
+    frame the mount was stopped for gets none: its pointing means nothing."""
+    processed, cached = processed or {}, cached or {}
     matrix = None
     pending = []
     for f in frames:
@@ -508,7 +573,7 @@ def solve_frames(frames, processed=None, t7=None):
             except (OSError, ValueError):
                 f.solved = None
         if f.solved is None:
-            f.solved = f.wcs
+            f.solved = cached.get(f.key) or f.wcs
         if f.solved is not None:
             matrix = f.solved
             for g in pending:
@@ -541,11 +606,24 @@ def _orientation(rotations):
     return (math.degrees(math.atan2(s, c)) / 2.0) % 180.0
 
 
+def _home(points, scale):
+    """Where the pointing sat longest: the median of the points in the densest REF_RADIUS_ARCMIN cell and its
+    neighbours (the earliest such cell on a tie). Pixels, from (x, y) points and the plate scale in arcsec/px."""
+    r = REF_RADIUS_ARCMIN * 60.0 / scale
+    cell = [(int(math.floor(x / r)), int(math.floor(y / r))) for x, y in points]
+    counts = Counter(cell)
+    best = max(dict.fromkeys(cell), key=lambda c: sum(counts.get((c[0] + a, c[1] + b), 0)
+                                                      for a in (-1, 0, 1) for b in (-1, 0, 1)))
+    near = [p for p, c in zip(points, cell) if abs(c[0] - best[0]) <= 1 and abs(c[1] - best[1]) <= 1]
+    return _median([p[0] for p in near]), _median([p[1] for p in near])
+
+
 def drift_track(frames, point):
-    """[(frame index, arcmin from the start, x, y, shape)]: where `point` falls on each of the block's solved
-    frames, measured from where it fell on the first REF_SOLVED. Solutions turned more than ROT_TOL from the block's
-    orientation, or with a plate scale SCALE_TOL off the block's, are wrong (old twirl solutions, accepted before the
-    plate-scale check, land at random angles) and left out. Each side of a meridian flip has its own reference."""
+    """[(frame index, arcmin from home, x, y, shape)]: where `point` falls on each of the block's solved frames,
+    measured from where it sat longest (_home), so frames taken while the telescope still settled on the field do not
+    make the rest of the block look displaced. Solutions turned more than ROT_TOL from the block's orientation, or
+    with a plate scale SCALE_TOL off the block's, are wrong (old twirl solutions, accepted before the plate-scale
+    check, land at random angles) and left out. Each side of a meridian flip has its own home."""
     pts = []
     for i, f in enumerate(frames):
         if f.solved is None:
@@ -558,21 +636,22 @@ def drift_track(frames, point):
     axis = _orientation([p[4] for p in pts])
     scale = _median([p[3] for p in pts])
     good = [p for p in pts if _turn(p[4], axis, 180.0) <= ROT_TOL and abs(p[3] / scale - 1.0) <= SCALE_TOL]
-    out, ref, side = [], None, None
-    for k, p in enumerate(good):
-        flipped = _turn(p[4], axis) > 90.0
-        if ref is None or flipped != side:
-            side = flipped
-            seg = [q for q in good[k:k + REF_SOLVED] if (_turn(q[4], axis) > 90.0) == flipped]
-            ref = (_median([q[1] for q in seg]), _median([q[2] for q in seg]))
-        out.append((p[0], math.hypot(p[1] - ref[0], p[2] - ref[1]) * p[3] / 60.0, p[1], p[2], p[5]))
+    sides = {}
+    for p in good:
+        sides.setdefault(_turn(p[4], axis) > 90.0, []).append((p[1], p[2]))
+    home = {side: _home(xy, scale) for side, xy in sides.items()}
+    out = []
+    for p in good:
+        hx, hy = home[_turn(p[4], axis) > 90.0]
+        out.append((p[0], math.hypot(p[1] - hx, p[2] - hy) * p[3] / 60.0, p[1], p[2], p[5]))
     return out
 
 
 def drift_episodes(target, frames, index):
-    """Where the block's pointing sat more than DRIFT_ARCMIN from its place at the start, on DRIFT_MIN_SOLVED solved
+    """Where the block's pointing sat more than DRIFT_ARCMIN from home (drift_track), on DRIFT_MIN_SOLVED solved
     frames in a row (in a running median of three); the unsolved frames among them count with them, and an episode
-    with no solved frame after it runs to the end of the block. Returns (episodes, solved frames measured)."""
+    with no solved frame after it runs to the end of the block. One over within SETTLE_MINUTES of the block's first
+    frame is the telescope settling on the field, not a fault. Returns (episodes, solved frames measured)."""
     point = _pointing(frames)
     if point is None:
         return [], 0
@@ -591,6 +670,9 @@ def drift_episodes(target, frames, index):
         last = track[k1][0]
         after = track[k1 + 1][0] if k1 + 1 < len(track) else None
         i1 = len(frames) - 1 if after is None else after - 1
+        if frames[0].time and frames[i1].time and \
+                frames[i1].time - frames[0].time <= dt.timedelta(minutes=SETTLE_MINUTES):
+            continue
         peak = max(range(k0, k1 + 1), key=lambda k: drift[k])
         detail = {'max_arcmin': round(drift[peak], 1), 'max_at': _iso(frames[track[peak][0]]),
                   'solved': k1 - k0 + 1, 'last_solved_at': _iso(frames[last]),
@@ -615,16 +697,18 @@ def _iso(frame):
     return frame.time.isoformat() if frame.time else None
 
 
-def target_faults(target, frames, processed=None, t7=None):
-    """{'frames', 'tracking_known', 'solved', 'episodes'} for one target's light frames of a night."""
+def target_faults(target, frames, processed=None, t7=None, cached=None):
+    """{'frames', 'tracking_known', 'solved', 'episodes'} for one target's light frames of a night, in time order:
+    how many frames, whether their headers say if the mount tracked, on how many frames the pointing was measured,
+    and the episodes (tracking, trailed, drift)."""
     t7 = t7 or {}
     for f in frames:
         f.t7 = t7.get(f.key)
     index = {f.key: i for i, f in enumerate(frames)}
-    episodes = tracking_episodes(target, frames, index)
-    solved = 0
-    for name, block in blocks(frames):
-        solve_frames(block, processed, t7)
+    episodes, solved = [], 0
+    for block in target_blocks(frames):
+        episodes += tracking_episodes(target, block, index)
+        solve_frames(block, processed, cached)
         found, n = drift_episodes(target, block, index)
         episodes += found
         solved += n
@@ -633,21 +717,64 @@ def target_faults(target, frames, processed=None, t7=None):
             'solved': solved, 'episodes': episodes}
 
 
-def night(raw_dir, log_paths=(), processed=None, frames=None):
+def night(raw_dir, log_paths=(), processed=None, cache=None, frames=None):
     """The faults of one telescope-night: {target (OBJECT): target_faults()}. raw_dir is the night's raw frame
-    directory; log_paths the night's pipeline logs, oldest first; processed {key: path} (processed_frames())."""
+    directory; log_paths the night's pipeline logs, oldest first; processed {key: path} (processed_frames());
+    cache the night's WCS cache table (cache_path()); frames the night's raw_frames(), if already read."""
     frames = raw_frames(raw_dir) if frames is None else frames
     t7 = t7_outcomes(log_paths) if log_paths else {}
+    cached = wcs_cache(cache) if cache else {}
     by_target = {}
-    for f in frames:
-        if f.light:
-            by_target.setdefault(f.object, []).append(f)
-    return {target: target_faults(target, fs, processed, t7) for target, fs in by_target.items()}
+    for b, (target, run) in enumerate(blocks(frames)):
+        for f in run:
+            f.block = b
+        by_target.setdefault(target, []).extend(run)
+    return {target: target_faults(target, fs, processed, t7, cached) for target, fs in by_target.items()}
 
 
 def episodes(result):
     """Every episode of a night() result, in time order."""
     return sorted((e for r in result.values() for e in r['episodes']), key=lambda e: (e['start'] or '', e['kind']))
+
+
+# ---------------------------------------------------------------------------
+# The night's record, for the morning digest
+# ---------------------------------------------------------------------------
+
+SUMMARY_VERSION = 1
+
+
+def summary_path(datdir, night_):
+    """Where T11 leaves a night's faults: <PipelineOutput>/v3/<TEL>/reports/telescope_faults/<night>.json. The name
+    must not hold '<TEL>_<night>': T12 moves the first file under reports/ matching that, which must be the PDF."""
+    return os.path.join(datdir, 'reports', 'telescope_faults', '{}.json'.format(night_))
+
+
+def write_summary(path, result, telescope, night_, orchard=''):
+    """Write a night() result as JSON (through a temporary file, so a reader never sees half of one)."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tracking, drift = flags(result)
+    doc = {'version': SUMMARY_VERSION, 'telescope': telescope, 'night': night_, 'orchard': orchard,
+           'written': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+           'tracking_lost': tracking, 'pointing_drift': drift, 'targets': result}
+    tmp = '{}.tmp{}'.format(path, os.getpid())
+    try:
+        with open(tmp, 'w') as f:
+            json.dump(doc, f, indent=1, sort_keys=True)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def read_summary(path):
+    """The record write_summary() left, or None if there is none (or it cannot be read)."""
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) and isinstance(doc.get('targets'), dict) else None
 
 
 # ---------------------------------------------------------------------------
@@ -675,14 +802,19 @@ def describe(e, frames_total=None):
             why.append('header RA ran {:.1f} deg/h'.format(d['ra_rate']) +
                        (' at constant airmass {:.3f}'.format(d['airmass']) if d.get('airmass_span', 1) < 1e-3
                         else ''))
+        if d.get('altitude') is not None and d['altitude'] < LOW_ALTITUDE:
+            why.append('at altitude {:.0f} deg'.format(d['altitude']))
         return '{}: tracking stopped {}, {}{}'.format(e['target'] or '?', _span(e), frames,
                                                      '; ' + ', '.join(why) if why else '')
     if e['kind'] == 'trailed':
         return '{}: stars trailed (T7) {}, {}'.format(e['target'] or '?', _span(e), frames)
-    how = "jumped {:.1f}' at {} UT".format(d['jump_arcmin'], _hm(e['start'])) if d.get('jump_arcmin') else \
-        'drifted from {} UT'.format(_hm(e['start']))
-    text = "{}: pointing {}, {:.1f}' from where the block began by {} UT; {}, {}".format(
-        e['target'] or '?', how, d['max_arcmin'], _hm(d.get('max_at')), _span(e), frames)
+    if d.get('jump_arcmin'):
+        how = "jumped {:.1f}' at {} UT".format(d['jump_arcmin'], _hm(e['start']))
+        if d['max_arcmin'] >= d['jump_arcmin'] + DRIFT_ARCMIN:
+            how += ", up to {:.1f}' away by {} UT".format(d['max_arcmin'], _hm(d.get('max_at')))
+    else:
+        how = "drifted, up to {:.1f}' away by {} UT".format(d['max_arcmin'], _hm(d.get('max_at')))
+    text = '{}: pointing {}; {}, {}'.format(e['target'] or '?', how, _span(e), frames)
     if d.get('off_field_at'):
         text += '; target off the field from {} UT'.format(_hm(d['off_field_at']))
     if d.get('unsolved_after'):
@@ -698,7 +830,7 @@ def flags(result):
     tracking = 'Y' if any(e['kind'] in ('tracking', 'trailed') for e in eps) else \
         'N' if any(r['tracking_known'] for r in result.values()) else 'unknown'
     drift = 'Y' if any(e['kind'] == 'drift' for e in eps) else \
-        'N' if any(r['solved'] for r in result.values()) else 'unknown'
+        'N' if any(r['solved'] >= DRIFT_MIN_SOLVED for r in result.values()) else 'unknown'
     return tracking, drift
 
 
@@ -707,8 +839,13 @@ def digest_text(result, limit=2):
     eps = episodes(result)
     if not eps:
         return ''
-    words = {'tracking': 'tracking stopped', 'trailed': 'stars trailed', 'drift': 'pointing drifted'}
-    parts = ['{} on {} {} ({} frame{})'.format(words[e['kind']], e['target'] or '?', _span(e), e['n'],
+    def words(e):
+        if e['kind'] != 'drift':
+            return {'tracking': 'tracking stopped', 'trailed': 'stars trailed'}[e['kind']]
+        d = e['detail']
+        return "pointing jumped {:.1f}'".format(d['jump_arcmin']) if d.get('jump_arcmin') else \
+            "pointing drifted {:.1f}'".format(d['max_arcmin'])
+    parts = ['{} on {} {} ({} frame{})'.format(words(e), e['target'] or '?', _span(e), e['n'],
                                                '' if e['n'] == 1 else 's') for e in eps[:limit]]
     if len(eps) > limit:
         parts.append('{} more'.format(len(eps) - limit))

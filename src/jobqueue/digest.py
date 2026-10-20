@@ -2,7 +2,7 @@
 
 Read-only, but for one cache: everything comes from the queue database (the watcher's per-night rows, jobs and
 their failure signatures, look-back rows, whether ESO answered) and the production tree (raw night directories,
-SPOCK's night blocks, light curves). The PWV outcome of each finished SSO pipeline job is read from its log once
+SPOCK's night blocks, light curves, and the night report's record of the frames the telescope lost). The PWV outcome of each finished SSO pipeline job is read from its log once
 and kept in the job_pwv table (pwvlog), unless the Context is told not to record. Nothing here sends anything;
 notify.py delivers.
 
@@ -126,6 +126,24 @@ class Context:
             return log
         return self._get('pwv', load)
 
+    def faults(self, tel, night):
+        """What T11 found the telescope lost this night (utils/telescope_faults.py: frames exposed with the mount
+        stopped, pointing that walked off), from the record it leaves in v3/<TEL>/reports/telescope_faults/; None
+        if there is none. The record is read, never computed here: the raw headers of a SPIRIT night run to 20,000
+        files."""
+        def load():
+            try:
+                from utils import telescope_faults
+            except ImportError:
+                return None
+            doc = telescope_faults.read_summary(telescope_faults.summary_path(
+                os.path.join(self.basedir, 'PipelineOutput', 'v3', tel), night))
+            if doc is None:
+                return None
+            return {'text': telescope_faults.digest_text(doc['targets']),
+                    'episodes': telescope_faults.episodes(doc['targets'])}
+        return self._get(('faults', tel, night), load)
+
     def chilean(self, tel, night):
         p = self.plan(tel, night) or {}
         total = p.get('survey', 0.0) + p.get('chilean', 0.0)
@@ -233,6 +251,12 @@ def night_status(ctx, tel, night):
     else:
         state = 'unknown'
         parts.append('state unknown (watcher: {})'.format(w.get('state') or 'not seen'))
+    # frames the telescope lost, as the night report has them: what made the night's data poor, not the pipeline
+    faults = ctx.faults(tel, night) if names and state not in ('waiting', 'chilean', 'no-data') else None
+    if faults:
+        s['faults'] = faults['episodes']
+        if faults['text']:
+            parts.append(faults['text'])
     s['state'], s['text'] = state, ' · '.join(parts)
     return s
 
