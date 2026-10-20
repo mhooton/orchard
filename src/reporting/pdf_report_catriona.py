@@ -1226,12 +1226,12 @@ def make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap
     if lines:
         ax = page.add_subplot(gs[1, :])
         ax.axis('off')
-        n = len(lines) + 1
-        ax.text(0.0, 1 - 0.5 / n, 'Frames lost to the telescope, not the pipeline:', size=9, fontweight='bold',
+        h = height_ratios[1]                # the lines sit 0.17 height-ratio units apart, from the top of the row
+        ax.text(0.0, 1 - 0.12 / h, 'Frames lost to the telescope, not the pipeline:', size=9, fontweight='bold',
                 ha='left', va='center', transform=ax.transAxes)
         for k, line in enumerate(lines):
-            ax.text(0.01, 1 - (k + 1.5) / n, line, size=8, color='firebrick', ha='left', va='center',
-                    transform=ax.transAxes)
+            ax.text(0.01, 1 - (0.12 + 0.17 * (k + 1)) / h, line, size=8, color='firebrick', ha='left',
+                    va='center', transform=ax.transAxes)
         row = 2
 
     ax = page.add_subplot(gs[row, :])
