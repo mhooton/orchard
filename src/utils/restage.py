@@ -36,6 +36,7 @@ queue (jobqueue.resources.parse_promote_argv), as a promotion does.
 import argparse
 import datetime as dt
 import errno
+import fnmatch
 import getpass
 import hashlib
 import json
@@ -240,7 +241,7 @@ def check(rec):
         else:
             out['changed'].append(e['rel'])
         was = [e['src_ino'], e.get('src_size', e['size']), e.get('src_mtime_ns', e['mtime_ns'])]
-        if e['how'] in ('link', 'copy', 'rewritten') and ident(e['src']) != was:
+        if e['how'] in ('link', 'copy', 'rewritten') and ident(e['src']) != was:      # not 'made' or 'in-place'
             out['src_changed'].append(e['rel'])
     red = output_dir(rec['base'], 'v3', rec['telescope'], rec['night'], 'reduction')
     for e in rec.get('reduction', []):
@@ -333,6 +334,44 @@ def place_list(src, dst, src_dir, dst_dir):
     return 'rewritten' if out != lines else 'copy'
 
 
+def zlp_catalogue(root, filt):
+    """The stack catalogue ZLP_pipeline.sh's choose_stack_catalogue would give T9 for a filter in a target directory, or
+    None: the one .active_stack_catalogue_<filter> names, else (with .expected_stack_catalogue) a Gaia-named one that
+    is not the expected one, else the expected one, else (without either record) any Gaia-named one."""
+    active = os.path.join(root, '.active_stack_catalogue_' + filt)
+    if os.path.isfile(active):
+        name = open(active).read().strip()
+        if name and os.path.isfile(os.path.join(root, name)):
+            return name
+    expected = None
+    if os.path.isfile(os.path.join(root, '.expected_stack_catalogue')):
+        expected = open(os.path.join(root, '.expected_stack_catalogue')).read().strip() or None
+    for n in sorted(os.listdir(root)):
+        if n[:1].isdigit() and fnmatch.fnmatchcase(n, '[0-9]*_stack_catalogue_[!p]*.fits') and n != expected:
+            return n
+    return expected
+
+
+def catalogue_records(root, night, target):
+    """For a night reduced before T8 recorded the catalogue it validated (target-named catalogues, before 2026-10):
+    {filter: name} of the .active_stack_catalogue_<filter> records T9 needs, naming the only stack catalogue of that
+    filter in the directory, the one the night's products were made with. Raises when there is more than one."""
+    out = {}
+    run = os.path.join(root, RUNNAME)
+    filters = sorted(n[:-len('_processed.dat')] for n in (os.listdir(run) if os.path.isdir(run) else [])
+                     if n.endswith('_processed.dat'))
+    for filt in filters:
+        if zlp_catalogue(root, filt):
+            continue
+        cands = sorted(n for n in os.listdir(root) if n.endswith('_stack_catalogue_{}.fits'.format(filt)) and
+                       '_stack_catalogue_pm_' not in n)
+        if len(cands) != 1:
+            raise RestageError('T9 would find no stack catalogue for {} {} and there is {} to choose from: {}'.format(
+                target, filt, 'none' if not cands else 'more than one', ', '.join(cands) or '-'))
+        out[filt] = cands[0]
+    return out
+
+
 def entry(rel, how, src, dst, edited=False):
     d, s = os.lstat(dst), os.lstat(src)
     return {'rel': rel, 'how': how, 'src': src, 'size': d.st_size, 'mtime_ns': d.st_mtime_ns, 'ino': d.st_ino,
@@ -400,13 +439,15 @@ class Restager(object):
         aside = []
         if source == 'v3':
             aside = [rel for rel in walk_files(v3) if stages.is_output(rel, first, night=night, target=target)]
+        records = catalogue_records(src_dir, night, target) if first <= 9 else {}
         links = sum(1 for _, ln in files if ln)
         copied = sum(os.path.getsize(os.path.join(src_dir, rel)) for rel, ln in files if not ln) if source == 'v2' else 0
         summary = '{} for a rerun from T{}: {} inputs ({} as hard links{}), reduction {} ({} placed){}'.format(
             'restaged from v2' if source == 'v2' else 'restaged in place in v3', first, len(files), links,
             ', {} copied: {:.2f} GB'.format(len(files) - links, copied / 1e9) if copied else '',
             ', '.join(sorted(n for n, _, _ in red)), sum(1 for _, _, how in red if how == 'place'),
-            '; {} earlier outputs set aside'.format(len(aside)) if aside else '')
+            '; {} earlier outputs set aside'.format(len(aside)) if aside else '') + ''.join(
+            '; T9 told to use {} for {}'.format(name, filt) for filt, name in sorted(records.items()))
         if not self.apply:
             return 'would be ' + summary
         stamp = self.now().strftime('%Y%m%dT%H%M%SZ')
@@ -441,6 +482,14 @@ class Restager(object):
                 rec['files'].append(entry(rel, how, src, dst, edited=not ln))
                 if len(rec['files']) % 500 == 0:
                     save_record(rec)                                          # a long copy can be resumed
+        for filt, name in sorted(records.items()):
+            rel = '.active_stack_catalogue_' + filt
+            if rel in {e['rel'] for e in rec['files']}:
+                continue
+            with open(os.path.join(v3, rel), 'w') as f:                      # what T8 writes since 2026-10-17
+                f.write(name + '\n')
+            path = os.path.join(v3, rel)
+            rec['files'].append(entry(rel, 'made', path, path))
         rec['reduction'] = []
         for name, ln, how in red:
             dst = os.path.join(red_v3, name)

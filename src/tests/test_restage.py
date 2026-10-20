@@ -394,11 +394,26 @@ def test_a_restage_from_t9_copies_the_frames_and_points_the_frame_lists_at_them(
     assert not [r for r in got if r.endswith(('.phot', '.ell', '.cat', '.png', '_diff.fits'))]
     lines = open(os.path.join(d, '1', '{}_processed.dat'.format(FILTER))).read().split()
     assert lines and all(x.startswith(os.path.join(d, '1') + os.sep) and os.path.exists(x) for x in lines)
+    # the toy's catalogue is target-named, as before 2026-10: T9 is told which one the night's products used
+    assert open(os.path.join(d, '.active_stack_catalogue_' + FILTER)).read().strip() == cat
     rec = restage.load_record(env.base, TEL, NIGHT, A)
     how = {e['rel']: (e['how'], e['edited']) for e in rec['files']}
+    assert how['.active_stack_catalogue_' + FILTER] == ('made', False)
     assert all(how[r] == ('copy', True) for r in frames(d))
     assert how['1/{}_processed.dat'.format(FILTER)] == ('rewritten', False)
     assert snapshot(env.v2()) == v2_before
+
+
+def test_a_restage_from_t9_will_not_guess_between_stack_catalogues(env, capsys):
+    promoted(env)
+    other = env.v2('output', NIGHT, A, 'SP0451+0305_OLD_stack_catalogue_{}.fits'.format(FILTER))
+    open(other, 'w').close()
+    assert stage(env, '--apply', first='9') == 1
+    assert 'more than one' in capsys.readouterr().out and not os.path.exists(env.v3('output', NIGHT, A))
+    # a Gaia-named one the pipeline's own rule picks needs no record
+    open(env.v2('output', NIGHT, A, '4123_Europa_andor_{}_stack_catalogue_{}.fits'.format(NIGHT, FILTER)), 'w').close()
+    assert stage(env, '--apply', first='9') == 0
+    assert not os.path.exists(env.v3('output', NIGHT, A, '.active_stack_catalogue_' + FILTER))
 
 
 def test_a_rerun_from_t9_replaces_v2s_frames_and_their_files_and_nothing_else(env):
