@@ -101,6 +101,28 @@ import. Without it, a forked worker whose OpenBLAS starts its thread pool can de
 the 60 s per-frame alarm cannot interrupt, so the job sat until the queue's timeout. numpy and scipy each load their
 own OpenBLAS, and both read these variables.
 
+## Dead and hung workers
+
+The pool is `astrom/frame_pool.py`, not `multiprocessing.Pool`. `Pool.map` lost a dead worker's chunk and waited for
+it for ever: on 2026-10-20/21 workers killed by OpenBLAS's SIGINT left T7 waiting until the queue's job timeout, 5-15 h
+later (job 1217: 55 dead workers). The parent now hands each worker one frame at a time, so it knows which frame a
+worker had.
+
+- A worker that exits while it has a frame (a signal, an uncaught KeyboardInterrupt, the OOM killer), or gives no
+  result within the per-frame timeout plus `HANG_GRACE` (240 s, so 300 s in production; it is then killed), costs that
+  frame one more attempt, in a new worker. The other workers' frames carry on.
+- A frame lost on both attempts fails, with the reason in its line:
+  `FAILED - Sources: ?→? Gaia: ?→? Matches: ? Error: Lost with its worker process: killed by SIGKILL (attempt 2 of 2)`.
+  It gets no WCS cache row and no second pass, and `promote_policy` counts it as the pipeline's loss.
+- Each loss is logged (`T7 pool: worker 1234 killed by SIGINT on proc….fits; trying it again in a new worker (attempt 2
+  of 2)`), and the run ends with a total. A run that loses no worker prints and writes exactly what it did before.
+- More than 10 frames lost on both attempts (`LOSS_LIMIT`) stops T7 with `WorkersLost`, and ZLP's errexit fails the
+  job: that many is not a few bad frames.
+- Workers flush their log lines after each frame, so a worker that dies takes none with it. If T7 itself is killed,
+  its workers exit when they next look for work.
+
+Serial runs (`--nproc=1`) are unchanged.
+
 ## Measured
 
 See the PR that introduced this (2026-10-19) for the before/after on 24 nights; the scratch work is in
