@@ -262,6 +262,44 @@ def test_on_a_night_of_two_targets_the_other_and_the_pdf_stay(env):
     assert any('.run' in n for n in os.listdir(env.v2('reports')))
 
 
+def rerun_t11(env, targets):
+    """What ZLP_pipeline.sh --from_T11 --no_T12 writes: its log and the night's PDF, nothing in the target
+    directories. Returns the start."""
+    time.sleep(2.2)
+    start = now()
+    time.sleep(1.1)
+    env.toy.log('v3', TEL, NIGHT, start, list(targets), specified=True, stages=[11])
+    with open(env.toy.pdf('v3', TEL, NIGHT), 'a') as f:
+        f.write('rerun from T11\n')
+    return start
+
+
+def test_a_rerun_from_t11_of_every_target_takes_the_plain_pdf_name(env):
+    """The science run of a rerun from T11 is the night's original run, which discovered its targets; the PDF is the
+    rerun's. 2026-10-21: the reruns for the report's target-name fix (#74) were promoted, but the plain name kept the
+    old PDF because the coverage was judged on the original run."""
+    promoted(env, targets=(A, B))
+    pdf = env.v2('reports', '{}_{}.pdf'.format(TEL, NIGHT))
+    assert stage(env, '--apply', first='11') == 0
+    rerun_t11(env, (A, B))
+    assert promote_night(env) == 0
+    assert {v['state'] for v in verdicts(env)} == {'promoted'}
+    assert 'rerun from T11' in open(pdf).read()
+    (old_pdf,) = [os.path.join(dp, n) for dp, _, ns in os.walk(env.sup(NIGHT, 'reports')) for n in ns]
+    assert 'rerun from T11' not in open(old_pdf).read()                 # the old one is kept
+
+
+def test_a_rerun_from_t11_of_some_targets_leaves_the_plain_pdf(env):
+    promoted(env, targets=(A, B))
+    pdf = env.v2('reports', '{}_{}.pdf'.format(TEL, NIGHT))
+    pdf_text = open(pdf).read()
+    assert stage(env, '--apply', '--target', A, first='11') == 0
+    rerun_t11(env, (A,))
+    assert promote_night(env) == 0
+    assert open(pdf).read() == pdf_text                               # the rerun's PDF lacks B: a .run copy only
+    assert any('.run' in n and n.endswith('.pdf') for n in os.listdir(env.v2('reports')))
+
+
 def test_a_linked_input_changed_by_the_rerun_holds_for_a_person(env):
     promoted(env)
     assert stage(env, '--apply') == 0

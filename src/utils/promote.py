@@ -910,11 +910,11 @@ class Promoter(object):
         orphans = sorted(rel for rel in have - names
                          if stage_map.is_output(rel, rec['from_stage'], night=night, target=target))
         records = self.plan_records(tel, night, run)
-        covered = self.covers_night(tel, night, run)
         for r in records:
             if r['kind'] == 'pdf' and r.get('src'):
-                # the night's report shows the rerun's curves: it takes the plain name when it covers every target
-                r['replace_plain'] = covered
+                # the night's report shows the rerun's curves: it takes the plain name when the run that wrote it
+                # covers every target
+                r['replace_plain'] = r['covers']
                 r['plain_aside'] = os.path.join(self.tree.po, SUPERSEDED, tel, night, 'reports', stamp)
         return {'mode': 'overlay', 'stamp': stamp, 'candidate': v['candidate'], 'dest': dest,
                 'cand_fp': v['cand_fp'], 'cand_ino': c['ino'], 'inc_fp': v['inc_fp'], 'inc_ino': i['ino'],
@@ -1022,9 +1022,12 @@ class Promoter(object):
         for r in reversed(runs):
             end = epoch(r['end']) + 60 if r.get('end') else None
             if epoch(r['start']) - TOLERANCE <= t and (end is None or t <= end):
+                # covers: whether the run that wrote the PDF was given every target of the night with products. That
+                # is not always the science run: a rerun from T11 makes no light curves and only writes the PDF
                 out.append({'kind': 'pdf', 'src': pdf,
                             'dst': os.path.join(reports, '{}_{}.{}.pdf'.format(tel, night, run_stamp(r))),
-                            'plain': os.path.join(reports, '{}_{}.pdf'.format(tel, night))})
+                            'plain': os.path.join(reports, '{}_{}.pdf'.format(tel, night)),
+                            'covers': self.covers_night(tel, night, r)})
                 return out
         out.append({'kind': 'pdf', 'missing': '{} was written by another run'.format(os.path.basename(pdf))})
         return out
