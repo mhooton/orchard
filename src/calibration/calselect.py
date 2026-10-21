@@ -20,7 +20,8 @@ used for all of them if it is within COVERING_SLACK_DAYS of each exposure's own 
 Nothing is combined across nights.  When nothing matches, the night fails (Selection.errors: no bias, no dark at
 all, no flat for any science filter); a partial gap is flagged (Selection.flags: a filter without flats, whose
 frames T6 will not reduce; a SPIRIT exposure without darks, which T6 corrects with the highest-exposure master
-scaled; darks outside the temperature tolerance on an ANDOR night).  Every choice is logged with |delta days|
+scaled; darks outside the temperature tolerance on an ANDOR night; a night more than FAR_DAYS away).  Every
+choice is logged with |delta days|
 and written to <reduction>/<run>_calib_selection.json, which the PDF report shows.
 """
 import csv
@@ -39,6 +40,8 @@ MIN_BIAS_DEFAULT = 5
 MIN_DARK = 3
 MIN_FLAT = 4
 COVERING_SLACK_DAYS = 3
+# a choice further away than this is used but flagged (Callisto 20250407's J flats are 208 days later)
+FAR_DAYS = 30
 DARK_TEMP_TOLERANCE = {'spirit': 2.0}
 DARK_TEMP_TOLERANCE_DEFAULT = 5.0
 # instruments whose darks may come from outside the temperature tolerance (flagged) when nothing is inside it
@@ -464,12 +467,34 @@ def select(register, telescope, night_dir, images_root, tonight_rows, science, s
     record['dark'] = chooser.darks()
     record['flat'] = chooser.flats()
     record['flags'] += chooser.flags
+    record['flags'] += far_flags(record)
     record['errors'] += chooser.errors
     record['stale_nights'] = sorted(chooser.stale)
     if chooser.stale:
         record['flags'].append('register rows of {} no longer match the files on disk (re-register them with '
                                'calregister night)'.format(', '.join(sorted(chooser.stale))))
     return record
+
+
+def far_flags(record):
+    """A flag for every chosen night more than FAR_DAYS away."""
+    out = []
+
+    def check(label, e):
+        if e and 'delta_days' in e and abs(e['delta_days']) > FAR_DAYS:
+            out.append('{} from {} ({:+d} d), more than {} days away'.format(label, e['night'], e['delta_days'],
+                                                                         FAR_DAYS))
+    check('bias', record.get('bias'))
+    d = record.get('dark') or {}
+    if 'by_exposure' in d:
+        for k, e in sorted(d['by_exposure'].items()):
+            if k != 'extra':
+                check('dark {}{}'.format(k, '' if k == 'any' else ' s'), e)
+    else:
+        check('dark', d)
+    for f, e in sorted((record.get('flat') or {}).items()):
+        check('flat ' + f, e)
+    return out
 
 
 def describe(record):

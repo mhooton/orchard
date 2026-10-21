@@ -408,6 +408,14 @@ def test_stale_rows_and_compressed_frames_are_skipped():
     assert c.bias()['night'] == '20250401' and c.stale == {'20250406'}
 
 
+def test_far_choices_are_flagged():
+    rec = {'bias': {'night': '20250405', 'delta_days': -2}, 'flat': {'J': {'night': '20251101', 'delta_days': 208}},
+           'dark': {'by_exposure': {'7': {'night': '20250201', 'delta_days': -65},
+                                    'extra': {'night': '20250201', 'exposures': [120]}}}}
+    assert cs.far_flags(rec) == ['dark 7 s from 20250201 (-65 d), more than 30 days away',
+                                 'flat J from 20251101 (+208 d), more than 30 days away']
+
+
 def test_select_records_errors_without_science_and_describe_lines(tmp_path):
     rec = cs.select(None, 'T', '20250407', str(tmp_path), [], [], [])
     assert rec['errors'] == ['no readable science frames']
