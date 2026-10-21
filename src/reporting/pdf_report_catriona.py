@@ -52,6 +52,36 @@ try:
     from utils import telescope_faults
 except Exception:
     telescope_faults = None
+try:
+    from utils import framepack
+except Exception:
+    framepack = None
+
+
+def open_frame(path):
+    """A calibrated frame, stored plain or Rice-compressed (.fz), opened with its image in HDU 0."""
+    return framepack.open_frame(path) if framepack else fits.open(path)
+
+
+def frame_header(path):
+    return framepack.getheader(path) if framepack else fits.getheader(path)
+
+
+def processed_frames(procdir):
+    """The calibrated frames in a target's 1/, plain (proc*.fits) or compressed after T11 (proc*.fits.fz), as in a
+    rerun from T10 or T11 of a packed night.  A frame stored both ways counts once, as the plain file: a rerun's
+    new frame beside an older .fz."""
+    plain = glob.glob(procdir + 'proc*.fits')
+    have = set(plain)
+    return sorted(plain + [f for f in glob.glob(procdir + 'proc*.fits.fz') if f[:-3] not in have])
+
+
+def aligned_name(tempdir, frame):
+    """The aligned copy of a frame in tempdir: procX_aligned.fits for procX.fits and procX.fits.fz alike."""
+    filename = os.path.basename(frame)
+    if filename.endswith('.fz'):
+        filename = filename[:-3]
+    return os.path.join(tempdir, filename[:-5] + '_aligned.fits')
 
 
 def version_line():
@@ -806,9 +836,10 @@ def align_image(image_args):
     image2, image1, tempdir = image_args
 
     # alignment of image2 over image1
-    im1 = fits.open(image1)[0].data
-    im2 = fits.open(image2)[0].data
-    im2head = fits.open(image2)[0].header
+    with open_frame(image1) as h1, open_frame(image2) as h2:
+        im1 = np.array(h1[0].data)
+        im2 = np.array(h2[0].data)
+        im2head = h2[0].header.copy()
 
     # Suppress the overflow warnings from phase_cross_correlation
     with warnings.catch_warnings():
@@ -825,8 +856,7 @@ def align_image(image_args):
 
     # Rest of the function
     shifted_im2 = shift(im2, result)
-    path, filename = os.path.split(image2)
-    outname = os.path.join(tempdir, filename[:-5] + '_aligned.fits')
+    outname = aligned_name(tempdir, image2)
 
     if os.path.exists(outname):
         os.remove(outname)
@@ -869,12 +899,7 @@ def align(liste, tempdir, nproc=DEFAULT_NPROC, timeout=DEFAULT_ALIGN_TIMEOUT):
         pool.join()
         raise
 
-    liste2 = []
-    for i in liste:
-        path, filename = os.path.split(i)
-        outname = os.path.join(tempdir, filename[:-5] + '_aligned.fits')
-        liste2.append(outname)
-    liste2.sort()
+    liste2 = sorted(aligned_name(tempdir, i) for i in liste)
 
     return liste2
 
@@ -901,7 +926,7 @@ def frame_jds(frames):
     jds = {}
     for frame in frames:
         try:
-            jd = fits.getheader(frame).get('JD-OBS')
+            jd = frame_header(frame).get('JD-OBS')
         except Exception:
             continue
         if jd is not None:
@@ -949,7 +974,7 @@ def build_stack(args, target_dir, name, outputs):
     outstack_save_dir = args.datdir + "/output/StackImages_nightly/" + args.date
     outfig_dx = temp_dir(args) + "/" + "DX_" + name + ".png"
     outfig_dy = temp_dir(args) + "/" + "DY_" + name + ".png"
-    liste = sorted(glob.glob(procdir + 'proc*fits'))
+    liste = processed_frames(procdir)
     if not liste:
         return None, ['unknown'] * 7, outfig_dx, outfig_dy
     try:

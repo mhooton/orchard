@@ -43,7 +43,7 @@ FROM_TASK="0"
 FORCE_PLATESOLVE="0"
 USE_EXISTING_CALIBRATIONS="0"
 SAVE_FLAT_PRODUCTS="0" # T4: also write flats/proc*, std.fts and variance.fts (never read)
-FRAME_FORMAT="int16" # after T11, store calibrated frames as int16, rice (int16 + lossless Rice, .fits.fz) or float32
+FRAME_FORMAT="rice" # after T11, store calibrated frames as rice (int16 + lossless Rice, .fits.fz), int16 or float32
 CORES_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
@@ -333,6 +333,18 @@ find_ext(){
         fi
         filename="${filename%.*}"
     done
+    # A night decompressed for this run (utils/rawpack.py) can keep a .fz frame that failed to unpack, and the last
+    # file decides above.  T1 lists one extension (and any .fz frame without a plain twin, createlists.get_liste),
+    # so take the plain frames' extension whenever there are plain frames.
+    if [ "${extension:-}" = "fz" ]; then
+        local e
+        for e in fits fts fit; do
+            if compgen -G "${IMGDIRS}/*.${e}" > /dev/null; then
+                extension="${e}"
+                break
+            fi
+        done
+    fi
     echo ${extension}
 }
 
@@ -980,10 +992,46 @@ pdf_report(){
     return 0
 }
 
+# T1-T7 read the raw frames.  A night stored compressed (.fz, utils/framepack.py rawpack, or the 2019-20 nights fpack
+# compressed in 2022) is decompressed for the run by utils/rawpack.py: each working copy is the stored frame exactly
+# (the downloaded file byte for byte where the .fz kept its header), with its original mtime, and the .fz waits in a
+# hidden .rawpack/ that no glob here sees.  The loop over the dates stores the night compressed again when the run
+# ends, however it ends (repack_raw_night).  A frame that fails to unpack stays .fz and is reported.
+unpack_raw_night(){
+    [ "$T1$T2$T3$T4$T5$T6$T7" = "0000000" ] && return 0
+    [ -d "${IMGDIRS}" ] || return 0
+    if compgen -G "${IMGDIRS}/*.fz" > /dev/null || compgen -G "${IMGDIRS}/*/*.fz" > /dev/null \
+        || [ -d "${IMGDIRS}/.rawpack" ] || compgen -G "${IMGDIRS}/*/.rawpack" > /dev/null; then
+        echo "START raw unpack"
+        local rc=0
+        python ${SCRIPTDIR}/utils/rawpack.py unpack ${IMGDIRS} --workers ${CORES} || rc=$?
+        echo "rawpack unpack exit code ${rc}"
+        echo "END raw unpack"
+    fi
+    return 0
+}
+
+# A rerun from T7, T8 or T9 works on the calibrated frames already in v3, which an earlier run may have packed after
+# its T11: decompress them (verified) for the stages that write WCS into them.  pack_frames packs them again.
+unpack_frames(){
+    local dir="$1"
+    [ "$T6" = "1" ] && return 0
+    [ "$T7$T8$T9" = "000" ] && return 0
+    compgen -G "${dir}/proc*.fits.fz" > /dev/null || return 0
+    echo "START frame unpacking (${dir})"
+    local rc=0
+    python ${SCRIPTDIR}/utils/framepack.py decompress ${dir} --workers ${CORES} \
+        --manifest ${DATDIR}/logs/framepack_${DATE}_${RUNNAME}.csv || rc=$?
+    echo "framepack decompress exit code ${rc}"
+    echo "END frame unpacking"
+    return 0
+}
+
 # Perform version migration from v3 to v2
 pack_frames(){
     # Store this night's calibrated frames compactly while they are still in v3, before T12 moves them:
-    # 16-bit integers (pixels move by at most 0.5 ADU), plus lossless Rice compression with --frame-format rice.
+    # 16-bit integers (pixels move by at most 0.5 ADU), plus lossless Rice compression (.fits.fz) with
+    # --frame-format rice, the default since every reader takes .fz (docs/frame-compression.md).
     # framepack.py verifies every file before replacing it and leaves any frame it can't convert untouched,
     # so a failure here costs disk space, not data, and never stops the night.
     [ "${FRAME_FORMAT}" = "float32" ] && return 0
@@ -1297,6 +1345,8 @@ main() {
     stages_run
     echo "Using ${CORES} cores"
 
+    unpack_raw_night
+
     EXT="$(find_ext)"
 
     echo "Extension: ${EXT}"
@@ -1367,6 +1417,7 @@ main() {
                     echo "T6 failed for target ${i} — skipping T7, T8, T9, T10"
                     continue
                 fi
+                unpack_frames "${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}"
 
                 # Only set below if the target has reduced images; never let T9
                 # see it unset or left over from the previous target. Only T9 uses it, and
@@ -1420,6 +1471,25 @@ main() {
     echo "PIPELINE COMPLETE"
 }
 
+# Store a raw night decompressed for the run (unpack_raw_night) compressed again: after each date, and whenever the
+# script ends early, from an error, a timeout's SIGTERM or ^C.  A repack cut short (the queue's SIGKILL 2 min after
+# SIGTERM) leaves the night decompressed, which every reader handles; the next run on the night finishes it.
+repack_raw_night(){
+    local d="${1:-}"
+    [ -n "${d}" ] && [ -d "${d}" ] || return 0
+    [ -d "${d}/.rawpack" ] || compgen -G "${d}/*/.rawpack" > /dev/null || return 0
+    echo "START raw repack"
+    local rc=0
+    python ${SCRIPTDIR}/utils/rawpack.py repack ${d} --workers ${CORES} || rc=$?
+    echo "rawpack repack exit code ${rc}"
+    echo "END raw repack"
+    return 0
+}
+RAW_NIGHT=""
+trap 'repack_raw_night "${RAW_NIGHT}"; RAW_NIGHT=""' EXIT
+trap 'repack_raw_night "${RAW_NIGHT}"; RAW_NIGHT=""; exit 143' TERM
+trap 'repack_raw_night "${RAW_NIGHT}"; RAW_NIGHT=""; exit 130' INT
+
 echo "PIPELINE VERSION ${VERSION}"
 echo "For Telescope: ${TEL}"
 ALL_DATES=(${DATES})
@@ -1448,5 +1518,9 @@ do
     DARKLIST=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_dark.list
     FLATLIST=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_flat_*.list
 
-    main 2>&1 | tee ${DATDIR}/logs/${DATE}_${RUNNAME}_${VERSION}${INPUT_TARGETS:+_$(echo $INPUT_TARGETS | tr ' ' '_')}.log
+    RAW_NIGHT="${IMGDIRS}"
+    DATE_LOG=${DATDIR}/logs/${DATE}_${RUNNAME}_${VERSION}${INPUT_TARGETS:+_$(echo $INPUT_TARGETS | tr ' ' '_')}.log
+    main 2>&1 | tee ${DATE_LOG}
+    repack_raw_night "${RAW_NIGHT}" 2>&1 | tee -a ${DATE_LOG}
+    RAW_NIGHT=""
 done

@@ -55,7 +55,7 @@ RECORD_DIR = '.restage'          # v3/<TEL>/output/<NIGHT>/.restage/<TARGET>.jso
 VERSION = 1
 SUPERSEDED = 'superseded'
 EX_TEMPFAIL = 75
-FITS = ('.fits', '.fit', '.fts')
+FITS = ('.fits', '.fit', '.fts', '.fits.fz', '.fit.fz', '.fts.fz')
 CARDS = ('ORCHVER', 'ORCHREL', 'ORCHMOD')
 
 
@@ -123,7 +123,8 @@ def fits_cards(path):
     utils/orchard_version.py), as far as they are there."""
     try:
         from astropy.io import fits
-        h = fits.getheader(path, 0)
+        # a Rice-compressed frame (.fz) keeps its header in HDU 1; its primary HDU is empty
+        h = fits.getheader(path, 1 if path.lower().endswith('.fz') else 0)
     except Exception:
         return {}
     return {k.lower(): str(h[k]) for k in CARDS if k in h}

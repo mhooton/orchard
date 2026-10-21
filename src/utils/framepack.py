@@ -19,8 +19,28 @@ inventory):
                   scaling and the same header cards.
 
 ``pack`` is ``int16`` followed by ``compress``, for processed frames in one
-pass.  The pipeline itself only ever reads decompressed frames: a job
-decompresses a night before it runs and compresses it again afterwards.
+pass.
+
+* ``rawpack``     a raw frame -> lossless RICE_1, byte-exact: the ``.fz``
+                  also keeps the original header block verbatim (extension
+                  ``ORIGHDR``, with the original file's sha256, size and
+                  mtime), so ``decompress`` rebuilds the file as it was
+                  downloaded, byte for byte, and ESO's own CHECKSUM verifies
+                  on it.  It is a storage encoding, not an edit: the image
+                  header is left exactly as it was (Matthew, 2026-10-21: all
+                  raw, ESO downloads included, on these terms).
+
+Readers
+-------
+The pipeline works on plain frames.  For raw frames, ZLP_pipeline.sh
+decompresses the night before T1 and restores the compressed files afterwards
+(``utils/rawpack.py``); a rerun from T7-T9 decompresses its calibrated frames
+first.  Code that reads a frame that may be stored either way, for example a
+calibration frame from an earlier night, uses ``open_frame``: it presents a
+``.fz`` frame as the plain file it stands for (HDU 0 is the image, with the
+dtype astropy gives the plain file), and follows a list entry that still names
+``X.fits`` to ``X.fits.fz`` once that frame has been compressed.  It never
+opens anything for writing.
 
 How the 16-bit window is chosen
 -------------------------------
@@ -65,20 +85,25 @@ Usage
 ::
 
     python -m utils.framepack pack <target>/1/ --manifest framepack.csv
+    python -m utils.framepack rawpack <raw night dir> --workers 8
     python -m utils.framepack decompress <night dir> --workers 8
 
 Directories are expanded to ``proc*.fits`` (int16, pack), ``*.fits``,
-``*.fts`` and ``*.fit`` (compress) or ``*.fz`` (decompress), not recursively.
+``*.fts`` and ``*.fit`` (compress, rawpack) or ``*.fz`` (decompress), not
+recursively.
 """
 import argparse
 import csv
 import datetime
 import glob
+import hashlib
+import io
 import math
 import os
 import stat
 import sys
 import warnings
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields
 from multiprocessing import Pool
 
@@ -104,14 +129,173 @@ STRUCTURAL = ('SIMPLE', 'XTENSION', 'BITPIX', 'NAXIS', 'NAXIS1', 'NAXIS2', 'EXTE
 # ORCHMOD: each conversion records itself as the file's latest edit, so it differs from the source by design
 NOT_COMPARED = set(STRUCTURAL) | set(SCALING) | {orchard_version.EDIT_KEYWORD}
 FITS_SUFFIXES = ('.fits', '.fts', '.fit')
+COMPRESSED = '.fz'
+ORIGINAL_HEADER = 'ORIGHDR'       # extension of a byte-exact .fz: the original header block, verbatim
 HISTORY_TAG = 'framepack:'
-OPS = ('int16', 'compress', 'decompress', 'pack')
+OPS = ('int16', 'compress', 'decompress', 'pack', 'rawpack')
 DIRECTORY_GLOBS = {'int16': ('proc*.fits',), 'pack': ('proc*.fits',),
-                   'compress': ('*.fits', '*.fts', '*.fit'), 'decompress': ('*.fz',)}
+                   'compress': ('*.fits', '*.fts', '*.fit'), 'rawpack': ('*.fits', '*.fts', '*.fit'),
+                   'decompress': ('*.fz',)}
+BLOCK = 2880
 
 
 class FramePackError(Exception):
     """A frame that can't be converted safely.  The original is left untouched."""
+
+
+# --------------------------------------------------------------------------- names and reading
+
+def is_compressed(path):
+    return str(path).lower().endswith(COMPRESSED)
+
+
+def plain_name(path):
+    """The name a frame has when it is not compressed: ``X.fits`` for ``X.fits.fz``."""
+    return path[:-len(COMPRESSED)] if is_compressed(path) else path
+
+
+def stored_path(path):
+    """Where the frame ``path`` names is stored now: ``path`` itself, or ``path + '.fz'`` once it has been compressed.
+
+    Frame lists written by T1 and T6 keep the plain names, so a later rerun follows them here."""
+    if not is_compressed(path) and not os.path.exists(path) and os.path.exists(path + COMPRESSED):
+        return path + COMPRESSED
+    return path
+
+
+def image_hdu(hdul):
+    """The HDU that holds a frame's image: HDU 1 of a tile-compressed file, whose primary HDU is empty, else HDU 0."""
+    if len(hdul) > 1 and isinstance(hdul[1], fits.CompImageHDU) and not hdul[0].header.get('NAXIS', 0):
+        return hdul[1]
+    return hdul[0]
+
+
+def plain_bytes(path):
+    """The plain single-image FITS file a tile-compressed frame stands for, as bytes.
+
+    A byte-exact .fz (``rawpack``) gives back the original file byte for byte, checked against the sha256 recorded
+    when it was compressed.  Any other .fz (the processed frames, the 2019-20 raw nights compressed with fpack in
+    2022) gives a file with the same stored integers, scaling and header cards."""
+    with fits.open(path, do_not_scale_image_data=True) as h:
+        hdu = image_hdu(h)
+        if hdu is h[0]:
+            raise FramePackError('not a tile-compressed frame')
+        stored = np.array(hdu.data)
+        if ORIGINAL_HEADER in h:
+            return _exact_bytes(h[ORIGINAL_HEADER], stored)
+        header = hdu.header
+        scaling = (header.get('BSCALE', 1.0), header.get('BZERO', 0.0), header.get('BLANK'))
+        out = fits.PrimaryHDU(data=stored, header=_strip(header, STRUCTURAL + SCALING), do_not_scale_image_data=True)
+    _set_scaling(out.header, *scaling)
+    buf = io.BytesIO()
+    out.writeto(buf, checksum=True)
+    return buf.getvalue()
+
+
+@contextmanager
+def open_frame(path, **kwargs):
+    """Open a frame read-only, however it is stored, as an HDUList whose HDU 0 is the image.
+
+    A plain file is opened as it is.  A .fz frame is decompressed in memory and opened as the plain file it stands
+    for, so ``hdul[0].data`` has the dtype astropy gives the plain file (uint16 for raw frames) and every
+    ``hdul[0]`` reader works on it unchanged; ``hdul.filename()`` is the .fz file.  A name that no longer exists is
+    followed to its compressed copy (``stored_path``)."""
+    path = stored_path(path)
+    if not is_compressed(path):
+        with fits.open(path, **kwargs) as h:
+            yield h
+        return
+    buf = io.BytesIO(plain_bytes(path))
+    buf.name = path
+    with fits.open(buf, **kwargs) as h:
+        yield h
+
+
+def getheader(path):
+    """The image header of a frame stored plain or compressed (``fits.getheader`` gives a .fz's empty primary)."""
+    path = stored_path(path)
+    if is_compressed(path):
+        with fits.open(path) as h:
+            return image_hdu(h).header.copy()
+    return fits.getheader(path)
+
+
+# --------------------------------------------------------------------------- byte-exact raw frames
+
+def _sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def _padded(n):
+    return -(-n // BLOCK) * BLOCK
+
+
+def _split_plain(raw):
+    """(header block, header, shape) of a plain single-image FITS file held in ``raw``.
+
+    Refuses anything that would not come back byte for byte from its header and pixels alone: extensions or other
+    bytes after the image, non-zero padding, or an image that is not 16-bit integers."""
+    end = next((k for k in range(0, min(len(raw), 2000 * 80), 80) if raw[k:k + 8] == b'END     '), None)
+    if end is None:
+        raise FramePackError('no END card: not a FITS file')
+    nhead = _padded(end + 80)
+    header = fits.Header.fromstring(raw[:nhead].decode('ascii', errors='replace'))
+    naxis = header.get('NAXIS', 0)
+    if not naxis or header.get('XTENSION'):
+        raise FramePackError('not a single-image FITS file (already compressed?)')
+    if header['BITPIX'] != 16:
+        raise FramePackError(f"BITPIX {header['BITPIX']}: only 16-bit raw frames are compressed byte-exact")
+    shape = tuple(header[f'NAXIS{k}'] for k in range(naxis, 0, -1))
+    nbytes = 2 * int(np.prod(shape))
+    if len(raw) != nhead + _padded(nbytes):
+        raise FramePackError(f'{len(raw) - nhead - _padded(nbytes):+d} bytes after the image: extensions or a '
+                             'truncated file, not stored byte-exact')
+    if raw[nhead + nbytes:].strip(b'\0'):
+        raise FramePackError('the data padding is not zeros, not stored byte-exact')
+    return raw[:nhead], header, shape
+
+
+def _exact_bytes(orig, stored):
+    """The original file from its ``ORIGHDR`` extension and the stored integers; raises unless its sha256 matches."""
+    out = orig.data.tobytes() + np.ascontiguousarray(stored, dtype='>i2').tobytes()
+    out += b'\0' * (_padded(len(out)) - len(out))
+    if len(out) != orig.header['ORIGSIZE'] or _sha256(out) != orig.header['ORIGSHA']:
+        raise FramePackError('the rebuilt file does not match the sha256 of the original')
+    return out
+
+
+def compress_exact(src, dst):
+    """Write the raw frame ``src`` to ``dst`` as a byte-exact .fz: RICE_1 image + the original header block."""
+    with open(src, 'rb') as f:
+        raw = f.read()
+    head, header, shape = _split_plain(raw)
+    stored = np.frombuffer(raw, dtype='>i2', count=int(np.prod(shape)), offset=len(head)).reshape(shape)
+    image = fits.CompImageHDU(data=stored.astype(np.int16), header=header, compression_type='RICE_1',
+                              do_not_scale_image_data=True)
+    orig = fits.ImageHDU(data=np.frombuffer(head, dtype=np.uint8), name=ORIGINAL_HEADER)
+    orig.header['ORIGSHA'] = (_sha256(raw), 'sha256 of the original file')
+    orig.header['ORIGSIZE'] = (len(raw), 'bytes of the original file')
+    orig.header['ORIGMTIM'] = (os.stat(src).st_mtime_ns, 'mtime of the original file, ns since 1970')
+    orig.header['ORIGNAME'] = (os.path.basename(src)[:68], 'name of the original file')
+    orig.header.add_comment('framepack rawpack: this is the original header, byte for byte; the image is in HDU 1')
+    orchard_version.stamp(orig.header)
+    fits.HDUList([fits.PrimaryHDU(), image, orig]).writeto(dst, checksum=True)
+
+
+def check_exact(src, dst):
+    """Raise unless the .fz ``dst`` rebuilds ``src`` byte for byte and its own checksums verify."""
+    with open(src, 'rb') as f:
+        raw = f.read()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        with fits.open(dst, checksum=True) as h:
+            for hdu in h:
+                hdu.data        # noqa: B018 - reading the data checks DATASUM
+    bad = [str(w.message) for w in caught if 'checksum' in str(w.message).lower() or 'datasum' in str(w.message).lower()]
+    if bad:
+        raise FramePackError(f'checksum check failed: {bad[0]}')
+    if plain_bytes(dst) != raw:
+        raise FramePackError('the compressed file does not rebuild the original byte for byte')
 
 
 # --------------------------------------------------------------------------- 16-bit
@@ -204,18 +388,47 @@ def compress(src, dst):
         fits.HDUList([fits.PrimaryHDU(), c]).writeto(dst, checksum=True)
 
 
-def decompress(src, dst):
-    """Write the Rice-compressed image in ``src`` to ``dst`` as a plain 16-bit FITS file."""
+def original_info(path):
+    """The ORIGHDR cards (ORIGSHA, ORIGSIZE, ORIGMTIM, ORIGNAME) of a byte-exact .fz, or None for any other file."""
+    with fits.open(path) as h:
+        return h[ORIGINAL_HEADER].header.copy() if ORIGINAL_HEADER in h else None
+
+
+def decompress(src, dst, record=True):
+    """Write the Rice-compressed image in ``src`` to ``dst`` as a plain FITS file.
+
+    A byte-exact .fz gives back the original file.  Any other gives the same stored integers, scaling and cards,
+    with framepack recorded as the file's last edit unless ``record`` is False (a working copy the pipeline reads
+    and that is deleted afterwards, utils/rawpack.py)."""
     with fits.open(src, do_not_scale_image_data=True) as h:
-        if len(h) != 2 or not isinstance(h[1], fits.CompImageHDU):
-            raise FramePackError('not a tile-compressed frame (primary + one compressed image)')
-        header = h[1].header
-        scaling = (header.get('BSCALE', 1.0), header.get('BZERO', 0.0), header.get('BLANK'))
-        stored = h[1].data
-        out = fits.PrimaryHDU(data=stored, header=_strip(header, STRUCTURAL + SCALING), do_not_scale_image_data=True)
+        if len(h) < 2 or image_hdu(h) is h[0]:
+            raise FramePackError('not a tile-compressed frame (empty primary + a compressed image)')
+        exact = ORIGINAL_HEADER in h
+        if not exact:
+            if len(h) != 2:
+                raise FramePackError('not a tile-compressed frame (primary + one compressed image)')
+            header = h[1].header
+            scaling = (header.get('BSCALE', 1.0), header.get('BZERO', 0.0), header.get('BLANK'))
+            stored = h[1].data
+            out = fits.PrimaryHDU(data=stored, header=_strip(header, STRUCTURAL + SCALING),
+                                  do_not_scale_image_data=True)
+    if exact:
+        with open(dst, 'wb') as f:
+            f.write(plain_bytes(src))
+        return
     _set_scaling(out.header, *scaling)
-    orchard_version.record_edit(out.header, 'framepack', history=False)
+    if record:
+        orchard_version.record_edit(out.header, 'framepack', history=False)
     out.writeto(dst, checksum=True)
+
+
+def check_rebuilt(src, dst):
+    """Raise unless the plain file ``dst`` is, byte for byte, the original that the byte-exact .fz ``src`` holds."""
+    info = original_info(src)
+    with open(dst, 'rb') as f:
+        out = f.read()
+    if len(out) != info['ORIGSIZE'] or _sha256(out) != info['ORIGSHA']:
+        raise FramePackError('the decompressed file does not match the sha256 of the original')
 
 
 # --------------------------------------------------------------------------- checks
@@ -229,7 +442,7 @@ def _image(path, verify_checksum=False):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         with fits.open(path, checksum=verify_checksum) as h:
-            hdu = h[1] if len(h) == 2 and isinstance(h[1], fits.CompImageHDU) else h[0]
+            hdu = image_hdu(h)
             header = hdu.header.copy()
             physical = np.array(hdu.data, dtype=np.float64)
     if verify_checksum:
@@ -238,7 +451,7 @@ def _image(path, verify_checksum=False):
         if bad:
             raise FramePackError(f'checksum check failed: {bad[0]}')
     with fits.open(path, do_not_scale_image_data=True) as h:
-        hdu = h[1] if len(h) == 2 and isinstance(h[1], fits.CompImageHDU) else h[0]
+        hdu = image_hdu(h)
         stored = np.array(hdu.data)
     return header, physical, stored
 
@@ -310,7 +523,7 @@ class Report:
 
 
 def final_name(path, op):
-    if op in ('compress', 'pack'):
+    if op in ('compress', 'pack', 'rawpack'):
         return path + '.fz'
     if op == 'decompress':
         return path[:-3]
@@ -344,9 +557,16 @@ def _convert(path, op, out, tmp_dir):
         compress(path, out)
         check_lossless(path, out)
         return None, None, None
+    if op == 'rawpack':
+        compress_exact(path, out)
+        check_exact(path, out)
+        return None, None, None
     if op == 'decompress':
         decompress(path, out)
-        check_lossless(path, out)
+        if original_info(path) is not None:
+            check_rebuilt(path, out)
+        else:
+            check_lossless(path, out)
         return None, None, None
     # pack: 16-bit into a second hidden file, then compress that; a frame already 16-bit is only compressed
     if fits.getheader(path)['BITPIX'] == 16:
@@ -396,7 +616,11 @@ def convert_in_place(path, op, dry_run=False):
             os.chown(tmp, -1, st.st_gid)
         except OSError:
             pass
-        os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
+        mtime = st.st_mtime_ns
+        if op == 'decompress':
+            info = original_info(path)
+            mtime = info['ORIGMTIM'] if info is not None else mtime
+        os.utime(tmp, ns=(st.st_atime_ns, mtime))
         _fsync(tmp)
         os.replace(tmp, rep.final)
         if rep.final != path:

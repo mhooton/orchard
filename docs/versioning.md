@@ -107,7 +107,8 @@ break them.
 
 ## Raw frames
 
-Raw frames live in `Observations/<telescope>/images/<night>/`. ESO's downloads are kept exactly as delivered.
+Raw frames live in `Observations/<telescope>/images/<night>/`. ESO's downloads are kept exactly as delivered:
+stored Rice-compressed, a download still decompresses to ESO's file byte for byte (Matthew, 2026-10-21).
 Every file orchard writes there records itself, by the same rules as products: `ORCHVER` when orchard writes the
 frame at ingest, and `ORCHMOD` plus a HISTORY card for every later in-place edit.
 
@@ -120,6 +121,7 @@ frame at ingest, and `ORCHMOD` plus a HISTORY card for every later in-place edit
 | WCS repaired | `repair_astra_wcs.py --apply` | `ORCHMOD`; `ASTRAWCS = 2` as before | `repair_astra_wcs: <signatures>` as before, then `orchard <version> repair_astra_wcs: <signatures>` |
 | Orientation repaired | `repair_orientation.py --apply` | `ORCHMOD` | `<date> orient repair: ...` as before, then `orchard <version> repair_orientation: rot90 k=<k>` (or `: fliplr`) |
 | Packed or unpacked by hand | `utils/framepack.py` | `ORCHMOD` | its own `framepack: ...` card |
+| Stored Rice-compressed (`X.fits.fz`) | `utils/framepack.py rawpack` | none on the image: the `.fz` keeps the original header block byte for byte in an `ORIGHDR` extension (with `ORIGSHA`, `ORIGSIZE`, `ORIGMTIM`, and `ORCHVER` for the tool), and decompressing gives back the file exactly, ESO's `CHECKSUM` included ([frame-compression.md](frame-compression.md)) | — |
 
 A frame that is both unpacked and turned on arrival carries `ORCHVER` once and both ingest cards, in that order.
 

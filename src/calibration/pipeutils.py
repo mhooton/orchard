@@ -9,6 +9,8 @@ import json
 import os
 import re
 
+from utils import framepack
+
 
 def load_instrument_config():
     """Load instrument configuration from JSON file"""
@@ -372,18 +374,23 @@ def create_flat_dict(flatnames):
 
 def proc_name(raw_path):
     """The file name T6 gives a raw frame's calibrated copy: 'proc' + its name, without quotes, spaces as '--'
-    and .fts as .fits. T7 maps calibrated frames back to their raw frames by the same rule."""
-    return 'proc' + os.path.basename(raw_path).replace("'", "").replace(" ", "--").replace(".fts", ".fits")
+    and .fts as .fits, and never '.fz': T6 writes a plain frame even from a compressed raw one. T7 maps calibrated
+    frames back to their raw frames by the same rule."""
+    return 'proc' + framepack.plain_name(os.path.basename(raw_path)).replace("'", "").replace(" ", "--").replace(
+        ".fts", ".fits")
 
 
 @contextmanager
 def open_fits_file(filename):
+    """Open a frame read-only with its image in HDU 0, whether it is stored plain, bz2-compressed or Rice-compressed
+    (.fz, utils/framepack.py: decompressed in memory and presented as the plain file); a list entry naming a frame
+    that has since been compressed is followed to its .fz."""
     if filename.endswith('.bz2'):
         with bz2.BZ2File(filename) as uncompressed:
             with fits.open(uncompressed) as infile:
                 yield infile
     else:
-        with fits.open(filename) as infile:
+        with framepack.open_frame(filename) as infile:
             yield infile
 
 # class NullPool(object):

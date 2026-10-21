@@ -49,7 +49,7 @@ from collections import Counter
 from utils import promote_policy
 
 BLOCK, CARD = 2880, 80
-RAW_EXTENSIONS = ('.fits', '.fts', '.fit')
+RAW_EXTENSIONS = ('.fits', '.fts', '.fit', '.fits.fz', '.fts.fz', '.fit.fz')   # .fz: lossless Rice (framepack)
 
 IDLE_MIN = 0.5            # share of an exposure with the mount neither tracking nor slewing: a stopped mount
 MOVING_AIRMASS = 1e-3     # airmass change over a 'stop' of 2 min or more that says the mount moved after all
@@ -223,7 +223,7 @@ def frame_key(name):
     base = os.path.basename(name)
     if base.startswith('proc'):
         base = base[4:]
-    for ext in ('.fits.fz', '.fits', '.fts', '.fit'):
+    for ext in ('.fits.fz', '.fts.fz', '.fit.fz', '.fits', '.fts', '.fit'):
         if base.endswith(ext):
             return base[:-len(ext)]
     return base
@@ -371,6 +371,9 @@ def raw_frames(raw_dir):
         names = sorted(n for n in os.listdir(raw_dir) if n.endswith(RAW_EXTENSIONS))
     except OSError:
         return []
+    # a frame stored both plain and compressed (a run's working copy beside its .fz) counts once, as the plain file
+    plain = set(names)
+    names = [n for n in names if not (n.endswith('.fz') and n[:-3] in plain)]
     out = []
     for n in names:
         path = os.path.join(raw_dir, n)
@@ -383,11 +386,13 @@ def raw_frames(raw_dir):
 
 def processed_frames(output_night_dirs):
     """{frame key: path} of the processed frames in <output>/<night>/<target>/<run>/ under each directory given,
-    later directories (and later runs) taking precedence."""
+    later directories (and later runs) taking precedence, and within a run the plain frame over a .fz of the same
+    frame (a rerun's new frame beside an older packed one)."""
     out = {}
     for d in output_night_dirs:
         for path in sorted(glob.glob(os.path.join(d, '*', '*', 'proc*.fits')) +
-                           glob.glob(os.path.join(d, '*', '*', 'proc*.fits.fz'))):
+                           glob.glob(os.path.join(d, '*', '*', 'proc*.fits.fz')),
+                           key=lambda p: (os.path.dirname(p), not p.endswith('.fz'), p)):
             if os.path.basename(os.path.dirname(path)).isdigit():
                 out[frame_key(path)] = path
     return out

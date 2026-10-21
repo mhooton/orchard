@@ -69,16 +69,17 @@ def backfill_darkcurrent(telescope, date_str, top_dir):
         if not os.path.exists(science_dir):
             continue
 
-        # Find first .fits file
-        fits_files = glob.glob(f"{science_dir}/*.fits")
+        # Find first frame, stored plain or Rice-compressed (.fits.fz: its header is in HDU 1)
+        fits_files = sorted(glob.glob(f"{science_dir}/*.fits") + glob.glob(f"{science_dir}/*.fits.fz"))
         if not fits_files:
             continue
 
         # Read DARKCUR from header
         try:
             with fits.open(fits_files[0]) as hdul:
-                if 'DARKCUR' in hdul[0].header:
-                    darkcur = hdul[0].header['DARKCUR']
+                hdu = hdul[1] if fits_files[0].endswith('.fz') and len(hdul) > 1 else hdul[0]
+                if 'DARKCUR' in hdu.header:
+                    darkcur = hdu.header['DARKCUR']
 
                     # Create reduction directory if it doesn't exist
                     os.makedirs(reduction_dir, exist_ok=True)

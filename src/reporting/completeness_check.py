@@ -174,10 +174,13 @@ def completeness_check(dir,version):
 
 
                 total_processed_images = calib_images + science_images
-                total_images = len(glob.glob(dir + "/" + obsdir + "/" + tels[t] + "/images/" + datestring + "/*/*.fits")) + \
-                                len(glob.glob(dir + "/" + obsdir + "/" + tels[t] + "/images/" + datestring + "/*/*.fts")) + \
-                                len(glob.glob(dir + "/" + obsdir + "/" + tels[t] + "/images/" + datestring + "/*.fits")) + \
-                                len(glob.glob(dir + "/" + obsdir + "/" + tels[t] + "/images/" + datestring + "/*.fts"))
+                # raw frames stored plain or Rice-compressed (.fz, utils/framepack.py), counted once each
+                night = dir + "/" + obsdir + "/" + tels[t] + "/images/" + datestring
+                frames = set()
+                for pattern in ("/*/*.fits", "/*/*.fts", "/*.fits", "/*.fts"):
+                    for f in glob.glob(night + pattern) + glob.glob(night + pattern + ".fz"):
+                        frames.add(f[:-3] if f.endswith(".fz") else f)
+                total_images = len(frames)
                 print(tels[t],total_images,total_processed_images)
 
                 if (total_processed_images == total_images) or (total_processed_images == total_images-1) :
