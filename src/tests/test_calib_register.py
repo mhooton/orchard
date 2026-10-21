@@ -637,3 +637,27 @@ def test_pipedark_groups_rounded_exposures_and_keeps_the_longest_as_fallback(tmp
         assert 'from 3 images' in str(h[0].header['HISTORY'])
     with fits.open(str(out / '1_MasterDark.fits')) as h:
         assert h[0].header['EXPTIME'] == 120
+
+
+def test_pipedark_one_bad_frame_cannot_take_half_a_master(tmp_path, monkeypatch, capsys):
+    """Callisto 20260309: one 8 s dark 32,768 ADU high, alone in its chunk, got half the weight of the master."""
+    pytest.importorskip('tabulate')
+    sys.path.insert(0, os.path.join(SRC, 'calibration'))
+    from calibration import pipedark
+    monkeypatch.setattr(pipedark, 'CHUNK', 3)
+    d = tmp_path / 'Observations/Callisto/images/20260309'
+    out = tmp_path / 'red'
+    out.mkdir()
+    files = [spirit(str(d / 'd{}.fits'.format(i)), 'Dark Frame', 28.0 * 8, filt='Dark', exptime=8.0) for i in range(3)]
+    files += [spirit(str(d / 'e{}.fits'.format(i)), 'Dark Frame', 28.0 * e, filt='Dark', exptime=e)
+              for i, e in enumerate([30.0, 30.0, 30.0, 60.0, 60.0, 60.0])]
+    files.insert(3, spirit(str(d / 'bad.fits'), 'Dark Frame', 28.0 * 8 + 9000.0, filt='Dark', exptime=8.0))
+    fits.writeto(str(out / '1_MasterBias.fits'), np.full(SPIRIT, 2810.0, dtype=np.float32))
+    lst = tmp_path / 'dark.list'
+    lst.write_text('\n'.join(files) + '\n')
+    pipedark.darkmaker(str(lst), '1_MasterBias.fits', '1_MasterDark.fits', str(out) + '/')
+    with fits.open(str(out / '1_MasterDark_8s.fits')) as h:
+        rate = float(np.median(h[0].data))
+    # 4 frames in 2 chunks of 2: the bad frame's chunk is clipped to the median of 2 and weighted 2/4, not 1/2 alone
+    assert rate < 28.0 + 9000.0 / 8 / 2 + 5
+    assert 'WARNING: master dark 8 s' in capsys.readouterr().out
