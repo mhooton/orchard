@@ -13,7 +13,6 @@ are faked (the pattern of test_sexagesimal_ra.py): the catalogue is the detectio
 
 Run:  pytest src/tests/test_wcs_cache.py -q
 """
-import multiprocessing
 import os
 import re
 import shutil
@@ -247,8 +246,7 @@ def test_raw_frames_are_never_written(tmp_path, solver):
 
 
 def test_parent_collects_the_pool_results(tmp_path, solver, monkeypatch):
-    # fork, as on Linux, so the workers inherit the fake catalogue
-    monkeypatch.setattr(multiprocessing, 'Pool', multiprocessing.get_context('fork').Pool)
+    # the workers fork (astrom/frame_pool.py), so they inherit the fake catalogue
     stored = []
     real_store = wcs_cache.store
     monkeypatch.setattr(wcs_cache, 'store', lambda path, new: stored.append(sorted(new)) or real_store(path, new))
