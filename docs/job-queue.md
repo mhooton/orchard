@@ -106,6 +106,35 @@ match a network, full-disk, I/O or memory pattern, or the exit code is 75, 137 o
 retried after an hour, at most twice. Anything else is **deterministic**: the job stops as failed, and after a
 fix `q requeue --signature "<text>"` puts every job with that signature back, with its retries restored.
 
+### Threads
+
+orchard-server's systemd scope (`docker-<id>.scope`, systemd 219 on CentOS 7) allows **4,096 tasks for the whole
+container**, and every thread counts. Docker sets no limit of its own (`PidsLimit` 0). By default every Python process
+that uses numpy starts OpenBLAS's pool of up to 64 threads, so one T7 with 20 workers held 1,280.
+
+So jobs run with **one BLAS/OpenMP thread per process**. `jobqueue.runner` sets `OPENBLAS_NUM_THREADS`,
+`OMP_NUM_THREADS` and `MKL_NUM_THREADS` to 1 for every job, unless the job's environment sets them, and
+`ZLP_pipeline.sh` does the same for runs outside the queue. Its log says `BLAS threads per process: ...`. `q release
+test` gives the suite the same. Orchard's parallelism is its process pools, and its BLAS calls are 2×2 inverses and
+small least-squares fits, so a single thread costs nothing.
+
+**What exhaustion looks like** (2026-10-20/21, v4.1.0 to v4.3.2: the new T7 solver's `np.linalg.inv` started the pool
+in every worker). When `pthread_create` fails, OpenBLAS prints `OpenBLAS blas_thread_init: pthread_create failed for
+thread N of 64` and raises SIGINT:
+
+- At numpy import, the stage dies with `KeyboardInterrupt`, exit 130, within a minute of the start. The queue counts it
+  as transient, and the retries are spent.
+- In a pool worker, the worker dies mid-chunk (`Process ForkPoolWorker-N: ... KeyboardInterrupt`). `Pool.map` waits for
+  the lost chunk for ever, and the job sits until its timeout. Its idle workers keep their 64 threads, which makes the
+  shortage worse.
+- Other signatures from the same cause: `RuntimeError: can't start new thread`; `AttributeError: 'DummyProcess' object
+  has no attribute 'terminate'` (a `ThreadPool` failing to start; `ThreadPool()` in createlists, pipered and condense
+  starts one thread per core, i.e. 128); `ImportError: numpy._core.multiarray failed to import`.
+
+To check, on appct run `systemctl show docker-$(docker inspect --format '{{.Id}}' orchard-server).scope -p TasksMax
+-p TasksCurrent`, or inside the container read `/sys/fs/cgroup/pids/pids.current` and `pids.max`. Scratch work in the
+container shares the same 4,096: give it the same three variables.
+
 ### Restarts and the watchdog
 
 The dispatcher holds an `flock` on `<queue_root>/dispatcher.lock` for its whole life, so only one runs. Every
