@@ -15,6 +15,7 @@ Run with `pytest src/tests/test_pdf_report.py`, or directly with python.
 import multiprocessing
 import os
 import re
+import subprocess
 import sys
 import types
 
@@ -322,6 +323,141 @@ def test_make_pdf_with_readout_values(tmp_path):
         assert rep.version_line().startswith('orchard ')
         with open(outname, 'rb') as f:
             assert b'/Creator (orchard ' in f.read()
+
+
+# ------------------------------------------------ a space in a target's name
+
+# A space in a target's name is '--' in its directory (createlists.py).  On Ganymede 20250716 ZLP turned
+# TOI-4336--c back into 'TOI-4336 c' and passed '--target "Sp2135-3153 TOI-4336 c"'; the report split that
+# into three targets, read neither 'TOI-4336' nor 'c', and its three stars with photometry were missing from
+# every page after the first.
+
+ZLP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'main', 'ZLP_pipeline.sh')
+
+
+def _pdf_report_argv(target):
+    """The report's command line from ZLP_pipeline.sh pdf_report(), for a night whose TARGET is target."""
+    text = open(ZLP).read()
+    m = re.search(r'^pdf_report\(\)\{\n.*?^\}\n', text, re.S | re.M)
+    assert m, 'pdf_report not found in ZLP_pipeline.sh'
+    script = ('set -o nounset\n'
+              'SCRIPTDIR=/s DATDIR=/d OBSDIR=/o DATE=20250716 TEL=Ganymede VERSION=v3 CORES=1 PDF_REPORT_TIMEOUT=1\n'
+              'timeout(){ printf "%%s\\n" "$@"; }\n'      # stands in for the report: prints its arguments
+              '%s'
+              'TARGET="%s"\n'                             # as find_target_names leaves it: one string
+              'pdf_report\n') % (m.group(0), target)
+    out = subprocess.run(['bash', '-c', script], stdout=subprocess.PIPE, check=True,
+                         universal_newlines=True).stdout
+    return out.splitlines()
+
+
+def _report_target(target):
+    """The --target ZLP gives the report for a night whose TARGET is target."""
+    argv = _pdf_report_argv(target)
+    return argv[argv.index('--target') + 1]
+
+
+def test_zlp_passes_the_report_the_target_directories():
+    target = _report_target('Sp2135-3153 TOI-4336--c')
+    assert target == 'Sp2135-3153 TOI-4336--c'
+    assert rep.target_dirs(_Args('/d', target=target)) == ['Sp2135-3153', 'TOI-4336--c']
+
+
+def test_target_dirs_lists_each_directory_once():
+    assert rep.target_dirs(_Args('/d', target='TOI-4336 TOI-4336--c  TOI-4336')) == ['TOI-4336', 'TOI-4336--c']
+    assert rep.display_name('TOI-4336--c') == 'TOI-4336 c'
+    assert rep.display_name('G--261-6--b') == 'G 261-6 b'
+
+
+class _FitsioRead(object):
+    def __init__(self, data):
+        self.data = data
+
+    def read(self):
+        return self.data
+
+    def __getitem__(self, column):
+        return _FitsioRead(self.data[column])
+
+
+class _AstropyAsFitsio(object):
+    """Enough of fitsio.FITS for import_night_img, where fitsio is not installed."""
+
+    def __init__(self, path):
+        from astropy.io import fits
+        with fits.open(path, memmap=False) as hdul:
+            self.hdus = {h.name.lower(): h.data for h in hdul}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def __getitem__(self, name):
+        return _FitsioRead(self.hdus[name])
+
+
+def _write_output_fits(path, nframes=4):
+    """The HDUs of a <gaia>_<filter>_<night>_output.fits that import_night_img reads."""
+    import numpy as np
+    from astropy.io import fits
+    cols = [fits.Column(name=name, format='D', array=np.full(nframes, value))
+            for name, value in (('airmass', 1.2), ('altitude', 60.0), ('ra_move', 0.1), ('dec_move', -0.1),
+                                ('fwhm', 3.0), ('skylevel', 500.0), ('psf_a_5', 2.0), ('psf_b_5', 1.8),
+                                ('psf_t_5', 10.0))]
+    cols.append(fits.Column(name='filter', format='8A', array=['r'] * nframes))
+    fits.HDUList([
+        fits.PrimaryHDU(),
+        fits.BinTableHDU.from_columns(cols, name='IMAGELIST'),
+        fits.BinTableHDU.from_columns([fits.Column(name='obj_id', format='26A', array=['SP000001'])],
+                                      name='CATALOGUE'),
+        fits.ImageHDU(2460873.6 + 0.01 * np.arange(nframes)[None, :], name='JD'),
+        fits.ImageHDU(np.ones((1, nframes)), name='CCDX'),
+        fits.ImageHDU(np.ones((1, nframes)), name='CCDY'),
+    ]).writeto(path)
+
+
+def test_import_night_img_reads_a_target_whose_name_has_a_space(monkeypatch, tmp_path):
+    datdir = str(tmp_path)
+    night = os.path.join(datdir, 'output', '20260924')
+    os.makedirs(os.path.join(night, 'TOI-4336', '1'))      # an earlier run's, with no photometry, as that night
+    stars = {'Sp2135-3153': ['6784738092073342848'],
+             'TOI-4336--c': ['6113245033656232448', '6113245033659187200']}
+    for target, gaia_ids in stars.items():
+        os.makedirs(os.path.join(night, target))
+        for gaia_id in gaia_ids:
+            _write_output_fits(os.path.join(night, target, '%s_r_20260924_output.fits' % gaia_id))
+    os.makedirs(os.path.join(datdir, 'reports', 'temp', '20260924'))
+    os.makedirs(os.path.join(datdir, 'technical_logs'))     # the PSF plots go in technical_logs/<day>/
+    if rep.fitsio.FITS is object:                          # the import-time stand-in
+        monkeypatch.setattr(rep.fitsio, 'FITS', _AstropyAsFitsio)
+    monkeypatch.setattr(rep.plt, 'savefig', lambda *a, **kw: None)
+
+    out = rep.import_night_img(_Args(datdir, target=_report_target('Sp2135-3153 TOI-4336--c')))
+    targs, gaia, jdstart = out[-2], out[-1], out[6]
+
+    assert targs == ['Sp2135-3153', 'TOI-4336--c', 'TOI-4336--c']
+    assert sorted(gaia) == sorted(stars['Sp2135-3153'] + stars['TOI-4336--c'])
+    assert len(jdstart) == len(gaia)
+
+
+def test_overview_labels_a_target_by_its_name(monkeypatch, tmp_path):
+    import matplotlib.axes
+    datdir = str(tmp_path)
+    os.makedirs(os.path.join(datdir, 'reports', 'temp'))
+    imgs, vals, jdstart, jdend, nimages, newap, ellip, targs, gaia, flags = _synthetic_inputs(1)
+    labels = []
+    text = matplotlib.axes.Axes.text
+
+    def record(self, x, y, s, *a, **kw):
+        labels.append(s)
+        return text(self, x, y, s, *a, **kw)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, 'text', record)
+    rep.make_pdf(imgs, os.path.join(datdir, 'reports', 'Io_20260924.pdf'), _Args(datdir), [], vals, jdstart,
+                 jdend, nimages, newap, flags, ellip, rep.get_chronological_order(jdstart), ['TOI-4336--c'], gaia)
+    assert gaia[0] + '\n (TOI-4336 c)' in labels
 
 
 # ----------------------------------------- two nights of a telescope at once
