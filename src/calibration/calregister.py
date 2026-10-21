@@ -879,6 +879,16 @@ def dp_key(name):
     return '{}.{}.{:03d}'.format(name.split('.', 1)[0], m.group(1), ms)
 
 
+def eso_nights(path):
+    """{(telescope, night)} with any row in the ESO index (a night ESO knows nothing about is read whole)."""
+    out = set()
+    if path and os.path.exists(path):
+        with open(path) as f:
+            for r in csv.DictReader(f):
+                out.add((r['telescope'], r['night']))
+    return out
+
+
 def load_eso_index(path):
     """({dp_id: dp_type}, {(telescope, night): [(cube start mjd, dp_type)]}) from eso-index.
 
@@ -909,12 +919,14 @@ def _name_mjd(base):
     return _mjd(t)
 
 
-def candidate_paths(telescope, night_dir, relpaths, eso_types, cubes, tolerance_s=1.0):
+def candidate_paths(telescope, night_dir, relpaths, eso_types, cubes, tolerance_s=1.0, known_nights=None):
     """Which files of a night the builder reads, without reading any header:
 
     - an ESO-named file (SPECUn.<time>[.<k>]) that ESO lists as BIAS, DARK or FLAT; on a night delivered as
       datacubes (SPIRIT from 2026-02) also any frame not inside an OBJECT cube's time span, which is how the
       frames unpacked from calibration cubes (named by their own time) are found;
+    - every ESO-named file of a night the ESO index has no row for at all (`known_nights`): some nights on disk
+      are not in ESO's archive (Ganymede 2024-12-19/20, ...), so their frames cannot be typed from it;
     - any other file in a subdirectory (AutoFlat/, Calibration/, ...) or named like a calibration frame
       (Bias-, Dark-, Flat-, AutoFlat-, Dusk-, ...).  Top-level ACP frames <target>-S001-R001-C001-<f>.fts are
       lights: in the 2026-10-16 header census no top-level non-ESO Io/Europa/Ganymede/Callisto/Artemis frame
@@ -928,10 +940,14 @@ def candidate_paths(telescope, night_dir, relpaths, eso_types, cubes, tolerance_
     out = []
     cube_list = cubes.get((telescope, night_of(night_dir)))
     starts = [c[0] for c in cube_list] if cube_list else None
+    unknown_night = known_nights is not None and (telescope, night_of(night_dir)) not in known_nights
     for rel in relpaths:
         stem = strip_suffix(rel)
         base = stem.split('/')[-1]
         m = DP_ID_NAME.match(base)
+        if m and unknown_night:
+            out.append(rel)
+            continue
         if m:
             types = [eso_types[i] for i in (dp_key(base),) if i in eso_types]
             if types:
@@ -956,6 +972,7 @@ def build(register, basedir, telescopes, eso_index=None, since=None, until=None,
     same number of files is skipped unless rescan)."""
     from concurrent.futures import ProcessPoolExecutor
     eso_types, cubes = load_eso_index(eso_index)
+    known = eso_nights(eso_index) if eso_index else None
     workers = max(1, workers)
     executor = ProcessPoolExecutor(max_workers=workers, initializer=_init_worker,
                                    initargs=((rate / workers) if rate else 0.0,))
@@ -963,7 +980,7 @@ def build(register, basedir, telescopes, eso_index=None, since=None, until=None,
     t_start = time.time()
     try:
         _build(register, basedir, telescopes, eso_types, cubes, executor, since, until, rescan, nights, totals,
-               t_start, log)
+               t_start, log, known=known)
     finally:
         executor.shutdown()
     log('done: {}'.format(totals))
@@ -971,7 +988,7 @@ def build(register, basedir, telescopes, eso_index=None, since=None, until=None,
 
 
 def _build(register, basedir, telescopes, eso_types, cubes, executor, since, until, rescan, nights, totals,
-           t_start, log, batch_files=400):
+           t_start, log, batch_files=400, known=None):
     batch = []
 
     def flush():
@@ -1023,7 +1040,7 @@ def _build(register, basedir, telescopes, eso_types, cubes, executor, since, unt
             if prev and prev.get('n_files') == len(relpaths):
                 totals['skipped'] += 1
                 continue
-            cands = candidate_paths(telescope, night_dir, relpaths, eso_types, cubes)
+            cands = candidate_paths(telescope, night_dir, relpaths, eso_types, cubes, known_nights=known)
             samples = science_samples(relpaths, cands)
             batch.append((telescope, night_dir, path, relpaths, cands, samples))
             if sum(len(b[4]) + len(b[5]) for b in batch) >= batch_files:
@@ -1133,12 +1150,13 @@ def eso_index(out_path, env_path, telescopes=None, first_year=2017, log=print):
 def validate(basedir, telescope, night_dirs, eso_index_path, workers=4, rate=0.0, log=print):
     """Full header scan of the nights against the prefilter: calibration frames the builder would not read."""
     eso_types, cubes = load_eso_index(eso_index_path)
+    known = eso_nights(eso_index_path) if eso_index_path else None
     throttle = Throttle(rate)
     report = []
     for night_dir in night_dirs:
         path = os.path.join(basedir, 'Observations', telescope, 'images', night_dir)
         relpaths = night_files(path)
-        cands = set(candidate_paths(telescope, night_dir, relpaths, eso_types, cubes))
+        cands = set(candidate_paths(telescope, night_dir, relpaths, eso_types, cubes, known_nights=known))
 
         def kind_of(rel):
             throttle()

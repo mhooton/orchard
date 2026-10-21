@@ -63,7 +63,8 @@ def read_lists(reddir):
         if m.group('kind') in ('bias', 'dark'):
             out[m.group('kind')] = frames
         else:
-            out['flat'][m.group('filter')] = frames
+            # old list names keep a filter's prime (1_flat_i'.list); the register, like pipered.py, drops it
+            out['flat'].setdefault(m.group('filter').replace("'", ''), []).extend(frames)
     return out if found else None
 
 
@@ -171,7 +172,7 @@ def classify(old_nights, night_dir, new, delta_old=None):
 def compare_night(view, night_dir, lists, science_exposures=None):
     profile = view.profile(night_dir, science_exposures)
     out = {'telescope': view.telescope, 'night': night_dir, 'profile': None, 'types': {}, 'cross': [],
-           'unregistered': 0, 'old_unusable': 0}
+           'unregistered': 0, 'unregistered_examples': [], 'old_unusable': 0}
     if profile is None:
         out['skip'] = 'no science frames registered'
         return out
@@ -197,6 +198,8 @@ def compare_night(view, night_dir, lists, science_exposures=None):
         r = view.row(nd, rel)
         if r is None:
             out['unregistered'] += 1
+            if len(out['unregistered_examples']) < 3:
+                out['unregistered_examples'].append('{}/{}'.format(nd, rel))
             continue
         if not r['usable']:
             out['old_unusable'] += 1

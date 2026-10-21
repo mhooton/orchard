@@ -151,6 +151,10 @@ def test_candidates_from_eso_types_and_acp_names():
     assert got == ['SPECU1.2024-04-10T10:30:28.340.fits', 'AutoFlat/AutoFlat-Dusk-I+z-Bin1-001.fts',
                    'Calibration/Bias-001.fts', 'Bias-002.fts']
     assert cr.candidate_paths('Saint-Ex', '20210702', rel, {}, {}) == rel
+    # a night ESO has no row for at all (Ganymede 2024-12-19): every ESO-named frame is read
+    known = {('Io', '20240409')}
+    assert cr.candidate_paths('Io', '20240410', rel, types, {}, known_nights=known)[:2] == rel[:2]
+    assert cr.candidate_paths('Io', '20240410', rel, types, {}, known_nights={('Io', '20240410')}) == got
 
 
 def test_candidates_on_a_datacube_night_follow_the_cube_starts():
@@ -559,10 +563,11 @@ def test_old_lists_are_read_whatever_prefix_they_used(tmp_path):
     red.mkdir()
     (red / '1_bias.list').write_text('/data/SPECULOOSPipeline/Observations/Io/images/20240101/b1.fits\n')
     (red / '1_flat_I+z.list').write_text('/x/images/20240101/f1.fits\n/x/images/20231230/f2.fits\n')
+    (red / "1_flat_i'.list").write_text('/x/images/20240101/f3.fits\n')
     (red / '1_image_Sp0000.list').write_text('/x/images/20240101/s.fits\n')
     lists = cc.read_lists(str(red))
     assert lists['bias'] == [('20240101', 'b1.fits')] and lists['dark'] is None
-    assert lists['flat'] == {'I+z': [('20240101', 'f1.fits'), ('20231230', 'f2.fits')]}
+    assert lists['flat'] == {'I+z': [('20240101', 'f1.fits'), ('20231230', 'f2.fits')], 'i': [('20240101', 'f3.fits')]}
 
 
 def test_comparison_outcomes():
