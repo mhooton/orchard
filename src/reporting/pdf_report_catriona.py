@@ -1133,9 +1133,9 @@ def check_logs(args):
 
 def night_faults(args):
     """What the telescope lost this night (utils/telescope_faults.py): frames exposed with the mount stopped, and
-    pointing that walked away from where a block began, per target. Read from the night's raw frame headers, this
-    run's calibrated frames (T7's solutions), T7's WCS cache and the night's logs. None if that cannot be done; the
-    report then says 'unknown'."""
+    pointing that walked away from where a block began, per target. Read from the night's raw frame headers, the
+    mount's position log in the night's technical logs (for MaxIm DL frames), this run's calibrated frames (T7's
+    solutions), T7's WCS cache and the night's logs. None if that cannot be done; the report then says 'unknown'."""
     if telescope_faults is None:
         return None
     try:
@@ -1144,7 +1144,8 @@ def night_faults(args):
         faults = telescope_faults.night(
             os.path.join(args.obsdir, 'images', args.date), logs,
             processed=telescope_faults.processed_frames([os.path.join(args.datdir, 'output', args.date)]),
-            cache=telescope_faults.cache_path(basedir, args.telescope, args.date))
+            cache=telescope_faults.cache_path(basedir, args.telescope, args.date),
+            mount_log=telescope_faults.mount_log_path(args.obsdir, args.telescope, args.date))
     except Exception as e:
         print('Could not check the night for telescope faults: %s' % e)
         return None

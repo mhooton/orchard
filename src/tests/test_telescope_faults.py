@@ -296,6 +296,140 @@ def test_maxim_frames_cannot_say_but_trailed_solves_can(tmp_path):
     assert 'stars trailed (T7)' in tf.describe(e)
 
 
+# ---------------------------------------------------------------------------
+# the mount's own position log (technical_logs/<YYYY-MM-DD>/<TEL>_pos.csv)
+# ---------------------------------------------------------------------------
+
+POS_HEAD = '#Telescope and Dome positions\n\n#jd,date,time,ALT,AZ,DEC,RA,DEC(inst.),HA(inst.),{}Dome_AZ\n'
+
+
+def pos_log(path, start, end, stops=(), gaps=(), target_dist=True, inst=True):
+    """The mount's position log as the site writes it, a line a second from start to end. Tracking, the hour-angle
+    axis turns at the sidereal rate and the altitude and azimuth follow; within each (t0, t1) of `stops` every axis
+    stands still and the log's RA runs at 15 deg/h (Callisto 2024-10-12: altitude 58.6375, azimuth 36.5484 for
+    2h20m); no lines within `gaps`. `target_dist` False is the log before mid-2019; `inst` False gives 0 for both
+    instrumental axes, as some nights' logs do."""
+    rate = tf.SIDEREAL_DEG_PER_H / 3600.0
+    alt, az, ha, ra = 58.2, 36.1, 18.0, 0.07
+    lines = [POS_HEAD.format('Target_Dist,' if target_dist else '')]
+    t = start
+    while t <= end:
+        if not any(a <= t < b for a, b in gaps):
+            jd = 2440587.5 + (t - tf.EPOCH).total_seconds() / 86400.0
+            cols = ['{:.8f}'.format(jd), t.strftime('%Y-%m-%d'), t.strftime('%H:%M:%S.000'), '{:.9f}'.format(alt),
+                    '{:.9f}'.format(az), '1.260000000', '{:.9f}'.format(ra), '{:.9f}'.format(-1.26 if inst else 0.0),
+                    '{:.9f}'.format(ha if inst else 0.0)] + (['0.296000005'] if target_dist else []) + \
+                ['{:.9f}'.format(az)]
+            lines.append(','.join(cols) + '\n')
+        if any(a <= t < b for a, b in stops):
+            ra += rate / 15.0
+        else:
+            ha, alt, az = ha - rate, alt + 0.3 * rate, az + 0.6 * rate
+        t += dt.timedelta(seconds=1)
+    with open(path, 'w') as f:
+        f.writelines(lines)
+
+
+def maxim_sso_frame(d, t, obj='Sp0002+0115', airmass=1.3, exptime=36.0):
+    """A pre-Astra SSO light frame: MaxIm DL's header (no TRACKING; RA, ALTITUDE and AIRMASS are the target's) under
+    ESO's name."""
+    name = 'SPECU4.{}.fits'.format(t.strftime('%Y-%m-%dT%H:%M:%S.000'))
+    write_fits(os.path.join(d, name), [
+        ('SIMPLE', True), ('BITPIX', 16), ('NAXIS', 2), ('NAXIS1', 2048), ('NAXIS2', 2088), ('OBJECT', obj),
+        ('IMAGETYP', 'Light Frame'), ('EXPTIME', exptime), ('DATE-OBS', t.strftime('%Y-%m-%dT%H:%M:%S.000')),
+        ('RA', '00 02 06.05'), ('DEC', '+01 15 36.0'), ('AIRMASS', airmass), ('ALTITUDE', 50.3),
+        ('SWCREATE', 'MaxIm DL Version 6.29')])
+    return name
+
+
+def maxim_stop_night(obsdir, n=60, stop=(20, 45), night_='20230612', telescope='Callisto'):
+    """Laid out as ZLP has it: n MaxIm DL frames of Sp0002+0115 from 02:00 UT, one every 43 s (36 s exposures) with
+    the target's airmass falling, in <obsdir>/images/<night>; the night's position log in technical_logs, with the
+    mount standing still from 5 s before frame stop[0] (0-based) until 3 s after frame stop[1] - 1 ends. stop None:
+    tracking all night."""
+    raw = os.path.join(obsdir, 'images', night_)
+    os.makedirs(raw)
+    t0 = dt.datetime(int(night_[:4]), int(night_[4:6]), int(night_[6:]), 2, 0, 0) + dt.timedelta(days=1)
+    names = [maxim_sso_frame(raw, t0 + dt.timedelta(seconds=43 * i), airmass=1.3 - 0.002 * i) for i in range(n)]
+    stops = []
+    if stop:
+        stops = [(t0 + dt.timedelta(seconds=43 * stop[0] - 5), t0 + dt.timedelta(seconds=43 * (stop[1] - 1) + 39))]
+    log = tf.mount_log_path(obsdir, telescope, night_)
+    os.makedirs(os.path.dirname(log))
+    pos_log(log, t0 - dt.timedelta(minutes=5), t0 + dt.timedelta(seconds=43 * n + 300), stops=stops)
+    return raw, log, names
+
+
+def test_mount_log_finds_the_stop_maxim_headers_cannot_show(tmp_path):
+    raw, log, names = maxim_stop_night(str(tmp_path))
+    assert tf.flags(tf.night(raw)) == ('unknown', 'unknown')
+    res = tf.night(raw, mount_log=log)
+    r = res['Sp0002+0115']
+    assert r['frames'] == 60 and r['tracking_known']
+    (e,) = r['episodes']
+    assert e['kind'] == 'tracking' and (e['i0'], e['i1'], e['n']) == (21, 45, 25)
+    assert e['first'] == names[20] and e['last'] == names[44]
+    d = e['detail']
+    # where the mount stood: the log's altitude after 1,155 s of tracking at 0.3 of the sidereal rate
+    assert d['source'] == 'mount log' and d['altitude'] == pytest.approx(59.6, abs=0.05) and d['parked'] == 0
+    assert 'airmass' not in d and 'ra_rate' not in d          # MaxIm DL's are the target's, not the mount's
+    assert tf.flags(res) == ('Y', 'unknown')
+    assert tf.describe(e, r['frames']) == ("Sp0002+0115: tracking stopped 02:14–02:31 UT, frames 21–45 of 60 "
+                                           "(25 frames); the mount's position log has it standing still at "
+                                           "altitude 60 deg")
+    assert tf.digest_text(res) == 'telescope: tracking stopped on Sp0002+0115 02:14–02:31 UT (25 frames)'
+
+
+def test_mount_log_of_a_tracking_mount_says_no(tmp_path):
+    raw, log, _ = maxim_stop_night(str(tmp_path), stop=None)
+    res = tf.night(raw, mount_log=log)
+    assert tf.episodes(res) == [] and tf.flags(res) == ('N', 'unknown')
+    # a night without its log (Artemis after June 2025, SSO before 2019) cannot say, as before
+    assert tf.flags(tf.night(raw, mount_log=str(tmp_path / 'missing_pos.csv'))) == ('unknown', 'unknown')
+
+
+def test_mount_log_exposure_shares(tmp_path):
+    p = str(tmp_path / 'Io_pos.csv')
+    t = dt.datetime(2023, 8, 11, 2, 0, 0)
+    minute = dt.timedelta(minutes=1)
+    pos_log(p, t, t + 30 * minute, stops=[(t + 10 * minute, t + 20 * minute)], gaps=[(t + 25 * minute, t + 27 * minute)])
+    log = tf.MountLog(p)
+    assert log.exposure(t + 2 * minute, 60)['idle'] == 0.0
+    still = log.exposure(t + 12 * minute, 60)
+    assert still['idle'] == 1.0 and (still['alt'], still['az']) == pytest.approx((58.2 + 0.3 * 600 * 15.041 / 3600,
+                                                                                  36.1 + 0.6 * 600 * 15.041 / 3600))
+    assert log.exposure(t + 9.5 * minute, 60)['idle'] == pytest.approx(0.5, abs=0.02)   # stopped half way through
+    assert log.exposure(t + 24 * minute + dt.timedelta(seconds=40), 60) is None    # the log covers 19 s of it
+    assert log.exposure(t + 24 * minute, 60)['idle'] == 0.0                         # ... and 59 s of this one
+    assert log.exposure(t - 5 * minute, 60) is None and log.exposure(t + 40 * minute, 60) is None
+
+
+@pytest.mark.parametrize('target_dist,inst', [(False, True), (True, False)])
+def test_mount_log_formats(tmp_path, target_dist, inst):
+    """Before mid-2019 the log has no Target_Dist; some nights give 0 for both instrumental axes, which leaves the
+    altitude and azimuth to say whether the mount moved."""
+    p = str(tmp_path / 'Io_pos.csv')
+    t = dt.datetime(2019, 2, 21, 2, 0, 0)
+    minute = dt.timedelta(minutes=1)
+    pos_log(p, t, t + 30 * minute, stops=[(t + 10 * minute, t + 20 * minute)], target_dist=target_dist, inst=inst)
+    log = tf.MountLog(p)
+    assert log.exposure(t + 2 * minute, 60)['idle'] == 0.0 and log.exposure(t + 12 * minute, 60)['idle'] == 1.0
+
+
+def test_astra_headers_are_not_second_guessed_by_the_mount_log(tmp_path, monkeypatch):
+    """Where Astra's TRACKING says, the log is not even read."""
+    d = str(tmp_path)
+    ganymede_night(d)
+    monkeypatch.setattr(tf, 'read_mount_log', lambda path: pytest.fail('read for frames that have TRACKING'))
+    (e,) = tf.night(d, mount_log=str(tmp_path / 'Ganymede_pos.csv'))['TOI-4336 c']['episodes']
+    assert e['kind'] == 'tracking' and 'source' not in e['detail']
+
+
+def test_mount_log_path():
+    assert tf.mount_log_path('/data/Observations/Io', 'Io', '20230810') == \
+        '/data/Observations/Io/technical_logs/2023-08-10/Io_pos.csv'
+
+
 def test_t7_outcomes_last_attempt_wins(tmp_path):
     a, b = tmp_path / 'old.log', tmp_path / 'new.log'
     a.write_text(t7_line('SPECU3.X.fits', ok=False) + '\n')

@@ -1050,7 +1050,8 @@ carries a note in place of the per-target columns.
 
 **Frames lost to the telescope** (`src/utils/telescope_faults.py`, `docs/telescope-faults.md`): page 2's
 *Special Events* table says, beside the weather alert, whether the mount stopped tracking (Astra's `TRACKING`
-keyword, or T7's `Sources trailed`) and whether the pointing walked off (each solved frame's WCS), with a line per
+keyword; for MaxIm DL frames, the mount's own position log, `technical_logs/<YYYY-MM-DD>/<TEL>_pos.csv`; or T7's
+`Sources trailed`) and whether the pointing walked off (each solved frame's WCS), with a line per
 episode: target, UT range, frames. T11 also leaves the result in
 `reports/telescope_faults/<date>.json` for the queue's morning digest.
 
