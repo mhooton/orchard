@@ -9,6 +9,9 @@ wcs_cache.apply on a cache hit. Covers:
     the frame as it was and no temporary file
   - an unchanged header is not written; a frame without checksum cards gets none
   - the header is the one astropy's update mode writes, but for the checksum cards' timestamps
+  - T6 (header_write.writeto, from pipered.reduce_file): the frame verifies, its pixels and every other card are
+    what writeto(checksum=False) wrote before, DATASUM comes from the array in memory (astropy's own sum for every
+    dtype it writes unscaled), frames without the cards get them in place, and T7 then trusts its DATASUM
 
 T7's own runs (a solve, then a cache hit) on frames written as T6 writes them are in test_wcs_cache.py.
 
@@ -259,3 +262,165 @@ def test_the_header_is_the_one_astropys_update_mode_writes(tmp_path, make_stale)
         header.update(new)
     assert _cards(a) == _cards(b)
     assert data_bytes(a) == data_bytes(b) and verifies(a) and verifies(b)
+
+
+# ------------------------------------------------------------------------------------------------ T6
+
+
+@pytest.mark.parametrize('dtype', ['<f4', '>f4', '<f8', '>i2', '<i4', '<i8'])
+def test_a_datasum_from_memory_is_astropys(tmp_path, dtype):
+    rng = np.random.default_rng(5)
+    a = rng.normal(0, 3000, (37, 23)).astype(dtype)
+    if a.dtype.kind == 'f':
+        a[0, :5] = [np.nan, -0.0, np.inf, -np.inf, 1e-40]
+    f = str(tmp_path / 'a.fits')
+    for data in (a, a[::2, 1::3]):                       # and a non-contiguous view
+        fits.PrimaryHDU(data).writeto(f, checksum=True, overwrite=True)
+        assert rp.array_datasum(data) == int(fits.getheader(f)['DATASUM'])
+
+
+@pytest.mark.parametrize('dtype', [np.uint16, np.int8, np.uint8])
+def test_a_datasum_from_memory_refuses_data_astropy_scales(dtype):
+    with pytest.raises(ValueError):
+        rp.array_datasum(np.zeros((3, 4), dtype))
+
+
+def t6_write(raw, out, writer, data=None):
+    """T6's write of `raw` (calibration/pipered.py): the opened raw frame, header cards added, float32 pixels in its
+    place, written by `writer`."""
+    with fits.open(raw) as h:
+        h[0].header['OVERSCAN'] = 300.0
+        h[0].header.add_history('Overscan of 300.0 subtracted')
+        h[0].data = (h[0].data - 300.0).astype(np.float32) if data is None else data
+        writer(h, out)
+    return out
+
+
+def old_t6_writer(hdulist, path):
+    hdulist.writeto(path)
+
+
+def keywords(path):
+    """The header's keywords, but for blank cards: astropy leaves two where it removed BZERO/BSCALE, and a new card
+    (CHECKSUM/DATASUM) takes their place."""
+    return [c.keyword for c in fits.getheader(path).cards if c.keyword]
+
+
+def added_checksum_cards(new, old):
+    """`new`'s keywords are `old`'s with CHECKSUM and DATASUM added, side by side (astropy files a new keyword
+    before the trailing HISTORY cards)."""
+    k = keywords(new)
+    i = k.index('CHECKSUM')
+    return k[i + 1] == 'DATASUM' and k[:i] + k[i + 2:] == keywords(old)
+
+
+def cards_but_checksums(path):
+    return [(c.keyword, c.value, c.comment) for c in fits.getheader(path).cards
+            if c.keyword not in ('CHECKSUM', 'DATASUM', '')]
+
+
+def test_t6_makes_the_raw_frames_cards_valid_from_memory(tmp_path, monkeypatch):
+    raw = raw_frame(str(tmp_path / 'raw.fits'))
+    old = t6_write(raw, str(tmp_path / 'old.fits'), old_t6_writer)
+    monkeypatch.setattr(hw, 'data_sum', no_data_sum)
+    new = t6_write(raw, str(tmp_path / 'new.fits'), hw.writeto)
+    assert not verifies(old) and verifies(new)
+    assert data_bytes(new) == data_bytes(old) and os.path.getsize(new) == os.path.getsize(old)
+    assert keywords(new) == keywords(old) and cards_but_checksums(new) == cards_but_checksums(old)
+
+
+@pytest.mark.parametrize('extra', range(CARDS_PER_BLOCK - 4, CARDS_PER_BLOCK + 1))
+def test_t6_adds_the_cards_a_frame_lacks_in_place(tmp_path, monkeypatch, extra):
+    """Artemis: no CHECKSUM/DATASUM in the raw frame. The two cards go in before astropy writes, so setting them is
+    a header write in place, whichever side of a block boundary the header ends."""
+    raw = str(tmp_path / 'raw.fits')
+    h = fits.Header()
+    for k in range(extra):
+        h['KEY{}'.format(k)] = k
+    fits.PrimaryHDU(np.arange(np.prod(SHAPE), dtype=np.float32).reshape(SHAPE), header=h).writeto(raw)
+    old = t6_write(raw, str(tmp_path / 'old.fits'), old_t6_writer)
+    monkeypatch.setattr(hw, 'data_sum', no_data_sum)
+    monkeypatch.setattr(hw.shutil, 'copyfileobj', no_data_sum)              # no rewrite through a temporary file
+    new = t6_write(raw, str(tmp_path / 'new.fits'), hw.writeto)
+    assert verifies(new) and data_bytes(new) == data_bytes(old)
+    assert added_checksum_cards(new, old)
+    assert cards_but_checksums(new) == cards_but_checksums(old)
+
+
+@pytest.mark.parametrize('data', [np.arange(np.prod(SHAPE), dtype=np.int16).reshape(SHAPE),
+                                  np.arange(np.prod(SHAPE), dtype=np.uint16).reshape(SHAPE),
+                                  np.ma.array(np.ones(SHAPE, np.float32), mask=np.eye(*SHAPE, dtype=bool))])
+def test_t6_sums_the_file_for_anything_but_a_float32_array(tmp_path, sums, data):
+    raw = raw_frame(str(tmp_path / 'raw.fits'))
+    try:
+        new = t6_write(raw, str(tmp_path / 'new.fits'), hw.writeto, data=data)
+    except NotImplementedError:             # astropy cannot write a masked array at all
+        assert np.ma.isMaskedArray(data)
+        return
+    assert len(sums) == 1 and verifies(new)
+
+
+def test_t6_sets_the_cards_on_the_header_astropy_just_wrote(tmp_path, monkeypatch):
+    raw = raw_frame(str(tmp_path / 'raw.fits'))
+    monkeypatch.setattr(hw, 'read_header_bytes', no_data_sum)              # the file's header is never parsed
+    monkeypatch.setattr(hw, 'data_sum', no_data_sum)
+    assert verifies(t6_write(raw, str(tmp_path / 'proc.fits'), hw.writeto))
+
+
+class LateCard(fits.HDUList):
+    """An HDUList whose header in memory gains a card after it was written, so it is not what the file holds."""
+
+    def writeto(self, *args, **kwargs):
+        super().writeto(*args, **kwargs)
+        self[0].header['LATE'] = 1
+
+
+def test_t6_uses_the_files_header_if_it_is_not_the_one_in_memory(tmp_path):
+    f = str(tmp_path / 'proc.fits')
+    hdul = LateCard([fits.PrimaryHDU(np.ones(SHAPE, np.float32))])
+    hw.writeto(hdul, f)
+    assert verifies(f) and 'LATE' not in fits.getheader(f)
+
+
+def test_t7_trusts_what_t6_wrote(tmp_path, monkeypatch):
+    raw = raw_frame(str(tmp_path / 'raw.fits'))
+    f = t6_write(raw, str(tmp_path / 'proc.fits'), hw.writeto)
+    monkeypatch.setattr(hw, 'data_sum', no_data_sum)
+    edit(f, CRVAL1=313.7)
+    assert verifies(f)
+
+
+def _reduce(path, outdir):
+    """pipered.reduce_file on an Io frame with the real instrument config (as test_readout.py does)."""
+    from calibration import pipered, readout
+    with fits.open(path) as hdul:
+        params = pipered.get_instrument_parameters(hdul)
+    trimmed = (2066 - 22, 2048 - 2)
+    os.makedirs(outdir)
+    pipered.reduce_file(path, outdir + '/', params, 'bias.fits', np.full(trimmed, 7.0, np.float32),
+                        {'combined': np.zeros(trimmed, np.float32)}, {'I+z': np.ones(trimmed, np.float32)}, None,
+                        '9.2', 0.0, 'v3', readout_record=readout.measure_night([], [], '20251105', 'Artemis', params))
+    return outdir + '/procSp0000-S001-R001-C001-I+z.fits'
+
+
+@pytest.mark.parametrize('eso_cards', [True, False])
+def test_reduce_file_writes_a_frame_that_verifies_with_todays_pixels(tmp_path, monkeypatch, eso_cards):
+    rng = np.random.default_rng(10)
+    raw = np.full((2088, 2048), 300.0)
+    raw[:-15] += 7.0 + rng.poisson(1500.0, (2073, 2048))
+    path = str(tmp_path / 'images' / 'Sp0000-S001-R001-C001-I+z.fts')
+    os.makedirs(os.path.dirname(path))
+    hdu = fits.PrimaryHDU(np.round(raw).astype(np.uint16))              # BITPIX 16, BZERO 32768, as delivered
+    hdu.header.update(TELESCOP='Artemis', EXPTIME=30.0, FILTER='I+z')
+    hdu.writeto(path, checksum=eso_cards)
+    real = hw.writeto
+    monkeypatch.setattr(hw, 'writeto', old_t6_writer)
+    old = _reduce(path, str(tmp_path / 'old'))
+    monkeypatch.setattr(hw, 'writeto', real)
+    monkeypatch.setattr(hw, 'data_sum', no_data_sum)
+    new = _reduce(path, str(tmp_path / 'new'))
+    assert verifies(new) and not (eso_cards and verifies(old))
+    assert data_bytes(new) == data_bytes(old)
+    assert fits.getheader(new)['BITPIX'] == -32
+    assert keywords(new) == keywords(old) if eso_cards else added_checksum_cards(new, old)
+    assert cards_but_checksums(new) == cards_but_checksums(old)
