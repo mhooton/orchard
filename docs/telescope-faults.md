@@ -5,9 +5,9 @@ pointing walked off the target. Reprocessing cannot recover those frames, and us
 the telescope, not the pipeline. `src/utils/telescope_faults.py` finds both faults per target-night from data the
 pipeline already has, and the night report (T11) and the morning digest show them beside the weather flags.
 
-It reads, and never writes, the raw frames' headers, the calibrated frames' WCS (T7's solutions), T7's WCS cache
-(`docs/wcs-cache.md`) and T7's per-frame lines in the night's logs. It uses the standard library only, so the job
-queue can import it.
+It reads, and never writes, the raw frames' headers, the mount's own position log in the night's technical logs, the
+calibrated frames' WCS (T7's solutions), T7's WCS cache (`docs/wcs-cache.md`) and T7's per-frame lines in the
+night's logs. It uses the standard library only, so the job queue can import it.
 
 ## Tracking stopped
 
@@ -32,9 +32,92 @@ not a stop. Sky flats move between exposures and are not light frames.
 
 Astra started on Callisto on 2023-12-15, on Ganymede on 2025-02-27, on Io on 2026-01-28 and on Europa on 2026-01-29
 (the first light frames with `TRACKING`; none returned to MaxIm DL). MaxIm DL frames (Artemis, and SSO before
-Astra) have no `TRACKING`. Their `ALTITUDE` is computed from the target's coordinates, so their headers cannot show
-a stop. For them only T7 can tell. Since v4.1.0 (`astrom/pointer_wcs.py`) T7 fails a frame whose brightest sources
-are stretched one way as `Sources trailed (...)`. Three such frames in a row make a *trailed* episode.
+Astra) have no `TRACKING`. Their `ALTITUDE` and `AIRMASS` are computed from the target's coordinates, so their
+headers cannot show a stop. The mount's own position log can (next section). Where there is no log, only T7 can
+tell. Since v4.1.0 (`astrom/pointer_wcs.py`) T7 fails a frame whose brightest sources are stretched one way as
+`Sources trailed (...)`. Three such frames in a row make a *trailed* episode.
+
+### The mount's own position log
+
+Each telescope's ASTELCO controller writes the mount's position once a second into the night's site logs,
+`Observations/<TEL>/technical_logs/<YYYY-MM-DD>/<TEL>_pos.csv`, noon to noon UT, with the columns `jd, date, time,
+ALT, AZ, DEC, RA, DEC(inst.), HA(inst.), Target_Dist, Dome_AZ` (`Target_Dist` from mid-2019). The files come from
+the site every afternoon with the rest of the night's technical logs. They exist for the four SSO telescopes from
+February 2019 (Callisto from 02-13, the others from 02-20) and for Artemis from September 2021 to June 2025. Before
+2019 the SSO site logs hold only ESO's seeing and water-vapour logs. A few files hold only their header (Artemis
+2023-05-15).
+
+Tracking, the mount's hour-angle axis turns at the sidereal rate, 0.25 degrees a minute, whatever the target's
+declination, and the altitude and azimuth follow the target. When the mount stops, every axis stands still. The
+altitude, the azimuth and both instrumental axes stay fixed to 1e-4 degrees or better, while the log's RA, worked out
+from the fixed hour angle, runs at 15 degrees an hour. Between two lines the mount stood still if every axis moved
+at less than a tenth of the sidereal rate (`STILL_RATE`). Each MaxIm DL light frame gets the share of its exposure
+the mount stood still, and a frame still for half its exposure or more is a stopped frame, as with Astra's keywords.
+A gap of more than 10 s between lines is unknown, and so is a frame the log covers less than half of. Where a frame
+has Astra's keywords, they decide and the log is not read.
+
+The log shows each measured stop from its first second:
+
+| | Astra's `TRACKING` | The position log |
+|---|---|---|
+| Ganymede 2025-07-16 TOI-4336 c | 00:30:03–03:11:57 UT, 570 frames | still from 00:29:58 to 03:13:20 at altitude 63.32, azimuth 227.30; the same 570 frames |
+| Ganymede 2025-08-25 Sp1954+1801 | 00:32:41–04:42:11 UT, 333 frames | still from 00:32:11 at 39.93, 33.98; 334 frames |
+| Ganymede 2025-09-04 Sp1954+1801 | 02:59:44–04:38:58 UT, 133 frames | still from 02:59:18 at 43.07, 333.66; 134 frames |
+| Callisto 2024-10-12 Sp0002+0115 | 02:04:24–04:22:39 UT, 193 frames | slewed out of the park at 02:04 and never tracked; still to 04:27:01 at 58.64, 36.55; the same 193 frames |
+
+Frame by frame over those four nights, the log calls stopped all 1,229 frames that `TRACKING` calls stopped, and none
+of the 2,083 it calls tracked. Two more are the first frame of a stop, during which the mount stood still for 60%
+and 76% of the exposure. Astra's keyword still has them tracked.
+
+**The two clocks.** The controller's clock is not the one that stamps the frames. Before Astra, ACP's PC stamped
+them, and the two clocks mostly agreed to 2 s, the controller's ahead. For weeks at a time, though, they drifted
+apart. Europa's position log ran 17 s behind ACP's clock on 2019-04-19 and 35 s behind by 04-22, and it ran 31 s
+ahead on 05-05. Half a minute moves a stop's edge by a frame. It also puts the night's last frame onto a still
+mount, though the frame ends seconds before ACP turns tracking off. On Europa 2019-04-19 to 04-22 those last frames
+have round stars.
+
+So the detector sets the log's clock against ACP's, from the slews both record: ACP's `Start slew to` lines
+(`<TEL>_ACP.txt`, beside the position log) against the starts of fast motion in the position log (an axis over
+0.05 deg/s). The offset most of ACP's slews agree on to 3 s is used, if two or more agree and no other offset has as
+many. ACP slews to a target a second time a minute after acquiring it, to correct its pointing. The log rarely
+registers so small a move, so a slew to the target of the slew before, within 150 s, has no vote. Without ACP's log
+(the Astra era) or with too few slews, the offset is 0.
+
+Measured on one night a month per telescope, from March 2019 to Astra (295 nights):
+
+| Clock offset | Nights |
+|---|---|
+| log 0 to 3 s ahead | 205 |
+| further apart: Europa 2019-05-15 (+36.6 s) and 2025-03-15 (−21.8 s) | 2 |
+| too few distinct slews, or a tie | 25 |
+| no slews in ACP's log (nothing observed) | 63 |
+
+The nights the census read again found two more such spells: Io 2019-06-02 (−11 s), and Europa 2025-03-14 to
+03-19, drifting from −16 s to −45 s at 6 s a day. Corrected, the false end-of-night stops on those nights go.
+
+Two other checks:
+
+- **The controller's status log.** `<TEL>_TSI_status.csv` records `CURRENT.TRACK`, the number of the trajectory the
+  mount is running, or 0 when it runs none. For all 18 stops the position log found in the Astra era, and 31 of the
+  79 before it, `CURRENT.TRACK` was 0 from the first frame to the last, or fell to 0 during the first frame. The other
+  way it proves nothing. When an axis drive failed (Ganymede February 2022, Callisto 2021, both with `ERR_DeviceError`
+  on axis 0), the controller kept a trajectory running while the axes stood still, and the frames trailed all the same.
+- **The frames.** A tracked frame's stars are a few pixels across. On a stopped mount each star is a streak, 15 arcsec
+  per second times the cosine of the declination. Checked frame by frame (the first, middle and last frame of each
+  stop, and the frames either side; `trailcheck.py`), 62 of the 65 pre-Astra stops with enough stars detected have
+  trailed frames inside, with axis ratios of 4 to 220 and up to 150 streaks; the other three show streaks by eye. The
+  frame after a stop is round in 32 of 35; the frame before is round in 49 of 64, and the rest are partly trailed,
+  the mount having stopped during them for less than half the exposure.
+
+The other site logs do not show a stop on their own:
+
+| File | During a stop |
+|---|---|
+| `_TSI_TrackingKernel.txt` | `Unexpected end of trajectory execution` as the three Ganymede stops began; nothing for Callisto 2024-10-12, whose mount never started tracking after its slew |
+| `_events.csv` | `Data from telescope is not valid` as the three Ganymede stops began; before Astra, the causes below (`ERR_TrajectoryNoPoints`, `Time not valid. tracking points deleted`, `ERR_DeviceError` on axis 0), some of which also come on nights without a stop; `Tracking started`/`stopped` events come for some trajectories only |
+| `_offsets.csv` | DONUTS stops correcting, as it also does in cloud, during an autofocus and on unguided blocks |
+| `_TSI_commands.csv` | nothing until the next slew |
+| `_ACP.txt` (MaxIm DL era) | the run's end (`RUN STOPPED AT SPECIFIED QUIT TIME`, `[**HARDWARE OR DRIVER ERROR**]`), not the stop |
 
 ## Pointing drift
 
@@ -82,11 +165,14 @@ Each frame's WCS comes from the first of these that has one:
 
 - **The night report (T11, page 2).** The *Special Events* table has two more cells beside the weather alert:
   *Tracking lost* and *Pointing drift*, `Y` in bold red, `N` in green, as the weather flags are, and `unknown`
-  where the frames cannot say (MaxIm DL headers for tracking; no solved frame for drift). Each episode gets a line
-  under the table, for example:
+  where the frames cannot say (MaxIm DL headers without the mount's position log for tracking; no solved frame for
+  drift). Each episode gets a line under the table, for example:
 
   > TOI-4336 c: tracking stopped 00:30–03:11 UT, frames 347–916 of 916 (570 frames); header RA ran 15.0 deg/h,
   > airmass fixed at 1.119
+
+  > Sp1223-2757: tracking stopped 00:44–04:27 UT, frames 122–417 of 417 (296 frames); the mount's position log has
+  > it standing still at altitude 70 deg
 
   > Sp1356+4342: pointing jumped 4.3' at 01:34 UT; 01:34–06:54 UT, frames 90–648 of 648 (559 frames); no frame
   > solved after 01:49 UT
@@ -102,9 +188,11 @@ Each frame's WCS comes from the first of these that has one:
 
 ## The census
 
-Run over the archive on 2026-10-20, read-only. Every episode is listed in `docs/telescope_faults_census.csv` (212
-rows: telescope, night, kind, target, UT range, frames, minutes, detail). Scripts and raw output are in
-`mh_scratch/telescope_faults/` on appct (`census_tracking.py`, `census_drift.py`, `*.jsonl`).
+Run over the archive on 2026-10-20 (headers and solutions) and 2026-10-21 (the position logs), read-only. Every
+episode is listed in `docs/telescope_faults_census.csv` (298 rows: telescope, night, kind, target, UT range, frames,
+minutes, detail). Scripts and raw output are in `mh_scratch/telescope_faults/` (`census_tracking.py`,
+`census_drift.py`) and `mh_scratch/sitelog_tracking/` (`census_sitelog.py`, `census_fix.py`, `crosscheck_track.py`,
+`trail_sample.py`, `*.jsonl`) on appct.
 
 ### Tracking stops
 
@@ -136,7 +224,63 @@ Seventeen stops on 17 nights, of three kinds:
 - **Six at the mount's altitude limit.** The mount stopped at 20 degrees (airmass 2.898) while the camera kept
   exposing. These were Chilean and asteroid targets, and Sp0254-1934 on Callisto twice (2024-11-19 and 11-27, 12 and
   27 frames).
-- **Five single frames**, with the mount idle for 52–85% of the exposure.
+- **Five single frames**, with the mount idle for 52–85% of the exposure. The position log has the mount tracking
+  through all five: each is the first frame of a block, and the hour-angle axis already turned at the sidereal rate
+  (Callisto 2023-12-28: the slew ended 15 s before the exposure began). Astra's flag lags at block starts.
+
+The position log, read the same way over the Astra era (ESO's frames, 1,594 nights the log covers), finds 18 stops.
+They are the twelve stops above other than the five single frames, with one more frame on four of them, and six the
+header census lacks. Two are on disk and shorter than its 5-minute sampling, and Astra's `TRACKING` agrees on both (Callisto
+2024-02-29 ch_TOI-519b, Ganymede 2025-08-22 ch_HS2231+2441_2, both at the 20-degree limit). Four are on Chilean
+programmes' frames, which are never downloaded (Io 2026-02-07 and 06-03/04, Ganymede 2025-07-21, at 20–22 degrees).
+On Callisto 2024-12-09, the false stop above, the log has the mount tracking.
+
+### Tracking stops before Astra
+
+The position log against ESO's list of every SCIENCE frame (the completeness ledger's per-frame inventory,
+`mh_scratch/ledger/eso/frames`, 2026-10-08: start, exposure, object, programme), so without opening a frame:
+7,002 MaxIm DL telescope-nights from 2019 to Astra, 5.5 million frames, the log covering 5.2 million of them on 6,695
+nights. Each log was read only between the night's first and last frame, a night a second at most. Every night where
+some frame overlapped a still period was read again through `MountLog` itself, with the clock set from ACP's slews,
+and those results stand.
+
+| Year | Io | Europa | Ganymede | Callisto |
+|---|---|---|---|---|
+| 2019 | 1 / 259 (6 h) | 1 / 271 (5 h) | 1 / 263 (6 h) | 1 / 284 (1 h) |
+| 2020 | 0 / 155 | 0 / 158 | 0 / 146 | 0 / 143 |
+| 2021 | 0 / 278 | 0 / 324 | 0 / 319 | 25 / 293 (68 h) |
+| 2022 | 0 / 287 | 4 / 286 (6 h) | 8 / 257 (21 h) | 7 / 221 (21 h) |
+| 2023 | 2 / 316 | 3 / 318 (6 h) | 3 / 302 | 0 / 251 |
+| 2024 | 0 / 289 | 0 / 271 | 1 / 299 (1 h) | |
+| 2025 | 0 / 294 | 3 / 323 (4 h) | 1 / 47 (1 h) | |
+| 2026 | 0 / 19 | 0 / 22 | | |
+
+*Telescope-nights with a stop / MaxIm DL nights the log covers (hours of frames lost).*
+
+79 stops on 61 telescope-nights, 15,331 frames and 147 hours; 74 of them, 143 hours, on the survey's own programme.
+Fifty stops of an hour or more hold 141 of the hours, and 41 lasted to the night's last frame. Most came in spells:
+
+- **Callisto, May 2021 to November 2022.** 37 stops on 32 nights, 89 hours. Through 2021 and into March 2022 the
+  controller logged errors on axis 0 (`ERR_DeviceError`), mostly keeping a trajectory running while the axes stood
+  still (2021-05-31 Sp2038-5223, 230 frames to the end of the night; 2021-06-09 and 06-10 Sp1609-3431, 367 and 531;
+  2021-11-18 Sp0335-4430, 675). From May 2022 its GPS clock lost sync (`GPS clock is not synchronized`, `Time not
+  valid. tracking points deleted`) on each night the mount stopped: 05-11 Sp1359-5636 (982 frames), 05-19
+  Sp1424-3514 (1,085), 10-24 Sp0027-5401 (746), 11-09 Sp0218-0617 (625), 11-14 Sp0339-3525 (1,046).
+- **Ganymede, 2022-02-16 to 03-01.** 16 stops on 8 nights, 22 hours, with `ERR_DeviceError` on axis 0 and, on 03-01,
+  129 `axis (0) unexpectedly changed to powered on state`. Sp0830+0947 lost 437 and 343 frames on 02-18 and 02-19.
+- **2019-05-05, all four telescopes.** Io, Europa and Ganymede stopped mid-target at 00:23–00:44 UT and again at
+  05:24–06:10, Callisto once at 00:50; Io and Ganymede logged `ERR_TrajectoryNoPoints` (`Trajectory ran out of
+  points`). The second stops ended at 07:14–07:21 UT, as the controllers were shut down (`TSI is closing down`): 7
+  stops, 1,739 frames, 17 hours.
+- **Europa, 2022 to 2025.** Ten nights, one stop each, mostly from 06:15–09:30 UT to the end of the night (2023-09-20
+  Sp0216+1335, 548 frames; 2025-04-30 Sp1621-3711, 206).
+
+Three stops were at the altitude limit, here 23.5–24 degrees (Io 2023-05-02 and 06-26 TOI-1227.01, 11 frames each;
+Europa 2022-02-01, a Chilean target).
+Not counted: Europa 2019-09-04 Gaijin-1 (157 frames), a manual observation after ACP's script was stopped at
+06:26 UT, with a trajectory running throughout, so probably deliberate; and four 1-s TEST exposures on engineering
+nights. SSO nights before February 2019, and Artemis, are not in this census: the former have no position log, and
+Artemis's frames are not at ESO.
 
 ### Pointing drifts
 
@@ -194,3 +338,8 @@ candidate list for reruns: `mh_scratch/telescope_faults/noisy_wcs_target_nights.
 | `NOISY_STEP_ARCMIN` | 0.25 | median frame-to-frame step above which the solutions, not the pointing, are moving |
 | `PAUSE_MINUTES`, `PAUSE_CADENCES` | 2 min, 4 | frames this far apart mark a pause, after which settling is allowed |
 | `LOW_ALTITUDE` | 25 deg | a stop below this has its altitude given (it may be the mount's limit) |
+| `STILL_RATE` | 0.1 | share of the sidereal rate below which the position log has an axis standing still |
+| `LOG_STEP_MAX` | 10 s | lines of the position log further apart leave the time between them unknown |
+| `LOG_COVER_MIN` | 0.5 | share of an exposure the position log must cover to say whether the mount tracked |
+| `SLEW_RATE` | 0.05 deg/s | an axis faster than this in the position log is slewing |
+| `OFFSET_MATCH`, `OFFSET_AGREE`, `OFFSET_VOTES` | 150 s, 3 s, 2 | ACP's slews and the log's within 150 s pair; 2 or more agreeing to 3 s set the clock offset |
