@@ -5,6 +5,15 @@ set -o nounset
 set -o errexit
 set -o pipefail
 
+# One BLAS/OpenMP thread per process, unless the caller sets these. Without them every Python process that imports
+# numpy starts OpenBLAS's pool of up to 64 threads, and orchard-server's systemd scope allows 4,096 tasks (threads
+# count) for the whole container: one T7 with 20 workers holds 1,280. When the pool's pthread_create fails, OpenBLAS
+# raises SIGINT, so a stage dies with KeyboardInterrupt (exit 130 at numpy import), or a pool worker dies mid-chunk and
+# Pool.map waits for it until the queue's timeout (2026-10-20/21). Orchard's parallelism is its process pools.
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+
 abspath() {
     python -c "import os; print(os.path.realpath('${1}'))"
 }
@@ -28,10 +37,13 @@ T12="1" # sweep from v3 to v2
 # Parse and remove task control arguments, leaving positional args intact
 filtered_args=()
 only_task=""
+# --from_TN: run TN and every stage after it (less any --no_T); the earlier stages' products must be there already.
+# For a night promotion has moved into v2, utils/restage.py puts them back first (docs/rerun-from-stage.md).
+FROM_TASK="0"
 FORCE_PLATESOLVE="0"
 USE_EXISTING_CALIBRATIONS="0"
 SAVE_FLAT_PRODUCTS="0" # T4: also write flats/proc*, std.fts and variance.fts (never read)
-FRAME_FORMAT="int16" # after T11, store calibrated frames as int16, rice (int16 + lossless Rice, .fits.fz) or float32
+FRAME_FORMAT="rice" # after T11, store calibrated frames as rice (int16 + lossless Rice, .fits.fz), int16 or float32
 CORES_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
@@ -60,6 +72,7 @@ while [[ $# -gt 0 ]]; do
         --only_T10) only_task="10"; shift ;;
         --only_T11) only_task="11"; shift ;;
         --only_T12) only_task="12"; shift ;;
+        --from_T[1-9]|--from_T1[0-2]) FROM_TASK="${1#--from_T}"; shift ;;
         --force-platesolve) FORCE_PLATESOLVE="1"; shift ;;
         --use-existing-calibrations) USE_EXISTING_CALIBRATIONS="1"; shift ;;
         --save-flat-products) SAVE_FLAT_PRODUCTS="1"; shift ;;
@@ -88,6 +101,25 @@ if [[ -n "$only_task" ]]; then
     esac
 fi
 
+# Handle --from_TX: nothing before X
+if [ "${FROM_TASK}" != "0" ]; then
+    if [[ -n "$only_task" ]]; then
+        echo "--from_T${FROM_TASK} and --only_T${only_task} cannot be combined" >&2
+        exit 1
+    fi
+    [ "${FROM_TASK}" -gt 1 ] && T1="0"
+    [ "${FROM_TASK}" -gt 2 ] && T2="0"
+    [ "${FROM_TASK}" -gt 3 ] && T3="0"
+    [ "${FROM_TASK}" -gt 4 ] && T4="0"
+    [ "${FROM_TASK}" -gt 5 ] && T5="0"
+    [ "${FROM_TASK}" -gt 6 ] && T6="0"
+    [ "${FROM_TASK}" -gt 7 ] && T7="0"
+    [ "${FROM_TASK}" -gt 8 ] && T8="0"
+    [ "${FROM_TASK}" -gt 9 ] && T9="0"
+    [ "${FROM_TASK}" -gt 10 ] && T10="0"
+    [ "${FROM_TASK}" -gt 11 ] && T11="0"
+fi
+
 # Reassign positional parameters with filtered arguments
 set -- "${filtered_args[@]}"
 
@@ -97,7 +129,17 @@ case "${FRAME_FORMAT}" in
 esac
 
 # Make variables readonly after parsing
-readonly T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12 FORCE_PLATESOLVE USE_EXISTING_CALIBRATIONS SAVE_FLAT_PRODUCTS CORES_OVERRIDE FRAME_FORMAT
+readonly T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12 FORCE_PLATESOLVE USE_EXISTING_CALIBRATIONS SAVE_FLAT_PRODUCTS CORES_OVERRIDE FRAME_FORMAT FROM_TASK
+
+# The stages this run runs, for its log ("Stages run: T10 T11"): the promotion step reads it to tell which of a
+# target directory's files the run had to write (utils/stages.py).
+stages_run() {
+    local n out=""
+    for n in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        eval "[ \"\$T${n}\" = \"1\" ]" && out="${out} T${n}"
+    done
+    echo "Stages run:${out}"
+}
 
 #if [[ $# -ne 8 ]] && [[ $# -ne 8 ]]; then
 #    cat >&2 <<-EOF
@@ -167,6 +209,7 @@ else
     readonly CORES=1
     echo "Using default of 1 core (serial processing)"
 fi
+echo "BLAS threads per process: OPENBLAS ${OPENBLAS_NUM_THREADS}, OMP ${OMP_NUM_THREADS}, MKL ${MKL_NUM_THREADS}"
 # Wall-clock ceiling for the nightly PDF report (T11).  It is a presentation
 # stage, so it must never be able to hold up the stages after it.
 readonly PDF_REPORT_TIMEOUT=${PDF_REPORT_TIMEOUT:-3600}
@@ -290,6 +333,18 @@ find_ext(){
         fi
         filename="${filename%.*}"
     done
+    # A night decompressed for this run (utils/rawpack.py) can keep a .fz frame that failed to unpack, and the last
+    # file decides above.  T1 lists one extension (and any .fz frame without a plain twin, createlists.get_liste),
+    # so take the plain frames' extension whenever there are plain frames.
+    if [ "${extension:-}" = "fz" ]; then
+        local e
+        for e in fits fts fit; do
+            if compgen -G "${IMGDIRS}/*.${e}" > /dev/null; then
+                extension="${e}"
+                break
+            fi
+        done
+    fi
     echo ${extension}
 }
 
@@ -898,16 +953,10 @@ perform_differential_photometry(){
 pdf_report(){
     echo "Create PDF report for the night"
 
-    # Convert TARGET array items from double-hyphens to spaces for display
-    DISPLAY_TARGETS=""
-    for t in ${TARGET[*]}; do
-        if [ -z "$DISPLAY_TARGETS" ]; then
-            # Convert back from double-hyphens to spaces
-            DISPLAY_TARGETS="$(echo "$t" | sed 's/--/ /g')"
-        else
-            DISPLAY_TARGETS="$DISPLAY_TARGETS $(echo "$t" | sed 's/--/ /g')"
-        fi
-    done
+    # The report reads each target from its directory, so it gets the directory names as they are, separated by
+    # spaces: a space in a target's name is '--' there ('TOI-4336--c').  The report turns '--' back into a space
+    # for display.  Turning it into a space here split 'TOI-4336 c' into two targets, 'TOI-4336' and 'c', and the
+    # report never read TOI-4336--c.
 
     # One BLAS/OpenMP thread per process.  The report aligns the night's images
     # over a multiprocessing pool, and each worker otherwise sizes its own thread
@@ -924,7 +973,7 @@ pdf_report(){
         --datdir \"${DATDIR}\" \
         --obsdir \"${OBSDIR}\" \
         --date \"${DATE}\" \
-        --target \"${DISPLAY_TARGETS}\" \
+        --target \"${TARGET[*]}\" \
         --ap \"5\" \
         --telescope \"${TEL}\" \
         --version \"${VERSION}\" \
@@ -943,15 +992,54 @@ pdf_report(){
     return 0
 }
 
+# T1-T7 read the raw frames.  A night stored compressed (.fz, utils/framepack.py rawpack, or the 2019-20 nights fpack
+# compressed in 2022) is decompressed for the run by utils/rawpack.py: each working copy is the stored frame exactly
+# (the downloaded file byte for byte where the .fz kept its header), with its original mtime, and the .fz waits in a
+# hidden .rawpack/ that no glob here sees.  The loop over the dates stores the night compressed again when the run
+# ends, however it ends (repack_raw_night).  A frame that fails to unpack stays .fz and is reported.
+unpack_raw_night(){
+    [ "$T1$T2$T3$T4$T5$T6$T7" = "0000000" ] && return 0
+    [ -d "${IMGDIRS}" ] || return 0
+    if compgen -G "${IMGDIRS}/*.fz" > /dev/null || compgen -G "${IMGDIRS}/*/*.fz" > /dev/null \
+        || [ -d "${IMGDIRS}/.rawpack" ] || compgen -G "${IMGDIRS}/*/.rawpack" > /dev/null; then
+        echo "START raw unpack"
+        local rc=0
+        python ${SCRIPTDIR}/utils/rawpack.py unpack ${IMGDIRS} --workers ${CORES} || rc=$?
+        echo "rawpack unpack exit code ${rc}"
+        echo "END raw unpack"
+    fi
+    return 0
+}
+
+# A rerun from T7, T8 or T9 works on the calibrated frames already in v3, which an earlier run may have packed after
+# its T11: decompress them (verified) for the stages that write WCS into them.  pack_frames packs them again.
+unpack_frames(){
+    local dir="$1"
+    [ "$T6" = "1" ] && return 0
+    [ "$T7$T8$T9" = "000" ] && return 0
+    compgen -G "${dir}/proc*.fits.fz" > /dev/null || return 0
+    echo "START frame unpacking (${dir})"
+    local rc=0
+    python ${SCRIPTDIR}/utils/framepack.py decompress ${dir} --workers ${CORES} \
+        --manifest ${DATDIR}/logs/framepack_${DATE}_${RUNNAME}.csv || rc=$?
+    echo "framepack decompress exit code ${rc}"
+    echo "END frame unpacking"
+    return 0
+}
+
 # Perform version migration from v3 to v2
 pack_frames(){
     # Store this night's calibrated frames compactly while they are still in v3, before T12 moves them:
-    # 16-bit integers (pixels move by at most 0.5 ADU), plus lossless Rice compression with --frame-format rice.
+    # 16-bit integers (pixels move by at most 0.5 ADU), plus lossless Rice compression (.fits.fz) with
+    # --frame-format rice, the default since every reader takes .fz (docs/frame-compression.md).
     # framepack.py verifies every file before replacing it and leaves any frame it can't convert untouched,
     # so a failure here costs disk space, not data, and never stops the night.
     [ "${FRAME_FORMAT}" = "float32" ] && return 0
     # only when this run made or touched frames (not, e.g., an --only_T12 sweep)
     [ "$T6$T7$T8$T9$T10$T11" = "000000" ] && return 0
+    # nor a rerun from T10 or later: its frames were restaged from v2 (hard links to v2's own files), and T10 and T11
+    # only read them
+    [ "${FROM_TASK}" -ge 10 ] && return 0
     local op="int16"
     [ "${FRAME_FORMAT}" = "rice" ] && op="pack"
     local dirs
@@ -1254,7 +1342,10 @@ main() {
     date
     # which orchard this is: the version its products carry as ORCHVER (utils/orchard_version.py)
     echo "$(python ${SCRIPTDIR}/utils/orchard_version.py --line 2>/dev/null || echo 'orchard version unknown')"
+    stages_run
     echo "Using ${CORES} cores"
+
+    unpack_raw_night
 
     EXT="$(find_ext)"
 
@@ -1326,12 +1417,14 @@ main() {
                     echo "T6 failed for target ${i} — skipping T7, T8, T9, T10"
                     continue
                 fi
+                unpack_frames "${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}"
 
                 # Only set below if the target has reduced images; never let T9
-                # see it unset or left over from the previous target.
+                # see it unset or left over from the previous target. Only T9 uses it, and
+                # already_run_targs.py writes the telescope's already_run.txt: not for a run without T9.
                 correct_i=""
                 IMAGELISTS=${OUTPUTDIR}/${DATE}/${i}/${RUNNAME}/*_processed.dat
-                if $(any_filelists ${IMAGELISTS}); then
+                if [ "$T9" = "1" ] && $(any_filelists ${IMAGELISTS}); then
                     for IMAGELIST in ${IMAGELISTS}
                     do
                         correct_i="$(python ${SCRIPTDIR}/utils/correct_target_names.py ${IMAGELIST} ${i} ${OUTPUTDIR})"
@@ -1378,6 +1471,25 @@ main() {
     echo "PIPELINE COMPLETE"
 }
 
+# Store a raw night decompressed for the run (unpack_raw_night) compressed again: after each date, and whenever the
+# script ends early, from an error, a timeout's SIGTERM or ^C.  A repack cut short (the queue's SIGKILL 2 min after
+# SIGTERM) leaves the night decompressed, which every reader handles; the next run on the night finishes it.
+repack_raw_night(){
+    local d="${1:-}"
+    [ -n "${d}" ] && [ -d "${d}" ] || return 0
+    [ -d "${d}/.rawpack" ] || compgen -G "${d}/*/.rawpack" > /dev/null || return 0
+    echo "START raw repack"
+    local rc=0
+    python ${SCRIPTDIR}/utils/rawpack.py repack ${d} --workers ${CORES} || rc=$?
+    echo "rawpack repack exit code ${rc}"
+    echo "END raw repack"
+    return 0
+}
+RAW_NIGHT=""
+trap 'repack_raw_night "${RAW_NIGHT}"; RAW_NIGHT=""' EXIT
+trap 'repack_raw_night "${RAW_NIGHT}"; RAW_NIGHT=""; exit 143' TERM
+trap 'repack_raw_night "${RAW_NIGHT}"; RAW_NIGHT=""; exit 130' INT
+
 echo "PIPELINE VERSION ${VERSION}"
 echo "For Telescope: ${TEL}"
 ALL_DATES=(${DATES})
@@ -1406,5 +1518,9 @@ do
     DARKLIST=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_dark.list
     FLATLIST=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_flat_*.list
 
-    main 2>&1 | tee ${DATDIR}/logs/${DATE}_${RUNNAME}_${VERSION}${INPUT_TARGETS:+_$(echo $INPUT_TARGETS | tr ' ' '_')}.log
+    RAW_NIGHT="${IMGDIRS}"
+    DATE_LOG=${DATDIR}/logs/${DATE}_${RUNNAME}_${VERSION}${INPUT_TARGETS:+_$(echo $INPUT_TARGETS | tr ' ' '_')}.log
+    main 2>&1 | tee ${DATE_LOG}
+    repack_raw_night "${RAW_NIGHT}" 2>&1 | tee -a ${DATE_LOG}
+    RAW_NIGHT=""
 done

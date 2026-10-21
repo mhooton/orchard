@@ -69,14 +69,15 @@ code) never counts as a solution. Without a usable row, a frame is always solved
 2. For each frame with a usable row, applies it, header only: it clears the WCS keywords as a solve does, applies
    the cards with `header.update()`, and records the edit (`ORCHMOD`, HISTORY `orchard <ver> T7: WCS from cache`). The
    pixels are never decoded, so a 16-bit frame stays 16-bit. The result is the header a fresh solve gives; only that
-   HISTORY card differs from a solve's `T7: WCS solved`. Each frame costs 20–60 ms on appct, nearly all of it
-   astropy recomputing `DATASUM`/`CHECKSUM` over the unchanged pixels when the file closes (T6 writes calibrated
-   frames with checksums). A solve's header write pays the same. That work holds the GIL, so threads do not
-   shorten it (tried on the scratch nights: no gain).
-3. Solves the other frames in the pool, as before.
-4. After the pool, the parent reads the solved frames' headers and writes their rows: one read-change-write under
-   `utils/shared_files.locked`, through a temporary file and `os.replace`. Two runs on one night (two targets, a
-   rerun beside the nightly run) lose no rows, and a reader sees the old table or the new one.
+   HISTORY card differs from a solve's `T7: WCS solved`. The header is written as after a solve (see
+   [Header writes and checksums](#header-writes-and-checksums)): 13–30 ms a frame on appct. That work holds the GIL,
+   so threads do not shorten it (tried on the scratch nights: no gain).
+3. Solves the other frames in the pool, as before, then tries the failures again from the frames nearest them in
+   time: the second pass (`docs/plate-solving.md`, step 6). A frame applied from the cache can be the neighbour.
+4. After the pool and the second pass, the parent reads the solved frames' headers and writes their rows, second-pass
+   solutions included: one read-change-write under `utils/shared_files.locked`, through a temporary file and
+   `os.replace`. Two runs on one night (two targets, a rerun beside the nightly run) lose no rows, and a reader sees
+   the old table or the new one.
 
 Nothing here can end a night: T7 runs under `errexit` in ZLP. An unreadable table, a bad row, a missing Gaia
 database or an unwritable directory is a `WARNING: WCS cache ...` line, and the frames are solved. An unreadable
@@ -93,6 +94,73 @@ WCS cache: 2 rows written to .../wcs_cache/Io/20261018.ecsv
 
 The reasons in brackets are `no entry`, the first validity field that differs (e.g. `raw_mtime_ns`),
 `provenance`, `forced`, `no raw frame` (not in T1's list) or `unusable` (the row did not apply).
+
+## Header writes and checksums
+
+T7 writes a calibrated frame's header after a solve (`pointer_wcs`) and on a cache hit (`wcs_cache.apply`). Both go
+through `astrom/header_write.updating()`. It reads the primary header as bytes, hands it to the caller to edit, and
+writes it back:
+
+- **Where:** in place, if the header still fills the same number of 2880-byte blocks. Otherwise the file is rewritten
+  through a temporary file, with the data bytes copied unchanged, and swapped in with `os.replace`.
+- **When:** also if the block raises, as astropy's update mode did, so an inherited WCS cleared before a failed solve
+  stays cleared. An unchanged header is not written.
+- **Checksums:** if the header has `CHECKSUM`/`DATASUM`, both are left valid:
+  - `DATASUM` is trusted when the old `CHECKSUM` agrees with it, as `repair_astra_wcs` does for raw frames. This reads
+    the header only.
+  - Otherwise `DATASUM` is summed from the data bytes in 4 MB chunks (`download/raw_provenance.py`).
+  - The pixels are never decoded, so a 16-bit frame stays 16-bit.
+
+astropy's update mode, which T7 used before, re-summed the data unit in 2880-byte Python steps on every close.
+
+**T6 writes both cards valid** (`header_write.writeto`, from `calibration/pipered.py`):
+- It used to write with `writeto(checksum=False)`. That kept the raw frame's `CHECKSUM`/`DATASUM` (ESO's, computed
+  for the raw header and pixels), so every calibrated frame was stale until T7 wrote it.
+- Now `DATASUM` is summed from the float32 array in memory, and both cards are set in the file just written, in
+  place. Artemis frames, whose raw frames carry neither card, get them too.
+- So every T7 write trusts `DATASUM` and never reads the pixels.
+- Frames calibrated by older code are still stale. T7 sums their data once, after which they verify.
+
+Measured on appct (2026-10-20) under production load (load average ~55), on copies of the scratch nights' frames
+(`mh_scratch/t7-checksum/bench.py`). Each figure is ms per frame: the mean of the medians of two alternating rounds,
+which agree within 2.5 ms. One exception is left out as load noise: round 1's astropy Ganymede T6-state median of
+300 ms (p10 153 ms).
+
+| per frame | astropy update mode | `header_write` |
+|---|---|---|
+| cache hit, stale cards (calibrated by older T6): Ganymede (Andor 16.7 MB) | 148 | 30 |
+| cache hit, stale cards: Callisto (SPIRIT 5.3 MB) | 59 | 21 |
+| cache hit, valid cards (T6 now, or T7 before): Ganymede | 147 | 15 |
+| cache hit, valid cards: Callisto | 60 | 17 |
+| cache hit: Artemis (no checksum cards) | 16 | 13 |
+| header write after a solve: Ganymede / Callisto / Artemis | 136 / 48 / 5 | 15 / 9 / 4 |
+
+Every frame with checksum cards verified afterwards in both. A solve itself takes 3–9 s, so the write is now under
+1% of it. The ~13 ms a cache hit still costs is astropy's header handling: parsing, checking the row's WCS, and
+serialising. A header that grows a block costs a copy of the file (30–50 ms for 16.7 MB).
+
+T6's write costs more than before, and T7's cache hit then costs less. Measured on appct (2026-10-20,
+`mh_scratch/t7-checksum/t7onT6.py`): 16–20 frames per telescope, old and new interleaved, median ms per frame,
+written one at a time:
+
+| per frame | T6 write: old / new | T7 cache hit on it: old / new | T6 + T7: old / new |
+|---|---|---|---|
+| Ganymede (Andor 16.7 MB) | 18.8 / 23.8 | 23.1 / 13.6 | 41.8 / 37.6 |
+| Callisto (SPIRIT 5.3 MB) | 8.9 / 11.3 | 17.1 / 13.8 | 26.0 / 25.2 |
+| Artemis (Andor, cards now added) | 17.0 / 21.7 | 11.2 / 11.9 | 28.3 / 33.7 |
+
+Half of T6's extra time is the sum over the array: 2.4 ms for 16.7 MB.
+
+T6 runs its frames in a thread pool, so its wall time per frame rose by only 1–2 ms. For `pipered.reducer`, on 61–150
+frames per telescope (`t6bench.py`):
+- Ganymede: 56.6 → 58.0–58.4 ms;
+- Callisto: 83.3 → 84.3–84.7 ms;
+- Artemis: 51.3 → 52.8–53.4 ms.
+
+T7 applies its cache hits one after another, so on SSO frames the pipeline comes out ahead. On Artemis, the
+~5 ms a frame buys frames that verify.
+
+The 361 frames compared had identical pixels and identical cards, but for the checksum cards and `ORCHVER`.
 
 ## SOLVER_EPOCH
 

@@ -106,6 +106,12 @@ def transformation_check(imgdir, down_files, type):
     transformed_files = []
     for down_file in down_files:
         if "SPECU" in down_file and ".Z" not in down_file:
+            if not os.path.exists(f"{imgdir}/{down_file}.fits") and os.path.exists(f"{imgdir}/{down_file}.fits.fz"):
+                # stored Rice-compressed (utils/framepack.py rawpack), which happens only after the night's first
+                # complete run, so after its transform; a compressed original is never deleted or fetched again here
+                print(f"{down_file} is stored compressed (.fits.fz). No need to redownload.")
+                transformed_files.append(down_file)
+                continue
             hdul = fits.open(f"{imgdir}/{down_file}.fits")
             if type == "ANDOR":
                 if "ASTRAROT" in hdul[0].header and len(down_file.split('.')[-1]) == 3:

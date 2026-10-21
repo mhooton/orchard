@@ -1,4 +1,4 @@
-"""Shared helpers: UTC timestamps, night arithmetic, atomic writes, filesystem checks.
+"""Shared helpers: UTC timestamps, night arithmetic, atomic writes, filesystem checks, job thread counts.
 
 All times in the queue are naive UTC datetimes, stored as ISO strings ending in Z.
 A night D runs from D 15:00 UTC to D+1 15:00 UTC, the convention of SSO_download.py
@@ -15,6 +15,19 @@ NIGHT_START = dt.timedelta(hours=15)
 
 # Filesystems on which SQLite locking cannot be trusted.
 NETWORK_FS = {'nfs', 'nfs4', 'cifs', 'smb3', 'smbfs', 'fuse.sshfs', '9p', 'afs', 'lustre', 'gpfs'}
+
+# Thread counts for the BLAS and OpenMP libraries. Jobs and the release suite run with one thread per process: see
+# docs/job-queue.md, "Threads".
+BLAS_THREAD_VARS = ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS')
+
+
+def one_blas_thread(env):
+    """A copy of env in which each BLAS/OpenMP thread count is 1, unless env already sets it."""
+    env = dict(env)
+    for var in BLAS_THREAD_VARS:
+        if not env.get(var):
+            env[var] = '1'
+    return env
 
 
 def utcnow():

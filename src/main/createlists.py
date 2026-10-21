@@ -37,6 +37,7 @@ from multiprocessing.dummy import Pool as ThreadPool
 from collections import defaultdict
 from functools import partial
 from reporting.QC import main as QC
+# open_fits_file presents a Rice-compressed frame (.fz) as the plain file, its image and header in HDU 0
 from calibration.pipeutils import open_fits_file
 from calibration import calregister, calselect
 import warnings
@@ -66,6 +67,14 @@ def get_liste(directory, root, ext):
 
     if len(add_liste) != 0:
         liste = liste + add_liste
+
+    # frames stored Rice-compressed (X.fits.fz, utils/framepack.py), as an earlier night's calibration frames may be:
+    # T2-T6 read them through pipeutils.open_fits_file.  The night being reduced has been decompressed for the run
+    # (utils/rawpack.py), so a frame stored both ways is its working copy and counts once, as the plain file.
+    if ext != "fz":
+        have = set(liste)
+        liste = liste + [f for f in glob.glob("%s/*.%s.fz" % (directory, ext)) + glob.glob("%s/*/*.%s.fz" % (directory, ext))
+                         if f[:-3] not in have]
 
     if DEBUG:
         print("| get_liste")
@@ -98,11 +107,7 @@ def classify_file(filename, logroot, runnumber, telescope=''):
                 filter = hdulist[0].header['FILTER']
                 # print("normal")
             except:
-                if filename.endswith(".fz"):
-                    imtype = hdulist[1].header['IMAGETYP']
-                    naxis1 = hdulist[1].header['NAXIS1']
-                    naxis2 = hdulist[1].header.get('NAXIS2')
-                    filter = hdulist[1].header['FILTER']
+                pass
                 # print("abnormal")
             if (naxis1, naxis2) == NATIVE_ANDOR_SHAPE:
                 out['native_andor'].append(filename)
@@ -111,10 +116,7 @@ def classify_file(filename, logroot, runnumber, telescope=''):
             #action = hdulist[0].header['ACTION']
             try:
                 #not relevant for SPECULOOS
-                if filename.endswith(".fz"):
-                    dither = hdulist[1].header['DITHER']
-                else:
-                    dither = hdulist[0].header['DITHER']
+                dither = hdulist[0].header['DITHER']
             except:
                 dither = 'DISABLED'
             # what the calibration register and the calibration choice need from the header
@@ -186,10 +188,7 @@ def sort_flatlist(liste):
 
     for item in liste:
         with open_fits_file(item) as hdulist:
-            if item.endswith(".fz"):
-                filter = hdulist[1].header['FILTER']
-            else:
-                filter = hdulist[0].header['FILTER']
+            filter = hdulist[0].header['FILTER']
             # print filter
 
         if filters.count(filter) == 0:
@@ -213,23 +212,14 @@ def sort_scilist(liste):
         #call open_fits_file procedure from pipeutils
         with open_fits_file(item) as hdulist:
             try:
-                if item.endswith(".fz"):
-                    field = hdulist[1].header['OBJECT']
-                else:
-                    field = hdulist[0].header['OBJECT']
+                field = hdulist[0].header['OBJECT']
             except:
-                if item.endswith(".fz"):
-                    field = hdulist[1].header['FIELD']
-                else:
-                    field = hdulist[0].header['FIELD']
+                field = hdulist[0].header['FIELD']
 
             if '_2' in field and len(field)==13:
                 field = field.replace("_2", "")
 
-            if item.endswith(".fz"):
-                filter = hdulist[1].header['FILTER']
-            else:
-                filter = hdulist[0].header['FILTER']
+            filter = hdulist[0].header['FILTER']
             # print field
             # ra = hdulist[0].header['RA']
             # dec = hdulist[0].header['DEC']

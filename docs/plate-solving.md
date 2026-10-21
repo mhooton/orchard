@@ -24,6 +24,17 @@ pixels.
    - The winner is refined by iterative cross-matching: a TAN fit with 10 or more matched stars, a similarity
      (scale, rotation, shift) below that.
 5. **twirl** (the solver until 2026-10), unchanged, only when the known-scale solve has nothing verified.
+6. **A second pass** (`astrometry.py`), after every frame has had its turn. A frame that failed with 5 or more round
+   sources, not trailed and not timed out, is tried again from the solution of the frame nearest to it in time that
+   has one: solved this run, or applied from the WCS cache, and no more than 2 hours away. The neighbour's WCS is
+   recentred within 50 px and refined (`known_scale.solve_from_neighbour`; with too few matches to refit, it is kept
+   as recentred). The result is kept if it verifies as below, or if the sources are round and 3 or more sit on
+   catalogue stars at chance 10^-8 or less and the solution agrees with the neighbour's (centre within 50 px,
+   rotation within 0.5 degrees, scale within 1%). Faint frames of sparse fields have only 5-7 sources, and alone they
+   cannot verify. On Callisto 20261012 (SPIRIT) v4.1.0 refused 63 such frames whose old photometry was normal; their
+   consecutive frames, 6-18 s apart, put 3 of their 5 sources on catalogue stars (twirl's "4 of 5" was its own fitted
+   quad). A frame the second pass cannot solve goes through steps 3-5 again and keeps its first failure message.
+   Solved lines say `Method: neighbour`, and the solutions go into the WCS cache like any other (`docs/wcs-cache.md`).
 
 ## The verification
 
@@ -80,6 +91,47 @@ or more sources, as the pipeline's.
   target over the night; frames more than a field-width from the header pointing are outside the catalogue box, and
   the target is outside them.
 - **Star trails.** Frames from a telescope that stopped tracking are reported, not solved.
+
+## One BLAS thread per process
+
+T7 runs its frames in a process pool (20 processes in production), and `astrometry.py` sets `OPENBLAS_NUM_THREADS`,
+`OMP_NUM_THREADS` and `MKL_NUM_THREADS` to 1 before numpy is first imported. Keep that assignment above every other
+import. Without it, every worker's first BLAS call starts OpenBLAS's pool of 64 threads, so one T7 holds 1,280 of the
+4,096 threads that orchard-server's systemd scope allows the whole container (see [job-queue.md](job-queue.md),
+"Threads"). From v4.1.0 to v4.3.2, 10 of 29 T7 runs on appct stalled when concurrent jobs used them up (2026-10-20/21).
+A worker whose pool could not start either died of the SIGINT that OpenBLAS raises, so `Pool.map` waited for its lost
+chunk, or spun for ever in `sched_yield`, waiting for threads that never started (one thread, 100% CPU). The 60 s
+per-frame alarm reaches neither, so the job sat until the queue's timeout. The workers left with 64 threads asleep in
+`futex_wait` were idle, not stuck. numpy and scipy each load their own OpenBLAS, and both read these variables.
+
+## Dead and hung workers
+
+The pool is `astrom/frame_pool.py`, not `multiprocessing.Pool`. `Pool.map` lost a dead worker's chunk and waited for
+it for ever: on 2026-10-20/21 workers killed by OpenBLAS's SIGINT left T7 waiting until the queue's job timeout, 5-15 h
+later (job 1217: 55 dead workers). The parent now hands each worker one frame at a time, so it knows which frame a
+worker had.
+
+- A worker that exits while it has a frame (a signal, an uncaught KeyboardInterrupt, the OOM killer), or gives no
+  result within the per-frame timeout plus `HANG_GRACE` (240 s, so 300 s in production; it is then killed), costs that
+  frame one more attempt, in a new worker. The other workers' frames carry on.
+- A frame lost on both attempts fails, with the reason in its line:
+  `FAILED - Sources: ?→? Gaia: ?→? Matches: ? Error: Lost with its worker process: killed by SIGKILL (attempt 2 of 2)`.
+  It gets no WCS cache row and no second pass, and `promote_policy` counts it as the pipeline's loss.
+- Each loss is logged (`T7 pool: worker 1234 killed by SIGINT on proc….fits; trying it again in a new worker (attempt 2
+  of 2)`), and the run ends with a total. A run that loses no worker prints and writes exactly what it did before.
+- More than 10 frames lost on both attempts (`LOSS_LIMIT`) stops T7 with `WorkersLost`, and ZLP's errexit fails the
+  job: that many is not a few bad frames.
+- Workers flush their log lines after each frame, so a worker that dies takes none with it. If T7 itself is killed,
+  its workers exit when they next look for work.
+
+Serial runs (`--nproc=1`) are unchanged.
+
+Measured in orchard-server on scratch copies of Io 20230725 Sp1805-2758 (76 frames, 20 processes, 2026-10-21): with
+`multiprocessing.Pool`, one worker given SIGINT and another SIGKILL left T7 waiting at 600 s (a healthy run takes 50 s).
+With this pool, the same night with workers given SIGINT, SIGKILL and SIGSTOP solved 76/76 frames in 66 s, 66 s and
+336 s; its log lines and cache rows are those of `Pool` runs. Two runs of the same code can still differ in the last
+bits of CRPIX (up to 3e-6 px): `gaia_db_query` visits a field's Dec-band shards in set order, which follows the
+process's string-hash seed. Fix `PYTHONHASHSEED` when comparing runs bit for bit.
 
 ## Measured
 

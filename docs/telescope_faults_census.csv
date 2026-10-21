@@ -1,0 +1,299 @@
+telescope,night,kind,target,start_ut,end_ut,frames,minutes,detail,first_frame,last_frame
+Europa,20170612,drift,trappist-1,06:25:12,06:27:46,6,2.6,max 3.5'; jump 3.4',2635476908753563008_I+z_20170612_output.fits,
+Europa,20170612,drift,trappist-1,06:31:40,06:45:25,23,13.8,max 14.9'; jump 2.8'; target off the field from 06:32,2635476908753563008_I+z_20170612_output.fits,
+Europa,20170612,drift,trappist-1,06:54:17,06:59:25,10,5.1,max 4.2'; jump 1.2',2635476908753563008_I+z_20170612_output.fits,
+Io,20170705,drift,trappist-1,09:17:20,09:28:46,22,11.4,max 17.0'; jump 9.1'; target off the field from 09:17,2635476908753563008_I+z_20170705_output.fits,
+Io,20170708,drift,trappist-1,06:03:30,06:07:39,9,4.2,max 13.5'; jump 11.0'; target off the field from 06:03,2635476908753563008_I+z_20170708_output.fits,
+Io,20170709,drift,trappist-1,04:25:34,04:32:51,15,7.3,max 11.2'; jump 11.2'; target off the field from 04:25,2635476908753563008_I+z_20170709_output.fits,
+Europa,20170801,drift,trappist-1,05:25:32,05:29:39,9,4.1,max 11.0'; jump 10.9'; target off the field from 05:25; nothing photometered after 05:29,2635476908753563008_I+z_20170801_output.fits,
+Europa,20170803,drift,trappist-1,08:35:01,08:53:21,35,18.3,max 13.7'; jump 5.9'; target off the field from 08:36,2635476908753563008_I+z_20170803_output.fits,
+Io,20170803,drift,trappist-1,10:00:55,10:03:36,6,2.7,max 11.0'; jump 11.0'; target off the field from 10:00,2635476908753563008_I+z_20170803_output.fits,
+Europa,20170816,drift,trappist-1,03:52:30,03:55:18,6,2.8,max 8.5'; jump 8.5'; target off the field from 03:52,2635476908753563008_I+z_20170816_output.fits,
+Io,20170817,drift,UCDTS-91,09:19:25,09:27:23,14,8.0,max 6.8'; jump 4.0'; target off the field from 09:22,UCDTS-91_I+z_20170817_output.fits,
+Europa,20170914,drift,trappist-1,06:23:18,06:24:27,3,1.1,max 9.1'; jump 9.1'; target off the field from 06:23,2635476908753563008_I+z_20170914_output.fits,
+Europa,20170914,drift,trappist-1,06:58:35,07:00:52,5,2.3,max 6.5'; jump 6.5'; target off the field from 06:58,2635476908753563008_I+z_20170914_output.fits,
+Europa,20170914,drift,trappist-1,07:45:52,07:49:28,7,3.6,max 6.8'; jump 6.8'; target off the field from 07:45,2635476908753563008_I+z_20170914_output.fits,
+Io,20170920,drift,Sp0435-1606,06:54:13,06:55:18,4,1.1,max 4.5'; jump 4.4',4992138830007506048_I+z_20170920_output.fits,
+Europa,20170923,drift,Sp0214-0357,02:20:33,02:31:59,33,11.4,max 1.1',2492866780297999232_I+z_20170923_output.fits,
+Europa,20170923,drift,Sp0214-0357,02:47:12,02:51:08,12,3.9,max 3.5'; jump 3.5',2492866780297999232_I+z_20170923_output.fits,
+Europa,20170923,drift,Sp0214-0357,03:05:40,03:23:39,51,18.0,max 7.7'; jump 6.5'; target off the field from 03:07,2492866780297999232_I+z_20170923_output.fits,
+Europa,20170923,drift,Sp0214-0357,03:56:33,04:19:24,65,22.8,max 2.7'; jump 2.6',2492866780297999232_I+z_20170923_output.fits,
+Europa,20170923,drift,Sp0214-0357,08:56:34,08:57:40,4,1.1,max 7.8'; jump 7.8'; target off the field from 08:56,2492866780297999232_I+z_20170923_output.fits,
+Europa,20170923,drift,Sp0214-0357,09:23:11,09:25:47,8,2.6,max 3.8'; jump 3.7',2492866780297999232_I+z_20170923_output.fits,
+Europa,20170926,drift,trappist-1,06:13:22,06:14:31,3,1.1,max 9.1'; jump 9.1'; target off the field from 06:13,2635476908753563008_I+z_20170926_output.fits,
+Io,20170926,drift,trappist-1,06:24:04,06:26:59,6,2.9,max 8.1'; jump 8.1'; target off the field from 06:24,2635476908753563008_I+z_20170926_output.fits,
+Europa,20171006,drift,trappist-1,00:51:36,00:52:45,3,1.2,max 6.5'; jump 6.5',2635476908753563008_I+z_20171006_output.fits,
+Europa,20171017,drift,Sp0102-3737,00:27:21,00:28:27,3,1.1,max 3.4'; jump 3.4',4989399774745144448_I+z_20171017_output.fits,
+Europa,20171017,drift,Sp0102-3737,23:51:54,00:02:06,19,10.2,max 6.7'; jump 6.6',4989399774745144448_I+z_20171017_output.fits,
+Europa,20171018,drift,Sp0214-0357,01:10:57,01:13:04,7,2.1,max 7.9'; jump 7.9'; target off the field from 01:10,2492866780297999232_I+z_20171018_output.fits,
+Europa,20171020,drift,trappist-1,05:28:20,05:40:42,22,12.4,max 12.6'; jump 9.1'; target off the field from 05:28,2635476908753563008_I+z_20171020_output.fits,
+Europa,20171023,drift,trappist-1,05:37:53,06:04:24,38,26.5,max 23.9'; jump 19.1'; target off the field from 05:37; nothing photometered after 06:03,2635476908753563008_I+z_20171023_output.fits,
+Europa,20171102,drift,trappist-1,00:16:39,00:17:50,3,1.2,max 6.5'; jump 6.5',2635476908753563008_I+z_20171102_output.fits,
+Europa,20171102,drift,trappist-1,04:06:01,04:07:11,3,1.2,max 8.1'; jump 8.1'; target off the field from 04:06,2635476908753563008_I+z_20171102_output.fits,
+Europa,20171117,drift,trappist-1,01:28:50,01:40:17,21,11.4,max 8.1'; jump 8.1'; target off the field from 01:28,2635476908753563008_I+z_20171117_output.fits,
+Europa,20171117,drift,trappist-1,02:11:04,02:14:40,7,3.6,max 10.2'; jump 10.2'; target off the field from 02:11,2635476908753563008_I+z_20171117_output.fits,
+Io,20171117,drift,trappist-1,00:50:04,00:51:11,3,1.1,max 7.7'; jump 7.7',2635476908753563008_I+z_20171117_output.fits,
+Io,20171117,drift,trappist-1,01:55:22,02:02:32,13,7.2,max 11.8'; jump 8.1'; target off the field from 01:55,2635476908753563008_I+z_20171117_output.fits,
+Io,20171117,drift,trappist-1,02:12:41,04:25:41,238,133.0,max 33.0'; jump 11.2'; target off the field from 02:12,2635476908753563008_I+z_20171117_output.fits,
+Io,20171204,drift,Sp0354-1437,06:13:21,06:14:51,4,1.5,max 6.4'; jump 6.4',5110641513191522304_I+z_20171204_output.fits,
+Io,20171205,drift,Sp0354-1437,06:21:53,06:22:53,3,1.0,max 7.3'; jump 7.3',5110641513191522304_I+z_20171205_output.fits,
+Io,20171205,drift,Sp0354-1437,07:07:11,07:09:28,5,2.3,max 7.2'; jump 2.8',5110641513191522304_I+z_20171205_output.fits,
+Io,20171205,drift,Sp0354-1437,07:19:22,07:23:52,9,4.5,max 9.7'; jump 7.6'; target off the field from 07:19,5110641513191522304_I+z_20171205_output.fits,
+Europa,20171206,drift,trappist-1,02:36:54,03:04:18,45,27.4,max 16.9'; jump 6.0'; target off the field from 02:38; nothing photometered after 03:03,2635476908753563008_I+z_20171206_output.fits,
+Io,20171208,drift,trappist-1,01:20:43,01:38:22,32,17.7,max 9.8'; jump 9.8'; target off the field from 01:20,2635476908753563008_I+z_20171208_output.fits,
+Io,20171217,drift,Sp0354-1437,05:08:28,05:11:34,8,3.1,max 3.5'; jump 3.5',5110641513191522304_I+z_20171217_output.fits,
+Io,20171217,drift,Sp0354-1437,05:23:30,05:30:08,8,6.6,max 4.7'; jump 4.7',5110641513191522304_I+z_20171217_output.fits,
+Io,20171217,drift,Sp0354-1437,06:21:54,07:27:21,94,65.4,max 26.8'; jump 3.4'; target off the field from 06:25,5110641513191522304_I+z_20171217_output.fits,
+Europa,20171219,drift,trappist-1,01:50:28,02:20:44,47,30.3,max 38.8'; jump 15.6'; target off the field from 01:50,2635476908753563008_I+z_20171219_output.fits,
+Europa,20171219,drift,Sp0429-3123,08:00:08,08:21:19,33,21.2,max 9.3'; jump 5.9'; target off the field from 08:01,SP0429-3123_I+z_20171219_output.fits,
+Io,20171219,drift,trappist-1,00:50:48,01:12:35,37,21.8,max 28.6'; target off the field from 00:50,2635476908753563008_I+z_20171219_output.fits,
+Io,20171219,drift,trappist-1,01:27:41,02:20:35,92,52.9,max 16.0'; jump 6.6'; target off the field from 01:27,2635476908753563008_I+z_20171219_output.fits,
+Io,20171219,drift,Sp0354-1437,02:23:43,03:00:50,81,37.1,max 9.9'; target off the field from 02:23,5110641513191522304_I+z_20171219_output.fits,
+Io,20171219,drift,Sp0354-1437,03:45:04,07:13:55,459,208.9,max 172.8'; jump 2.5'; target off the field from 03:45,5110641513191522304_I+z_20171219_output.fits,
+Io,20171222,drift,Sp0354-1437,06:17:11,06:18:04,3,0.9,max 7.1'; jump 7.1',5110641513191522304_I+z_20171222_output.fits,
+Io,20180131,drift,Sp1121-1313,06:39:07,08:08:21,77,89.2,max 8.6'; jump 8.6'; target off the field from 06:39,3562157781229213312_I+z_20180131_output.fits,
+Io,20180205,drift,Sp1121-1313,04:49:45,05:09:39,25,19.9,max 7.5'; jump 7.5'; target off the field from 04:49,3562157781229213312_I+z_20180205_output.fits,
+Callisto,20180206,drift,Sp1252+0252,08:24:33,08:31:41,8,7.1,max 5.7'; jump 5.7',3702983196155254016_I+z_20180206_output.fits,
+Io,20180208,drift,Sp1121-1313,06:37:36,07:11:35,41,34.0,max 15.4'; target off the field from 06:49,3562157781229213312_I+z_20180208_output.fits,
+Io,20180208,drift,Sp1121-1313,07:33:17,07:40:07,9,6.8,max 4.6'; jump 4.5'; target off the field from 07:33,3562157781229213312_I+z_20180208_output.fits,
+Io,20180209,drift,Sp1121-1313,06:42:03,06:58:14,20,16.2,max 14.0'; jump 7.5'; target off the field from 06:42,3562157781229213312_I+z_20180209_output.fits,
+Io,20180209,drift,Sp1121-1313,08:07:00,08:30:11,29,23.2,max 7.5'; jump 7.5'; target off the field from 08:07,3562157781229213312_I+z_20180209_output.fits,
+Io,20180210,drift,Sp0102-3737,00:42:34,00:43:39,3,1.1,max 5.8'; jump 5.8',4989399774745144448_I+z_20180210_output.fits,
+Io,20180210,drift,Sp0102-3737,01:22:21,01:24:38,5,2.3,max 7.3'; jump 5.9'; target off the field from 01:23,4989399774745144448_I+z_20180210_output.fits,
+Io,20180210,drift,Sp0102-3737,01:29:42,01:32:10,5,2.5,max 5.8'; jump 5.8',4989399774745144448_I+z_20180210_output.fits,
+Io,20180210,drift,Sp1121-1313,08:45:10,08:57:34,16,12.4,max 7.6'; jump 7.5'; target off the field from 08:45,3562157781229213312_I+z_20180210_output.fits,
+Callisto,20180401,drift,Sp1716-0315,06:35:15,06:49:06,26,13.9,max 11.0'; jump 9.0'; target off the field from 06:35,SP1716-0315_I+z_20180401_output.fits,
+Callisto,20180401,drift,Sp1716-0315,07:00:51,07:01:53,3,1.0,max 4.9'; jump 4.9',SP1716-0315_I+z_20180401_output.fits,
+Callisto,20180401,drift,Sp1716-0315,07:10:24,07:19:44,18,9.3,max 13.6'; jump 7.1'; target off the field from 07:10,SP1716-0315_I+z_20180401_output.fits,
+Callisto,20180401,drift,Sp1716-0315,07:21:35,07:23:39,5,2.1,max 4.1'; jump 4.1',SP1716-0315_I+z_20180401_output.fits,
+Callisto,20180401,drift,Sp1716-0315,07:35:03,07:39:01,8,4.0,max 7.4'; jump 7.0'; target off the field from 07:35,SP1716-0315_I+z_20180401_output.fits,
+Callisto,20180401,drift,Sp1716-0315,07:49:22,07:51:26,5,2.1,max 8.1'; jump 8.1'; target off the field from 07:49,SP1716-0315_I+z_20180401_output.fits,
+Callisto,20180401,drift,Sp1716-0315,08:06:38,08:17:51,21,11.2,max 20.2'; jump 9.8'; target off the field from 08:06,SP1716-0315_I+z_20180401_output.fits,
+Callisto,20180405,drift,Sp1003-0105,23:23:12,23:30:50,9,7.6,max 6.4'; jump 6.4',3830128624846458752_I+z_20180405_output.fits,
+Callisto,20180405,drift,Sp1003-0105,23:38:49,00:57:27,82,78.6,max 36.0'; jump 5.5'; target off the field from 23:42,3830128624846458752_I+z_20180405_output.fits,
+Callisto,20180407,drift,Sp1716-0315,07:40:30,07:42:03,4,1.6,max 7.1'; jump 7.1'; target off the field from 07:40,SP1716-0315_I+z_20180407_output.fits,
+Callisto,20180407,drift,Sp1716-0315,09:23:12,09:25:25,5,2.2,max 11.6'; jump 11.6'; target off the field from 09:23,SP1716-0315_I+z_20180407_output.fits,
+Europa,20180608,drift,Sp2228-1325,05:07:45,07:00:06,297,112.4,max 26.8'; target off the field from 05:11,2601148128510120576_I+z_20180608_output.fits,
+Europa,20180608,drift,Sp2228-1325,07:43:44,08:18:17,98,34.6,max 5.7'; jump 5.7'; target off the field from 07:43,2601148128510120576_I+z_20180608_output.fits,
+Callisto,20180610,drift,Sp2019-5816,05:47:54,05:50:27,8,2.5,max 8.2'; jump 8.2'; target off the field from 05:47,6468337884421010048_I+z_20180610_output.fits,
+Callisto,20180610,drift,Sp2019-5816,05:56:50,10:34:45,708,277.9,max 54.1'; jump 6.7'; target off the field from 05:56,6468337884421010048_I+z_20180610_output.fits,
+Callisto,20180611,drift,Sp1500-0039,00:54:10,01:02:03,14,7.9,max 7.4'; jump 7.4'; target off the field from 00:54,6340981796172195584_I+z_20180611_output.fits,
+Europa,20180611,drift,Sp2228-1325,04:55:41,08:55:42,648,240.0,max 77.2'; target off the field from 05:35,2601148128510120576_I+z_20180611_output.fits,
+Callisto,20180612,drift,Sp1500-0039,06:00:24,06:31:40,53,31.3,max 24.3'; jump 4.6'; target off the field from 06:02,6340981796172195584_I+z_20180612_output.fits,
+Callisto,20180613,drift,Sp2331-2749,10:28:27,10:35:36,13,7.1,max 5.9'; jump 5.9',2331849006126794880_I+z_20180613_output.fits,
+Callisto,20180614,drift,Sp1500-0039,04:39:10,04:43:01,7,3.8,max 5.6'; jump 5.6',6340981796172195584_I+z_20180614_output.fits,
+Callisto,20180614,drift,Sp1500-0039,05:52:56,05:55:27,5,2.5,max 8.7'; jump 8.7'; target off the field from 05:52,6340981796172195584_I+z_20180614_output.fits,
+Callisto,20180614,drift,Sp2331-2749,07:11:51,07:14:48,6,2.9,max 4.9'; jump 4.9',2331849006126794880_I+z_20180614_output.fits,
+Callisto,20180615,drift,Sp1500-0039,23:17:14,23:20:31,6,3.3,max 1.7'; jump 1.4',6340981796172195584_I+z_20180615_output.fits,
+Callisto,20180616,drift,Sp1500-0039,06:03:55,06:16:43,22,12.8,max 10.7'; jump 5.5'; target off the field from 06:05,6340981796172195584_I+z_20180616_output.fits,
+Callisto,20180617,drift,Sp2331-2749,09:34:28,10:36:37,104,62.1,max 23.3'; jump 7.7'; target off the field from 09:34,2331849006126794880_I+z_20180617_output.fits,
+Io,20180811,drift,Sp2338-1246,02:22:08,04:14:29,151,112.4,max 2.0',SP2338-1246_I+z_20180811_output.fits,
+Europa,20180904,drift,Sp2256-0659,01:43:21,01:46:48,4,3.5,max 1.2',SP2256-0659_Clear_20180904_output.fits,
+Europa,20180904,drift,Sp2256-0659,01:59:20,02:01:40,3,2.3,max 1.2',SP2256-0659_Clear_20180904_output.fits,
+Europa,20180904,drift,Sp2256-0659,02:10:51,09:23:55,378,433.1,max 6.4'; target off the field from 05:28,SP2256-0659_Clear_20180904_output.fits,
+Europa,20180910,drift,Sp2042-0500,02:36:14,03:11:35,55,35.3,max 2.1',6914281796143286784_I+z_20180910_output.fits,
+Europa,20180910,drift,Sp2042-0500,03:14:53,03:16:52,4,2.0,max 1.2',6914281796143286784_I+z_20180910_output.fits,
+Europa,20180910,drift,Sp2042-0500,03:29:28,03:34:02,8,4.6,max 1.4',6914281796143286784_I+z_20180910_output.fits,
+Europa,20180910,drift,Sp2042-0500,04:00:47,04:02:06,3,1.3,max 1.2',6914281796143286784_I+z_20180910_output.fits,
+Europa,20180910,drift,Sp2042-0500,04:13:59,04:19:10,9,5.2,max 1.3',6914281796143286784_I+z_20180910_output.fits,
+Europa,20180910,drift,Sp2042-0500,04:32:23,04:33:41,3,1.3,max 1.3',6914281796143286784_I+z_20180910_output.fits,
+Europa,20180910,drift,Sp2042-0500,04:35:35,04:37:35,4,2.0,max 1.2',6914281796143286784_I+z_20180910_output.fits,
+Europa,20180910,drift,Sp2042-0500,05:07:11,05:30:34,37,23.4,max 2.8',6914281796143286784_I+z_20180910_output.fits,
+Europa,20180910,drift,Sp2042-0500,23:06:12,02:30:18,314,204.1,max 6.8',6914281796143286784_I+z_20180910_output.fits,
+Europa,20180911,drift,Sp2042-0500,00:47:46,00:55:04,12,7.3,max 1.6',6914281796143286784_I+z_20180911_output.fits,
+Europa,20180911,drift,Sp2042-0500,01:07:20,01:18:25,18,11.1,max 1.7',6914281796143286784_I+z_20180911_output.fits,
+Europa,20180911,drift,Sp2042-0500,01:50:21,02:04:42,23,14.3,max 1.7',6914281796143286784_I+z_20180911_output.fits,
+Europa,20180911,drift,Sp2042-0500,02:18:57,02:23:31,8,4.6,max 1.4',6914281796143286784_I+z_20180911_output.fits,
+Europa,20180911,drift,Sp2042-0500,02:30:40,02:33:16,5,2.6,max 1.3',6914281796143286784_I+z_20180911_output.fits,
+Europa,20180911,drift,Sp2042-0500,03:58:10,04:45:16,73,47.1,max 2.6',6914281796143286784_I+z_20180911_output.fits,
+Europa,20180911,drift,Sp2042-0500,04:55:35,05:19:06,37,23.5,max 2.0',6914281796143286784_I+z_20180911_output.fits,
+Europa,20180911,drift,Sp2042-0500,23:06:34,00:37:24,140,90.8,max 4.3',6914281796143286784_I+z_20180911_output.fits,
+Europa,20180912,drift,Sp2042-0500,02:53:12,03:10:10,27,17.0,max 1.7',6914281796143286784_I+z_20180912_output.fits,
+Europa,20180912,drift,Sp2042-0500,03:12:43,03:14:43,4,2.0,max 1.5',6914281796143286784_I+z_20180912_output.fits,
+Europa,20180912,drift,Sp2042-0500,03:54:35,03:57:49,6,3.2,max 1.2',6914281796143286784_I+z_20180912_output.fits,
+Europa,20180912,drift,Sp2042-0500,04:04:54,04:06:14,3,1.3,max 1.2',6914281796143286784_I+z_20180912_output.fits,
+Europa,20180912,drift,Sp2042-0500,04:08:09,05:24:06,117,75.9,max 6.0'; target off the field from 04:42,6914281796143286784_I+z_20180912_output.fits,
+Europa,20180912,drift,Sp2042-0500,23:06:34,01:38:47,233,152.2,max 5.2',6914281796143286784_I+z_20180912_output.fits,
+Europa,20180913,drift,Sp2042-0500,00:21:17,00:29:54,14,8.6,max 1.6',6914281796143286784_I+z_20180913_output.fits,
+Europa,20180913,drift,Sp2042-0500,00:32:36,03:16:05,251,163.5,max 6.1'; target off the field from 01:32,6914281796143286784_I+z_20180913_output.fits,
+Europa,20180913,drift,Sp2042-0500,23:48:25,23:56:19,13,7.9,max 1.4',6914281796143286784_I+z_20180913_output.fits,
+Europa,20180930,drift,Sp2042-0500,23:31:45,23:56:52,46,25.1,max 3.3',6914281796143286784_I+z_20180930_output.fits,
+Callisto,20190505,tracking,Sp1334-6257,00:50:54,01:26:42,34,36.7,"mount log: still at altitude 44 deg, azimuth 157 deg",SPECU4.2019-05-06T00:50:54.910.fits,SPECU4.2019-05-06T01:26:42.350.fits
+Europa,20190505,tracking,Sp1331-6513,00:39:20,04:27:07,211,228.7,"mount log: still at altitude 42 deg, azimuth 159 deg; log clock +31 s",SPECU2.2019-05-06T00:39:20.540.fits,SPECU2.2019-05-06T04:27:07.310.fits
+Europa,20190505,tracking,Sp1741+0940,06:09:51,07:16:27,101,67.1,"mount log: still at altitude 51 deg, azimuth 32 deg; log clock +31 s",SPECU2.2019-05-06T06:09:51.230.fits,SPECU2.2019-05-06T07:16:27.190.fits
+Ganymede,20190505,tracking,Sp1153+0659,00:23:36,04:27:56,595,244.6,"mount log: still at altitude 53 deg, azimuth 34 deg",SPECU3.2019-05-06T00:23:36.720.fits,SPECU3.2019-05-06T04:27:56.010.fits
+Ganymede,20190505,tracking,Sp1855-6914,05:44:25,07:21:06,236,96.9,"mount log: still at altitude 38 deg, azimuth 161 deg",SPECU3.2019-05-06T05:44:25.170.fits,SPECU3.2019-05-06T07:21:06.580.fits
+Io,20190505,tracking,Sp1223-2757,00:44:29,04:27:29,296,223.6,"mount log: still at altitude 70 deg, azimuth 105 deg",SPECU1.2019-05-06T00:44:29.500.fits,SPECU1.2019-05-06T04:27:29.260.fits
+Io,20190505,tracking,Sp1655-0823,05:24:25,07:14:41,266,110.5,"mount log: still at altitude 65 deg, azimuth 53 deg",SPECU1.2019-05-06T05:24:25.440.fits,SPECU1.2019-05-06T07:14:41.150.fits
+Ganymede,20190614,drift,Sp1309-2330,23:24:13,23:48:36,37,24.4,max 2.3',3504014060164255104_I+z_20190614_output.fits,
+Ganymede,20190616,drift,Sp1309-2330,22:57:15,23:26:57,45,29.7,max 2.4',3504014060164255104_I+z_20190616_output.fits,
+Ganymede,20190707,drift,Sp2049-1716,09:56:53,10:32:49,63,35.9,max 1.2',6858958940879829248_I+z_20190707_output.fits,
+Europa,20190904,tracking,Gaijin-1,06:29:45,09:08:08,157,159.2,"mount log: still at altitude 49 deg, azimuth 131 deg; a manual observation after ACP's script was stopped at 06:26 UT, the controller running a trajectory throughout: probably deliberate, not a fault",SPECU2.2019-09-05T06:29:45.320.fits,SPECU2.2019-09-05T09:08:08.530.fits
+Artemis,20200827,drift,Trappist-1c,22:03:57,22:14:31,20,10.6,max 2.4',2635476908753563008_I+z_20200827_output.fits,
+Callisto,20210531,tracking,Sp2038-5223,05:18:34,10:37:53,230,320.5,"mount log: still at altitude 43 deg, azimuth 140 deg",SPECU4.2021-06-01T05:18:34.730.fits,SPECU4.2021-06-01T10:37:53.680.fits
+Callisto,20210603,tracking,Sp1546-5534,04:26:45,04:34:45,17,8.3,"mount log: still at altitude 58 deg, azimuth 193 deg",SPECU4.2021-06-04T04:26:45.200.fits,SPECU4.2021-06-04T04:34:45.880.fits
+Callisto,20210605,tracking,Sp1943-6125,07:04:09,10:40:07,93,218.1,"mount log: still at altitude 53 deg, azimuth 175 deg",SPECU4.2021-06-06T07:04:09.290.fits,SPECU4.2021-06-06T10:40:07.210.fits
+Callisto,20210606,tracking,Sp1540-5101,00:59:30,04:35:21,183,216.9,"mount log: still at altitude 52 deg, azimuth 144 deg",SPECU4.2021-06-07T00:59:30.660.fits,SPECU4.2021-06-07T04:35:21.840.fits
+Callisto,20210607,tracking,Sp1601-3455,04:02:49,04:35:51,52,33.5,"mount log: still at altitude 78 deg, azimuth 206 deg",SPECU4.2021-06-08T04:02:49.700.fits,SPECU4.2021-06-08T04:35:51.220.fits
+Callisto,20210608,tracking,Sp1611-3823,04:33:21,04:35:52,6,2.8,"mount log: still at altitude 73 deg, azimuth 214 deg",SPECU4.2021-06-09T04:33:21.400.fits,SPECU4.2021-06-09T04:35:52.160.fits
+Callisto,20210609,tracking,Sp1609-3431,23:25:03,02:15:18,367,170.6,"mount log: still at altitude 35 deg, azimuth 116 deg",SPECU4.2021-06-09T23:25:03.100.fits,SPECU4.2021-06-10T02:15:18.630.fits
+Callisto,20210610,tracking,Sp1609-3431,00:29:28,04:36:51,531,247.7,"mount log: still at altitude 49 deg, azimuth 115 deg",SPECU4.2021-06-11T00:29:28.270.fits,SPECU4.2021-06-11T04:36:51.590.fits
+Callisto,20210807,tracking,Sp1854-5704,02:20:06,04:42:56,240,143.3,"mount log: still at altitude 58 deg, azimuth 177 deg",SPECU4.2021-08-08T02:20:06.530.fits,SPECU4.2021-08-08T04:42:56.090.fits
+Callisto,20210821,tracking,Sp0148-3024,09:50:15,10:25:16,42,35.7,"mount log: still at altitude 71 deg, azimuth 248 deg",SPECU4.2021-08-22T09:50:15.410.fits,SPECU4.2021-08-22T10:25:16.150.fits
+Callisto,20210823,tracking,Sp0148-3024,08:21:19,10:23:21,145,122.7,"mount log: still at altitude 84 deg, azimuth 183 deg",SPECU4.2021-08-24T08:21:19.350.fits,SPECU4.2021-08-24T10:23:21.960.fits
+Callisto,20210914,tracking,Sp0111-4908,08:39:12,10:01:30,165,82.6,"mount log: still at altitude 53 deg, azimuth 219 deg",SPECU4.2021-09-15T08:39:12.090.fits,SPECU4.2021-09-15T10:01:30.290.fits
+Callisto,20210921,tracking,Sp2127-7508,23:36:52,02:50:16,228,194.1,"mount log: still at altitude 36 deg, azimuth 169 deg",SPECU4.2021-09-21T23:36:52.560.fits,SPECU4.2021-09-22T02:50:16.730.fits
+Callisto,20211024,tracking,Sp0111-4908,01:27:46,04:20:58,347,173.5,"mount log: still at altitude 55 deg, azimuth 142 deg",SPECU4.2021-10-25T01:27:46.810.fits,SPECU4.2021-10-25T04:20:58.930.fits
+Callisto,20211026,tracking,Sp0306-2647,07:18:49,09:18:23,106,120.5,"mount log: still at altitude 64 deg, azimuth 259 deg",SPECU4.2021-10-27T07:18:49.870.fits,SPECU4.2021-10-27T09:18:23.170.fits
+Callisto,20211028,tracking,Sp0306-2647,05:54:10,09:17:38,181,204.4,"mount log: still at altitude 81 deg, azimuth 254 deg",SPECU4.2021-10-29T05:54:10.440.fits,SPECU4.2021-10-29T09:17:38.400.fits
+Callisto,20211031,tracking,Sp0227-6447,23:39:57,02:57:29,186,198.4,"mount log: still at altitude 30 deg, azimuth 152 deg",SPECU4.2021-10-31T23:39:57.670.fits,SPECU4.2021-11-01T02:57:29.910.fits
+Callisto,20211101,tracking,Sp0138-7320,03:04:08,04:24:31,168,80.7,"mount log: still at altitude 41 deg, azimuth 177 deg",SPECU4.2021-11-02T03:04:08.910.fits,SPECU4.2021-11-02T04:24:31.750.fits
+Callisto,20211105,tracking,CH_SDSSJ062737.67+100211.9,08:09:13,09:09:51,29,62.6,"mount log: still at altitude 55 deg, azimuth 360 deg; Chilean programme 0108.A-9010(D), frames not downloaded",SPECU4.2021-11-06T08:09:13.680.fits,SPECU4.2021-11-06T09:09:51.090.fits
+Callisto,20211105,tracking,ch_SDSSJ000557.45+001833.1,23:55:46,04:59:30,21,318.7,"mount log: still at altitude 54 deg, azimuth 52 deg",SPECU4.2021-11-05T23:55:46.340.fits,SPECU4.2021-11-06T04:59:30.530.fits
+Callisto,20211108,tracking,Sp0212-1036,02:26:38,04:19:47,78,114.4,"mount log: still at altitude 67 deg, azimuth 54 deg",SPECU4.2021-11-09T02:26:38.400.fits,SPECU4.2021-11-09T04:19:47.010.fits
+Callisto,20211111,tracking,Sp0335-4430,02:12:46,04:24:50,393,132.2,"mount log: still at altitude 52 deg, azimuth 132 deg",SPECU4.2021-11-12T02:12:46.000.fits,SPECU4.2021-11-12T04:24:50.080.fits
+Callisto,20211111,tracking,Sp0537-0816,07:27:56,08:55:22,104,88.1,"mount log: still at altitude 72 deg, azimuth 332 deg",SPECU4.2021-11-12T07:27:56.130.fits,SPECU4.2021-11-12T08:55:22.680.fits
+Callisto,20211111,tracking,Sp0537-0816,09:04:13,09:05:55,3,2.4,"mount log: still at altitude 55 deg, azimuth 292 deg",SPECU4.2021-11-12T09:04:13.230.fits,SPECU4.2021-11-12T09:05:55.880.fits
+Callisto,20211118,tracking,Sp0335-4430,00:37:52,04:25:44,675,228.0,"mount log: still at altitude 40 deg, azimuth 128 deg",SPECU4.2021-11-19T00:37:52.620.fits,SPECU4.2021-11-19T04:25:44.540.fits
+Callisto,20211118,tracking,Sp0643-1843,07:08:30,09:03:41,64,116.8,"mount log: still at altitude 82 deg, azimuth 44 deg",SPECU4.2021-11-19T07:08:30.160.fits,SPECU4.2021-11-19T09:03:41.860.fits
+Callisto,20211121,tracking,TOI-4306,05:43:47,07:58:43,156,135.6,"mount log: still at altitude 78 deg, azimuth 249 deg",SPECU4.2021-11-22T05:43:47.870.fits,SPECU4.2021-11-22T07:58:43.940.fits
+Callisto,20211122,tracking,TOI-4306,06:06:40,08:02:40,144,116.6,"mount log: still at altitude 72 deg, azimuth 254 deg",SPECU4.2021-11-23T06:06:40.510.fits,SPECU4.2021-11-23T08:02:40.400.fits
+Artemis,20211129,drift,00022,01:31:44,01:48:10,44,16.4,max 1.1',00022_zcut_20211129_output.fits,
+Artemis,20211208,drift,00022,02:05:47,02:46:46,115,41.0,max 1.4',00022_zcut_20211208_output.fits,
+Callisto,20211216,tracking,Sp0248-1651,01:30:26,04:33:23,171,183.8,"mount log: still at altitude 81 deg, azimuth 28 deg",SPECU4.2021-12-17T01:30:26.230.fits,SPECU4.2021-12-17T04:33:23.030.fits
+Callisto,20220115,tracking,Sp0711-3824,01:10:49,01:21:21,79,10.7,"mount log: still at altitude 50 deg, azimuth 121 deg",SPECU4.2022-01-16T01:10:49.000.fits,SPECU4.2022-01-16T01:21:21.000.fits
+Callisto,20220115,tracking,Sp0711-3824,01:27:10,01:30:08,23,3.1,"mount log: still at altitude 53 deg, azimuth 122 deg",SPECU4.2022-01-16T01:27:10.000.fits,SPECU4.2022-01-16T01:30:08.000.fits
+Europa,20220201,tracking,CH_TOI-157,06:46:33,06:49:35,9,3.2,"mount log: still at altitude 24 deg, azimuth 195 deg; the mount's altitude limit; Chilean programme 0108.A-9009(B), frames not downloaded",SPECU2.2022-02-02T06:46:33.100.fits,SPECU2.2022-02-02T06:49:35.230.fits
+Callisto,20220203,drift,Sp0933-4353_1,00:14:25,04:54:33,557,280.1,max 2.2',5424690587034891264_I+z_20220203_output.fits,
+Callisto,20220204,drift,Sp0833-5336,05:02:05,09:36:52,402,274.8,max 2.8',SP0833-5336_I+z_20220204_output.fits,
+Callisto,20220205,drift,Sp0833-5336,05:00:17,09:32:47,398,272.5,max 2.3',SP0833-5336_I+z_20220205_output.fits,
+Ganymede,20220216,tracking,Sp1223-0858,07:10:33,09:51:55,251,161.8,"mount log: still at altitude 74 deg, azimuth 6 deg",SPECU3.2022-02-17T07:10:33.000.fits,SPECU3.2022-02-17T09:51:55.660.fits
+Ganymede,20220217,tracking,Sp1331-6513,07:41:43,07:41:43,1,1.5,"mount log: still at altitude 49 deg, azimuth 174 deg",SPECU3.2022-02-18T07:41:43.810.fits,SPECU3.2022-02-18T07:41:43.810.fits
+Ganymede,20220218,tracking,Sp0830+0947,00:15:38,04:50:37,437,275.4,"mount log: still at altitude 34 deg, azimuth 58 deg",SPECU3.2022-02-19T00:15:38.820.fits,SPECU3.2022-02-19T04:50:37.110.fits
+Ganymede,20220218,tracking,Sp1331-6513,05:52:56,06:01:07,6,9.7,"mount log: still at altitude 43 deg, azimuth 160 deg",SPECU3.2022-02-19T05:52:56.530.fits,SPECU3.2022-02-19T06:01:07.950.fits
+Ganymede,20220218,tracking,Sp1331-6513,06:09:17,09:51:29,137,223.7,"mount log: still at altitude 44 deg, azimuth 162 deg",SPECU3.2022-02-19T06:09:17.730.fits,SPECU3.2022-02-19T09:51:29.870.fits
+Ganymede,20220219,tracking,Sp0830+0947,00:57:11,04:33:02,343,216.3,"mount log: still at altitude 42 deg, azimuth 48 deg",SPECU3.2022-02-20T00:57:11.870.fits,SPECU3.2022-02-20T04:33:02.330.fits
+Ganymede,20220219,tracking,Sp1331-6513,07:04:49,09:53:09,104,169.8,"mount log: still at altitude 48 deg, azimuth 169 deg",SPECU3.2022-02-20T07:04:49.540.fits,SPECU3.2022-02-20T09:53:09.210.fits
+Ganymede,20220221,tracking,Sp0840+1824,02:45:36,02:51:16,14,5.9,"mount log: still at altitude 46 deg, azimuth 10 deg",SPECU3.2022-02-22T02:45:36.920.fits,SPECU3.2022-02-22T02:51:16.010.fits
+Ganymede,20220222,tracking,Sp0840+1824,01:07:34,03:17:52,344,130.5,"mount log: still at altitude 37 deg, azimuth 38 deg",SPECU3.2022-02-23T01:07:34.700.fits,SPECU3.2022-02-23T03:17:52.500.fits
+Ganymede,20220222,tracking,Sp0840+1824,03:23:17,03:23:40,2,0.6,"mount log: still at altitude 47 deg, azimuth 356 deg",SPECU3.2022-02-23T03:23:17.260.fits,SPECU3.2022-02-23T03:23:40.650.fits
+Ganymede,20220223,tracking,Sp0840+1824,00:10:16,00:22:38,31,12.6,"mount log: still at altitude 29 deg, azimuth 50 deg",SPECU3.2022-02-24T00:10:16.730.fits,SPECU3.2022-02-24T00:22:38.580.fits
+Ganymede,20220223,tracking,Sp0840+1824,02:16:11,02:20:52,13,4.9,"mount log: still at altitude 45 deg, azimuth 17 deg",SPECU3.2022-02-24T02:16:11.450.fits,SPECU3.2022-02-24T02:20:52.930.fits
+Ganymede,20220223,tracking,Sp0840+1824,02:24:21,02:24:21,1,0.2,"mount log: still at altitude 46 deg, azimuth 15 deg",SPECU3.2022-02-24T02:24:21.920.fits,SPECU3.2022-02-24T02:24:21.920.fits
+Ganymede,20220223,tracking,Sp0840+1824,02:25:56,02:26:18,2,0.6,"mount log: still at altitude 46 deg, azimuth 14 deg",SPECU3.2022-02-24T02:25:56.150.fits,SPECU3.2022-02-24T02:26:18.630.fits
+Ganymede,20220223,tracking,Sp0840+1824,02:27:05,02:27:05,1,0.2,"mount log: still at altitude 46 deg, azimuth 14 deg",SPECU3.2022-02-24T02:27:05.070.fits,SPECU3.2022-02-24T02:27:05.070.fits
+Ganymede,20220301,tracking,Sp1430-3114,08:44:57,09:59:42,89,75.4,"mount log: still at altitude 83 deg, azimuth 200 deg",SPECU3.2022-03-02T08:44:57.010.fits,SPECU3.2022-03-02T09:59:42.020.fits
+Europa,20220312,tracking,TOI-4336,06:29:45,07:47:37,231,78.0,"mount log: still at altitude 73 deg, azimuth 158 deg",SPECU2.2022-03-13T06:29:45.610.fits,SPECU2.2022-03-13T07:47:37.960.fits
+Callisto,20220314,tracking,Sp1155-3727,03:04:51,05:29:50,290,145.5,"mount log: still at altitude 61 deg, azimuth 124 deg",SPECU4.2022-03-15T03:04:51.000.fits,SPECU4.2022-03-15T05:29:50.000.fits
+Callisto,20220511,tracking,Sp1359-5636,00:26:51,04:33:44,982,247.1,"mount log: still at altitude 45 deg, azimuth 147 deg",SPECU4.2022-05-12T00:26:51.000.fits,SPECU4.2022-05-12T04:33:44.000.fits
+Callisto,20220519,tracking,Sp1424-3514,22:59:39,02:38:16,1085,218.8,"mount log: still at altitude 34 deg, azimuth 117 deg",SPECU4.2022-05-19T22:59:39.000.fits,SPECU4.2022-05-20T02:38:16.000.fits
+Europa,20220715,tracking,Sp0027-5401,08:45:04,10:15:25,103,91.1,"mount log: still at altitude 59 deg, azimuth 166 deg",SPECU2.2022-07-16T08:45:04.380.fits,SPECU2.2022-07-16T10:15:25.130.fits
+Europa,20220910,drift,Sp2213-4245,23:26:33,23:37:08,7,10.6,max 2.4',6569700349557517056_I+z_20220910_output.fits,
+Europa,20221012,tracking,Sp0334-2130,06:45:07,09:32:32,266,167.9,"mount log: still at altitude 87 deg, azimuth 18 deg",SPECU2.2022-10-13T06:45:07.970.fits,SPECU2.2022-10-13T09:32:32.930.fits
+Callisto,20221024,tracking,Sp0027-5401,00:23:28,04:20:38,746,237.5,"mount log: still at altitude 49 deg, azimuth 146 deg",SPECU4.2022-10-25T00:23:28.000.fits,SPECU4.2022-10-25T04:20:38.000.fits
+Artemis,20221027,drift,Sp0109+2949,19:03:28,21:13:24,72,129.9,max 2.1',309977380415042432_I+z_20221027_output.fits,
+Callisto,20221109,tracking,Sp0218-0617,23:49:07,04:20:33,625,271.9,"mount log: still at altitude 31 deg, azimuth 82 deg",SPECU4.2022-11-09T23:49:07.000.fits,SPECU4.2022-11-10T04:20:33.000.fits
+Callisto,20221114,tracking,Sp0339-3525,06:32:40,09:07:57,1046,155.4,"mount log: still at altitude 64 deg, azimuth 239 deg",SPECU4.2022-11-15T06:32:40.000.fits,SPECU4.2022-11-15T09:07:57.000.fits
+Ganymede,20221219,drift,Sp0602-1001,04:55:26,06:48:06,170,112.7,max 1.6',2999321180586629120_I+z_20221219_output.fits,
+Ganymede,20221220,drift,Sp0602-1001,00:21:51,04:47:26,392,265.6,max 2.8',2999321180586629120_I+z_20221220_output.fits,
+Io,20230502,tracking,TOI-1227.01,08:24:33,08:29:52,11,5.7,"mount log: still at altitude 24 deg, azimuth 199 deg; the mount's altitude limit",SPECU1.2023-05-03T08:24:33.660.fits,SPECU1.2023-05-03T08:29:52.140.fits
+Io,20230503,drift,Sp1048+0111,22:57:04,23:08:35,7,11.5,max 2.2',3808159454810609280_I+z_20230503_output.fits,
+Io,20230505,drift,Sp1048+0111,23:54:08,23:58:08,3,4.0,max 1.4',3808159454810609280_I+z_20230505_output.fits,
+Ganymede,20230609,tracking,Sp1504-2355,23:49:02,23:51:05,4,2.6,"mount log: still at altitude 52 deg, azimuth 98 deg",SPECU3.2023-06-09T23:49:02.580.fits,SPECU3.2023-06-09T23:51:05.560.fits
+Io,20230626,tracking,TOI-1227.01,04:48:25,04:53:37,11,5.6,"mount log: still at altitude 24 deg, azimuth 199 deg; the mount's altitude limit",SPECU1.2023-06-27T04:48:25.000.fits,SPECU1.2023-06-27T04:53:37.180.fits
+Europa,20230920,tracking,Sp0216+1335,06:16:51,09:55:52,548,219.2,"mount log: still at altitude 50 deg, azimuth 17 deg",SPECU2.2023-09-21T06:16:51.770.fits,SPECU2.2023-09-21T09:55:52.490.fits
+Europa,20231004,tracking,Sp0409-0605,08:47:36,09:30:48,37,44.2,"mount log: still at altitude 68 deg, azimuth 325 deg",SPECU2.2023-10-05T08:47:36.860.fits,SPECU2.2023-10-05T09:30:48.620.fits
+Ganymede,20231110,tracking,Sp0202+1020,01:09:24,01:09:24,1,0.2,"mount log: still at altitude 42 deg, azimuth 47 deg",SPECU3.2023-11-11T01:09:24.470.fits,SPECU3.2023-11-11T01:09:24.470.fits
+Ganymede,20231110,tracking,Sp0202+1020,01:12:30,01:24:20,36,12.0,"mount log: still at altitude 42 deg, azimuth 47 deg",SPECU3.2023-11-11T01:12:30.020.fits,SPECU3.2023-11-11T01:24:20.460.fits
+Ganymede,20231111,tracking,Sp0202+1020,03:03:52,03:09:17,17,5.6,"mount log: still at altitude 55 deg, azimuth 7 deg",SPECU3.2023-11-12T03:03:52.100.fits,SPECU3.2023-11-12T03:09:17.750.fits
+Ganymede,20231111,tracking,Sp0202+1020,03:09:58,03:09:58,1,0.2,"mount log: still at altitude 55 deg, azimuth 7 deg",SPECU3.2023-11-12T03:09:58.430.fits,SPECU3.2023-11-12T03:09:58.430.fits
+Europa,20231120,tracking,Sp0602-1001,07:06:43,09:04:20,177,118.1,"mount log: still at altitude 74 deg, azimuth 339 deg",SPECU2.2023-11-21T07:06:43.160.fits,SPECU2.2023-11-21T09:04:20.410.fits
+Callisto,20231228,tracking,ch_HATS-42b,00:20:37,00:20:37,1,0.2,altitude 24 deg; idle 0.85 of first frame; the mount's position log has it tracking (Astra's flag lags at block starts),SPECU4.2023-12-29T00:20:37.000.fits,SPECU4.2023-12-29T00:20:37.000.fits
+Artemis,20240210,drift,TOI-5720,02:43:40,02:49:20,16,5.7,max 3.4'; jump 3.4',3994047048130880384_r_20240210_output.fits,
+Artemis,20240210,drift,TOI-5720,04:44:37,04:45:22,3,0.7,max 2.9'; jump 2.9',3994047048130880384_r_20240210_output.fits,
+Artemis,20240210,drift,TOI-5720,05:11:29,05:17:55,18,6.4,max 5.4'; jump 5.4',3994047048130880384_r_20240210_output.fits,
+Artemis,20240210,drift,TOI-5720,23:05:34,02:31:57,547,206.4,max 10.2'; jump 5.6'; target off the field from 01:46,3994047048130880384_r_20240210_output.fits,
+Artemis,20240211,drift,Sp1356+4342,01:34:49,01:55:55,11,21.1,max 4.3'; jump 4.3'; nothing photometered after 01:49,1502523188143833088_I+z_20240211_output.fits,
+Artemis,20240214,drift,Sp1444+3002,02:27:47,02:48:13,36,20.4,max 11.3'; jump 6.8'; target off the field from 02:27,1282632682337912832_I+z_20240214_output.fits,
+Artemis,20240214,drift,Sp1444+3002,03:38:10,03:39:19,3,1.1,max 6.8'; jump 6.8'; target off the field from 03:38,1282632682337912832_I+z_20240214_output.fits,
+Artemis,20240215,drift,TOI-5720,22:24:38,22:26:56,7,2.3,max 2.8'; jump 2.6',3994047048130880384_r_20240215_output.fits,
+Callisto,20240229,tracking,ch_TOI-519b,07:28:51,07:28:51,1,0.8,"mount log: still at altitude 20 deg, azimuth 257 deg; the mount's altitude limit; TRACKING 0 too; shorter than the header census sampling",SPECU4.2024-03-01T07:28:51.000.fits,SPECU4.2024-03-01T07:28:51.000.fits
+Artemis,20240310,drift,Sp1438+6408,04:22:58,05:04:30,22,41.5,max 5.0'; jump 3.5',SP1438+6408_I+z_20240310_output.fits,
+Artemis,20240310,drift,Sp1438+6408,05:14:39,06:04:09,26,49.5,max 8.8'; jump 3.1'; target off the field from 05:18,SP1438+6408_I+z_20240310_output.fits,
+Artemis,20240313,drift,Sp1438+6408,01:43:35,03:23:09,51,99.6,max 10.0'; jump 7.6'; target off the field from 01:43,SP1438+6408_I+z_20240313_output.fits,
+Artemis,20240313,drift,Sp1438+6408,04:58:14,05:08:25,6,10.2,max 5.2'; jump 5.2',SP1438+6408_I+z_20240313_output.fits,
+Artemis,20240313,drift,Sp1438+6408,05:38:15,06:23:27,24,45.2,max 5.6'; jump 5.6',SP1438+6408_I+z_20240313_output.fits,
+Ganymede,20240325,tracking,CH_SN2023WNE_R,00:18:12,01:29:32,34,73.3,"mount log: still at altitude 42 deg, azimuth 281 deg; Chilean programme 112.2669.001, frames not downloaded",SPECU3.2024-03-26T00:18:12.860.fits,SPECU3.2024-03-26T01:29:32.330.fits
+Callisto,20240516,drift,Sp1327+0149,00:02:39,00:04:27,3,1.8,max 2.6'; jump 2.4',SP1327+0149_I+z_20240516_output.fits,
+Callisto,20240601,drift,Sp1411-4132,02:33:51,02:35:28,3,1.6,max 1.2'; jump 1.2',6109949904687424640_r_20240601_output.fits,
+Callisto,20240601,drift,Sp1411-4132,22:45:41,22:52:54,10,7.2,max 2.3'; jump 1.5',6109949904687424640_r_20240601_output.fits,
+Callisto,20240604,drift,Sp1411-4132,01:11:53,01:13:29,3,1.6,max 1.2'; jump 1.2',6109949904687424640_r_20240604_output.fits,
+Callisto,20240604,drift,Sp1411-4132,01:24:44,01:26:20,3,1.6,max 1.2'; jump 1.2',6109949904687424640_r_20240604_output.fits,
+Callisto,20240604,drift,Sp1411-4132,03:01:09,03:04:22,5,3.2,max 1.6',6109949904687424640_r_20240604_output.fits,
+Callisto,20240605,drift,Sp1411-4132,02:47:30,02:51:32,6,4.0,max 1.6'; jump 1.5',6109949904687424640_r_20240605_output.fits,
+Callisto,20240606,drift,Sp1411-4132,22:49:40,22:52:06,4,2.4,max 1.2',6109949904687424640_r_20240606_output.fits,
+Io,20240725,drift,Sp2354-6312,08:10:46,10:42:53,69,152.1,max 2.6',6486001882317858048_I+z_20240725_output.fits,
+Callisto,20240911,drift,Sp0246+1625,05:44:05,05:45:02,4,1.0,max 3.0'; jump 2.9',33732162042339072_I+z_20240911_output.fits,
+Callisto,20240911,drift,Sp0246+1625,09:17:53,09:18:32,3,0.6,max 3.0'; jump 3.0',33732162042339072_I+z_20240911_output.fits,
+Callisto,20240911,drift,Sp0246+1625,09:38:00,09:39:17,5,1.3,max 3.0'; jump 2.8',33732162042339072_I+z_20240911_output.fits,
+Callisto,20240922,tracking,Sp0051-2254,04:33:02,04:33:02,1,0.2,idle 0.81 of first frame; the mount's position log has it tracking (Astra's flag lags at block starts),SPECU4.2024-09-23T04:33:02.000.fits,SPECU4.2024-09-23T04:33:02.000.fits
+Callisto,20240927,drift,Sp2338-4726,23:19:26,23:30:03,7,10.6,max 2.3',6525046188759705728_I+z_20240927_output.fits,
+Callisto,20241005,tracking,Sp0426+0336,04:29:16,04:29:16,1,0.4,idle 0.63 of first frame; the mount's position log has it tracking (Astra's flag lags at block starts),SPECU4.2024-10-06T04:29:16.000.fits,SPECU4.2024-10-06T04:29:16.000.fits
+Callisto,20241012,tracking,Sp0002+0115,02:04:24,04:22:39,193,138.8,RA 15.04 deg/h; airmass fixed 1.1704,SPECU4.2024-10-13T02:04:24.000.fits,SPECU4.2024-10-13T04:22:39.000.fits
+Callisto,20241021,tracking,Sp0253-7959,05:07:07,05:07:07,1,0.3,idle 0.76 of first frame; the mount's position log has it tracking (Astra's flag lags at block starts),SPECU4.2024-10-22T05:07:07.000.fits,SPECU4.2024-10-22T05:07:07.000.fits
+Callisto,20241119,tracking,Sp0254-1934,08:42:43,09:03:17,12,22.3,RA 15.05 deg/h; airmass fixed 2.8978; altitude 20 deg,SPECU4.2024-11-20T08:42:43.000.fits,SPECU4.2024-11-20T09:03:17.000.fits
+Callisto,20241124,drift,Sp0253-7959,01:58:16,01:59:05,3,0.8,max 1.2'; jump 1.2',4620448786799883136_I+z_20241124_output.fits,
+Callisto,20241127,tracking,Sp0254-1934,08:12:19,09:00:57,27,50.4,RA 15.05 deg/h; airmass fixed 2.8977; altitude 20 deg,SPECU4.2024-11-28T08:12:19.000.fits,SPECU4.2024-11-28T09:00:57.000.fits
+Europa,20250208,tracking,Sp1048+0111,09:32:49,09:45:47,8,14.6,"mount log: still at altitude 35 deg, azimuth 290 deg",SPECU2.2025-02-09T09:32:49.960.fits,SPECU2.2025-02-09T09:45:47.670.fits
+Ganymede,20250221,tracking,EM01_164141,04:12:02,04:59:36,72,48.1,"mount log: still at altitude 60 deg, azimuth 159 deg; Chilean programme 114.27SL.001, frames not downloaded",SPECU3.2025-02-22T04:12:02.240.fits,SPECU3.2025-02-22T04:59:36.310.fits
+Europa,20250306,drift,Sp0829+2646,03:23:31,04:47:57,124,84.4,max 1.9',703790044252850688_r_20250306_output.fits,
+Europa,20250306,drift,Sp0829+2646,23:46:13,00:03:57,27,17.7,max 2.7',703790044252850688_r_20250306_output.fits,
+Europa,20250320,drift,TOI-1227,04:54:45,10:08:56,470,314.2,max 2.8',5842480953772012928_z_20250320_output.fits,
+Europa,20250410,tracking,CH_EM0110141,09:10:38,09:38:38,43,28.5,"mount log: still at altitude 40 deg, azimuth 224 deg; Chilean programme 115.28JJ.001, frames not downloaded",SPECU2.2025-04-11T09:10:38.360.fits,SPECU2.2025-04-11T09:38:38.620.fits
+Europa,20250430,tracking,Sp1621-3711,06:20:06,09:56:31,206,217.3,"mount log: still at altitude 77 deg, azimuth 174 deg",SPECU2.2025-05-01T06:20:06.390.fits,SPECU2.2025-05-01T09:56:31.670.fits
+Ganymede,20250520,tracking,Ch_EP250304a_z,08:21:18,08:21:18,1,20.0,airmass fixed 2.8981; altitude 20 deg,SPECU3.2025-05-21T08:21:18.000.fits,SPECU3.2025-05-21T08:21:18.000.fits
+Ganymede,20250529,tracking,Sp2042-0500,05:04:00,05:04:00,1,0.3,idle 0.52 of first frame; the mount's position log has it tracking (Astra's flag lags at block starts),SPECU3.2025-05-30T05:04:00.000.fits,SPECU3.2025-05-30T05:04:00.000.fits
+Europa,20250606,drift,Sp2012+1246,04:45:04,05:41:12,80,56.1,max 3.5',1803225427774999680_I+z_20250606_output.fits,
+Ganymede,20250621,tracking,Ch_SN2024ggi_z,03:24:37,03:34:58,4,13.7,RA 15.01 deg/h; airmass fixed 2.8980; altitude 20 deg,SPECU3.2025-06-22T03:24:37.000.fits,SPECU3.2025-06-22T03:34:58.000.fits
+Ganymede,20250716,tracking,TOI-4336 c,00:30:03,03:11:57,570,162.1,RA 15.02 deg/h; airmass fixed 1.1187,SPECU3.2025-07-17T00:30:03.000.fits,SPECU3.2025-07-17T03:11:57.000.fits
+Ganymede,20250721,tracking,CH_EM01_287156_2,09:52:17,10:01:14,9,10.0,"mount log: still at altitude 22 deg, azimuth 207 deg; the mount's altitude limit; Chilean programme 115.28JL.001, frames not downloaded",SPECU3.2025-07-22T09:52:17.000.fits,SPECU3.2025-07-22T10:01:14.000.fits
+Ganymede,20250726,drift,Sp1804-1616,22:59:27,23:16:24,10,16.9,max 2.0',4144383754057229696_I+z_20250726_output.fits,
+Ganymede,20250728,drift,Sp2334+1933,09:13:23,09:19:20,6,5.9,max 1.2'; jump 1.1',2824567482526264576_I+z_20250728_output.fits,
+Ganymede,20250728,drift,Sp2334+1933,09:44:13,09:56:04,11,11.9,max 1.3'; jump 1.2',2824567482526264576_I+z_20250728_output.fits,
+Ganymede,20250729,drift,Sp1804-1616,23:02:23,23:19:20,10,17.0,max 1.9',4144383754057229696_I+z_20250729_output.fits,
+Ganymede,20250804,drift,Sp1933-0810,23:08:19,23:15:08,6,6.8,max 1.4',4206618517355209088_I+z_20250804_output.fits,
+Europa,20250805,drift,Sp1843+1132,23:01:51,23:49:47,28,47.9,max 1.5',4504120628412422784_I+z_20250805_output.fits,
+Ganymede,20250805,drift,Sp1831-6435,23:00:39,23:26:27,14,25.8,max 1.9',6437777371042569344_I+z_20250805_output.fits,
+Europa,20250806,drift,Sp1843+1132,23:02:08,23:21:41,12,19.6,max 1.2',4504120628412422784_I+z_20250806_output.fits,
+Ganymede,20250806,drift,Sp1831-6435,23:00:39,23:22:30,12,21.8,max 2.3',6437777371042569344_I+z_20250806_output.fits,
+Europa,20250807,drift,Sp1843+1132,23:02:30,23:48:45,27,46.2,max 1.5',4504120628412422784_I+z_20250807_output.fits,
+Ganymede,20250808,drift,Sp1831-6435,05:50:01,06:03:56,8,13.9,max 1.8',6437777371042569344_I+z_20250808_output.fits,
+Ganymede,20250822,tracking,ch_HS2231+2441_2,08:33:35,08:34:12,2,1.1,"mount log: still at altitude 20 deg, azimuth 312 deg; the mount's altitude limit; TRACKING 0 too; shorter than the header census sampling",SPECU3.2025-08-23T08:33:35.000.fits,SPECU3.2025-08-23T08:34:12.000.fits
+Ganymede,20250823,tracking,ch_HS2231+2441_2,08:29:53,08:34:13,8,4.8,RA 15.02 deg/h; airmass fixed 2.8978; altitude 20 deg,SPECU3.2025-08-24T08:29:53.000.fits,SPECU3.2025-08-24T08:34:13.000.fits
+Ganymede,20250825,tracking,Sp1954+1801,00:32:41,04:42:11,333,250.1,RA 15.03 deg/h; airmass fixed 1.5547,SPECU3.2025-08-26T00:32:41.000.fits,SPECU3.2025-08-26T04:42:11.000.fits
+Ganymede,20250904,tracking,Sp1954+1801,02:59:44,04:38:58,133,99.9,RA 15.03 deg/h; airmass fixed 1.4619,SPECU3.2025-09-05T02:59:44.000.fits,SPECU3.2025-09-05T04:38:58.000.fits
+Europa,20250919,drift,Sp0328+1129,04:40:07,05:41:49,54,61.7,max 2.6',16386404041502592_I+z_20250919_output.fits,
+Ganymede,20250929,drift,Sp2343-2906,23:20:46,23:43:58,14,23.2,max 1.5',2327766927474541824_I+z_20250929_output.fits,
+Ganymede,20251010,drift,Sp0010-0746,23:25:26,23:43:04,12,17.6,max 2.3',2429635550212644608_I+z_20251010_output.fits,
+Ganymede,20251016,drift,Sp0010-0746,00:06:44,00:27:34,14,20.8,max 2.3',2429635550212644608_I+z_20251016_output.fits,
+Artemis,20251022,drift,Eros20251022_def,19:53:18,21:33:16,159,100.0,max 2.5',EROS20251022_DEF_r_20251022_output.fits,
+Artemis,20251022,drift,Eros20251022_def,23:08:28,23:09:08,3,0.7,max 1.0',EROS20251022_DEF_r_20251022_output.fits,
+Artemis,20251022,drift,Eros20251022_def,23:10:09,00:57:14,292,107.1,max 2.5',EROS20251022_DEF_r_20251022_output.fits,
+Callisto,20251101,tracking,1600-Vysotsky-20251101,09:06:09,09:14:31,21,8.8,RA 15.05 deg/h; airmass fixed 2.8981; altitude 20 deg,SPECU4.2025-11-02T09:06:09.205.fits,SPECU4.2025-11-02T09:14:31.202.fits
+Ganymede,20251123,drift,Sp0320-0446,23:59:15,00:21:01,9,21.8,max 1.7',5182151481717042944_I+z_20251123_output.fits,
+Ganymede,20251124,drift,Sp0320-0446,00:02:38,00:16:14,6,13.6,max 1.4',5182151481717042944_I+z_20251124_output.fits,
+Io,20260207,tracking,CH_K2-117BC_2,08:33:37,08:39:37,22,6.2,"mount log: still at altitude 20 deg, azimuth 292 deg; the mount's altitude limit; Chilean programme 116.29GM.001, frames not downloaded",SPECU1.2026-02-08T08:33:37.000.fits,SPECU1.2026-02-08T08:39:37.000.fits
+Europa,20260505,drift,Sp1229+0752,23:05:31,23:37:12,43,31.7,max 1.1',3901165013100805248_I+z_20260505_output.fits,
+Ganymede,20260505,tracking,Sp1649+0444,04:56:15,05:30:17,21,35.6,airmass fixed 1.2719,SPECU3.2026-05-06T04:56:15.000.fits,SPECU3.2026-05-06T05:30:17.000.fits
+Io,20260603,tracking,CH_EM01_232156_020_ML00011,09:13:06,09:19:49,7,7.7,"mount log: still at altitude 22 deg, azimuth 207 deg; the mount's altitude limit; Chilean programme 117.2ARM.001, frames not downloaded",SPECU1.2026-06-04T09:13:06.000.fits,SPECU1.2026-06-04T09:19:49.000.fits
+Io,20260604,tracking,CH_EM01_231153_020_ML00006_2,09:14:20,09:18:48,5,5.5,"mount log: still at altitude 22 deg, azimuth 208 deg; the mount's altitude limit; Chilean programme 117.2ARM.001, frames not downloaded",SPECU1.2026-06-05T09:14:20.000.fits,SPECU1.2026-06-05T09:18:48.000.fits
+Ganymede,20260630,tracking,Sp2253-4801,07:12:22,09:43:49,103,152.8,airmass fixed 1.1719,SPECU3.2026-07-01T07:12:22.000.fits,SPECU3.2026-07-01T09:43:49.000.fits
+Callisto,20260908,drift,Sp0128+0211,07:02:27,07:20:19,66,17.9,max 3.2',2559347994957228288_zYJ_20260908_output.fits,
+Callisto,20261006,drift,Sp2151+2328,03:12:37,03:12:48,3,0.2,max 1.6'; jump 1.6',1795813379365971072_zYJ_20261006_output.fits,
+Callisto,20261014,drift,Sp0439+1615,04:30:41,05:36:09,3305,65.5,max 1.8'; target off the field from 04:30,3310083401849536384_zYJ_20261014_output.fits,
+Callisto,20261014,drift,Sp0439+1615,05:36:13,05:36:19,7,0.1,max 1.0',3310083401849536384_zYJ_20261014_output.fits,
+Callisto,20261015,drift,Sp0439+1615,04:31:14,05:29:20,2700,58.1,max 1.7'; target off the field from 04:31,3310083401849536384_zYJ_20261015_output.fits,
+Callisto,20261016,drift,Sp0439+1615,04:30:22,05:32:34,3384,62.2,max 1.7'; target off the field from 04:30,3310083401849536384_zYJ_20261016_output.fits,
+Callisto,20261016,drift,Sp0439+1615,05:32:37,05:32:45,8,0.1,max 1.0',3310083401849536384_zYJ_20261016_output.fits,
+Callisto,20261016,drift,Sp0439+1615,05:32:48,05:32:51,3,0.0,max 1.0',3310083401849536384_zYJ_20261016_output.fits,
+Callisto,20261016,drift,Sp0439+1615,05:33:05,05:33:07,3,0.0,max 1.0',3310083401849536384_zYJ_20261016_output.fits,

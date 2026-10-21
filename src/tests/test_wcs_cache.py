@@ -13,7 +13,6 @@ are faked (the pattern of test_sexagesimal_ra.py): the catalogue is the detectio
 
 Run:  pytest src/tests/test_wcs_cache.py -q
 """
-import multiprocessing
 import os
 import re
 import shutil
@@ -31,8 +30,9 @@ if SRC not in sys.path:
     sys.path.insert(0, SRC)
 
 pw = pytest.importorskip('astrom.pointer_wcs')
-from astrom import astrometry, wcs_cache                 # noqa: E402
+from astrom import astrometry, header_write, wcs_cache   # noqa: E402
 from calibration.pipeutils import proc_name              # noqa: E402
+from download import raw_provenance                      # noqa: E402
 from utils import orchard_version as ov                  # noqa: E402
 
 NIGHT = '20261018'
@@ -91,10 +91,15 @@ def _raw_header(k, astra_wcs=True):
 
 
 class Night:
-    """A data root with one night of raw frames, T1's raw list, and T6's calibrated frames and list."""
+    """A data root with one night of raw frames, T1's raw list, and T6's calibrated frames and list. With
+    `checksums`, the raw frames carry CHECKSUM/DATASUM as ESO's do, and the calibrated frames are T6's: new pixels in
+    the opened raw frame, written by `t6_writer`. That is header_write.writeto as T6 writes now, or by default plain
+    writeto() as T6 wrote before, which keeps the raw frame's cards (stale)."""
 
-    def __init__(self, root, n=3, names=None):
+    def __init__(self, root, n=3, names=None, checksums=False, t6_writer=None):
         self.root = root
+        self.checksums = checksums
+        self.t6_writer = t6_writer or (lambda hdulist, path: hdulist.writeto(path))
         self.rawdir = root / 'Observations' / 'Io' / 'images' / NIGHT
         self.outdir = root / 'PipelineOutput' / 'v3' / 'Io' / 'output' / NIGHT
         self.procdir = self.outdir / 'T' / '1'
@@ -106,7 +111,7 @@ class Night:
         for k, name in enumerate(names):
             path = self.rawdir / name
             data = (1000 + np.arange(np.prod(SHAPE)) % 97).reshape(SHAPE).astype(np.uint16)
-            fits.PrimaryHDU(data=data, header=_raw_header(k)).writeto(str(path))
+            fits.PrimaryHDU(data=data, header=_raw_header(k)).writeto(str(path), checksum=checksums)
             self.raws.append(str(path))
         self.raw_list = self.outdir / 'reduction' / '1_image_T.list'
         self.raw_list.write_text('\n'.join(self.raws) + '\n')
@@ -120,6 +125,14 @@ class Night:
         self.procs = []
         for raw in self.raws:
             out = str(self.procdir / proc_name(raw))
+            if self.checksums:          # calibration/pipered.py: new pixels in the opened raw frame, written
+                if os.path.exists(out):
+                    os.remove(out)
+                with fits.open(raw) as h:
+                    h[0].data = h[0].data.astype(np.float32)
+                    self.t6_writer(h, out)
+                self.procs.append(out)
+                continue
             with fits.open(raw) as h:
                 header = h[0].header.copy()
                 for key in ('BZERO', 'BSCALE'):
@@ -233,8 +246,7 @@ def test_raw_frames_are_never_written(tmp_path, solver):
 
 
 def test_parent_collects_the_pool_results(tmp_path, solver, monkeypatch):
-    # fork, as on Linux, so the workers inherit the fake catalogue
-    monkeypatch.setattr(multiprocessing, 'Pool', multiprocessing.get_context('fork').Pool)
+    # the workers fork (astrom/frame_pool.py), so they inherit the fake catalogue
     stored = []
     real_store = wcs_cache.store
     monkeypatch.setattr(wcs_cache, 'store', lambda path, new: stored.append(sorted(new)) or real_store(path, new))
@@ -466,18 +478,86 @@ def test_a_missing_gaia_database_turns_the_cache_off(tmp_path, solver, capsys):
 # ------------------------------------------------------------------------------------------------ the header write
 
 
+def _verifies(path):
+    with fits.open(path, do_not_scale_image_data=True) as h:
+        return h[0].verify_datasum() == 1 and h[0].verify_checksum() == 1
+
+
+def _data_bytes(path):
+    raw, _ = raw_provenance.read_header_bytes(path)
+    with open(path, 'rb') as f:
+        return f.read()[len(raw):]
+
+
+def _no_data_sum(*args):
+    raise AssertionError('the data were summed although the DATASUM could be trusted')
+
+
+def test_checksums_verify_after_a_solve_and_after_a_cache_hit(tmp_path, solver, monkeypatch):
+    """Frames T6 calibrated before it set CHECKSUM/DATASUM carry the raw frame's, stale. T7 sums the data once and
+    leaves both valid, whether it solves a frame or applies its cached solution; a frame T7 has written is trusted
+    after that."""
+    night = Night(tmp_path, checksums=True)
+    assert not any(_verifies(p) for p in night.procs)
+    pixels = {p: _data_bytes(p) for p in night.procs}
+    night.t7()                                      # solves
+    assert len(solver) == 3
+    assert all(_verifies(p) and _data_bytes(p) == pixels[p] for p in night.procs)
+    night.reduce()
+    del solver[:]
+    night.t7()                                      # from the cache
+    assert solver == []
+    assert all(_verifies(p) and _data_bytes(p) == pixels[p] for p in night.procs)
+    assert all('orchard 4.0.2 T7: WCS from cache' in _history(p) for p in night.procs)
+
+    monkeypatch.setattr(header_write, 'data_sum', _no_data_sum)
+    for run in ({}, {'force_platesolve': True}):    # from the cache again, then solved, without T6 in between
+        headers = {p: raw_provenance.read_header_bytes(p)[0] for p in night.procs}
+        night.t7(**run)
+        for p in night.procs:
+            assert raw_provenance.read_header_bytes(p)[0] != headers[p]         # written
+            assert _verifies(p) and _data_bytes(p) == pixels[p]
+    assert len(solver) == 3
+
+
+def test_t7_never_sums_the_data_of_frames_t6_wrote(tmp_path, solver, monkeypatch):
+    """T6 now writes CHECKSUM/DATASUM that verify, so every T7 write, a solve's or a cache hit's, trusts them."""
+    night = Night(tmp_path, checksums=True, t6_writer=header_write.writeto)
+    assert all(_verifies(p) for p in night.procs)
+    pixels = {p: _data_bytes(p) for p in night.procs}
+    monkeypatch.setattr(header_write, 'data_sum', _no_data_sum)
+    night.t7()                                      # solves
+    night.reduce()
+    night.t7()                                      # from the cache
+    assert len(solver) == 3
+    assert all(_verifies(p) and _data_bytes(p) == pixels[p] for p in night.procs)
+    assert all('orchard 4.0.2 T7: WCS from cache' in _history(p) for p in night.procs)
+
+
 def test_applying_a_row_keeps_a_16_bit_frame_16_bit(tmp_path, solver):
-    night = Night(tmp_path, n=1)
+    night = Night(tmp_path, n=1, checksums=True)
     night.t7()
     row = night.rows()[os.path.basename(night.raws[0])]
     f = str(tmp_path / 'int16.fits')
     shutil.copy(night.raws[0], f)                                       # uint16 data: BITPIX 16, BZERO 32768
-    before = fits.getdata(f)
+    before, pixels = fits.getdata(f), _data_bytes(f)
     wcs_cache.apply(f, row['cards'], astrometry.WCS_KEYWORDS)
     h = fits.getheader(f)
     assert (h['BITPIX'], h['BZERO']) == (16, 32768)
     np.testing.assert_array_equal(fits.getdata(f), before)
+    assert _data_bytes(f) == pixels and _verifies(f)
     assert WCS(h).has_celestial and 'CD1_1' not in h
+
+
+def test_a_cache_hit_on_a_stale_checksum_sums_the_data(tmp_path, solver, monkeypatch):
+    night = Night(tmp_path, n=1, checksums=True)
+    night.t7()
+    night.reduce()                                  # T6 again, as it wrote before: the raw frame's cards, stale
+    calls = []
+    monkeypatch.setattr(header_write, 'data_sum', lambda *a: calls.append(a) or raw_provenance.data_sum(*a))
+    row = night.rows()[os.path.basename(night.raws[0])]
+    wcs_cache.apply(night.procs[0], row['cards'], astrometry.WCS_KEYWORDS)
+    assert len(calls) == 1 and _verifies(night.procs[0])
 
 
 def test_a_row_that_does_not_parse_leaves_the_frame_untouched(tmp_path):

@@ -157,6 +157,37 @@ def test_digest_lines_for_each_kind_of_night(clean, store):
     assert [a['Subject'] for a in alerts] == ['[orchard] Ganymede, night of 16 Oct 2026: pipeline job failed']
 
 
+def test_digest_names_the_frames_the_telescope_lost(clean, store):
+    """T11 records what the telescope lost (utils/telescope_faults.py); the digest puts it on the night's line,
+    without calling the night a problem: the data are poor, the pipeline is fine."""
+    from utils import telescope_faults as tf
+    cfg = clean
+    for tel in cfg['telescopes']:
+        frames(cfg, tel, NIGHT, 200)
+        watch(store, tel, NIGHT, 'enqueued', rows=200)
+        job(store, tel, NIGHT)
+        lightcurve(cfg, tel, NIGHT, '42')
+    episode = {'kind': 'tracking', 'target': 'TOI-4336 c', 'first': 'SPECU3.2026-10-17T00:30:03.000.fits',
+               'last': 'SPECU3.2026-10-17T03:11:57.000.fits', 'i0': 347, 'i1': 916, 'n': 570,
+               'start': '2026-10-17T00:30:03', 'end': '2026-10-17T03:11:57', 'detail': {'ra_rate': 15.02}}
+    result = {'TOI-4336 c': {'frames': 916, 'tracking_known': True, 'solved': 345, 'episodes': [episode]},
+              'Sp2135-3153': {'frames': 391, 'tracking_known': True, 'solved': 391, 'episodes': []}}
+    datdir = os.path.join(cfg['basedir'], 'PipelineOutput', 'v3', 'Ganymede')
+    tf.write_summary(tf.summary_path(datdir, NIGHT), result, 'Ganymede', NIGHT, 'orchard test')
+    # a record with nothing in it says nothing
+    tf.write_summary(tf.summary_path(os.path.join(cfg['basedir'], 'PipelineOutput', 'v3', 'Io'), NIGHT),
+                     {'Sp0000+0000': dict(result['Sp2135-3153'], episodes=[])}, 'Io', NIGHT)
+    n = notifier(cfg, store)
+    n.digest()
+    [path] = outbox(cfg)
+    msg = read(path)
+    body = msg.get_content()
+    assert msg['Subject'] == '[orchard] Night of 16 Oct 2026: all well'
+    assert ('  Ganymede  200 frames, 3.3 h · light curves for 1 of 1 target · done' in body and
+            '· telescope: tracking stopped on TOI-4336 c 00:30–03:11 UT (570 frames)\n' in body)
+    assert body.count('telescope:') == 1
+
+
 def test_all_well_digest_still_goes_out(clean, store):
     cfg = clean
     for tel in cfg['telescopes']:

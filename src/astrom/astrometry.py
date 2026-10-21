@@ -1,10 +1,17 @@
 # This module makes a proper WCS-header of a FITS file.
 
-from astropy.io import fits
+# One BLAS thread per process, set before numpy is first imported. T7's parallelism is its process pool. Otherwise
+# each worker's first BLAS call starts OpenBLAS's 64-thread pool, and on appct (2026-10-20/21) concurrent runs used up
+# orchard-server's 4,096 threads: a worker whose pool could not start died of OpenBLAS's SIGINT, losing its chunk, or
+# spun in sched_yield for ever, out of reach of the 60 s SIGALRM, until the queue's job timeout. numpy and scipy each
+# bring their own OpenBLAS; both read these.
 import os
+for _var in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS'):
+    os.environ[_var] = '1'
+
+from astropy.io import fits
 from functools import partial
 import argparse
-import multiprocessing
 import timeit
 import astrom.find_pa
 from calibration.pipeutils import detect_instrument, get_instrument_parameters, open_fits_file, proc_name
@@ -12,7 +19,7 @@ import fnmatch
 import shutil
 from astrom.twirl_speculoos import twirl_wcs
 from astrom.pointer_wcs import pointer_wcs
-from astrom import wcs_cache
+from astrom import frame_pool, wcs_cache
 import warnings
 from astropy.io.fits.verify import VerifyWarning
 warnings.filterwarnings('ignore', category=VerifyWarning)
@@ -20,10 +27,22 @@ warnings.filterwarnings('ignore', category=VerifyWarning)
 # The plate solver's generation, recorded in every WCS cache row (astrom/wcs_cache.py, docs/wcs-cache.md). Bump it
 # in any change that alters the solutions T7 writes (pointer_wcs's detection, catalogue query, matching or
 # acceptance, the twirl call), so cached solutions from the old solver are no longer used.
-SOLVER_EPOCH = 1
+# 2: the second pass from the nearest solved frame (neighbour_jobs, known_scale.solve_from_neighbour).
+SOLVER_EPOCH = 2
+
+# The second pass. A frame that failed with at least this many sources is tried again from the solution of the frame
+# nearest to it in time that has one, solved this run or taken from the WCS cache, if that frame is no further away
+# than NEIGHBOUR_MAX_GAP. Trailed and timed-out frames are not retried.
+NEIGHBOUR_MIN_SOURCES = 5
+NEIGHBOUR_MAX_GAP = 7200.0      # seconds
+
+# A pool worker that has had a frame this long past the per-frame timeout is stuck where SIGALRM cannot reach it (in C,
+# like the workers spinning in OpenBLAS's sched_yield on 2026-10-21) and is killed (astrom/frame_pool.py). Generous:
+# a long C call, a Gaia query or a slow disk, delays the alarm's exception until it returns.
+HANG_GRACE = 240                # seconds
 
 
-def add_astrometry_with_timeout(infile, timeout, ext, db_path, total_files, file_num=None):
+def add_astrometry_with_timeout(infile, timeout, ext, db_path, total_files, file_num=None, neighbour=None):
     """
     Wrapper that runs add_astrometry with a signal-based timeout.
 
@@ -41,6 +60,8 @@ def add_astrometry_with_timeout(infile, timeout, ext, db_path, total_files, file
         Total number of files being processed
     file_num : int, optional
         File number for progress display
+    neighbour : dict, optional
+        WCS cards of the nearest frame with a solution, for the second pass
 
     Returns
     -------
@@ -68,7 +89,7 @@ def add_astrometry_with_timeout(infile, timeout, ext, db_path, total_files, file
     try:
         result = add_astrometry(infile, ext, db_path,
                                 file_num=file_num, total_files=total_files,
-                                progress=progress)
+                                progress=progress, neighbour=neighbour)
         signal.alarm(0)  # Cancel the alarm
         return result
     except TimeoutException as e:
@@ -211,6 +232,83 @@ def store_new_solutions(cache_path, solved, frames, results):
         print(f"WARNING: WCS cache not updated ({cache_path}): {e}", flush=True)
 
 
+def _obs_seconds(header):
+    """A frame's DATE-OBS in seconds (any fixed origin), or None."""
+    from datetime import datetime
+    value = str(header.get('DATE-OBS', '')).strip()
+    for fmt in ('%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S'):
+        try:
+            return (datetime.strptime(value, fmt) - datetime(2000, 1, 1)).total_seconds()
+        except ValueError:
+            pass
+    return None
+
+
+def worth_a_second_pass(result):
+    """A failed frame with enough round sources: not trailed, not cut short by the timeout."""
+    if not result or result.get('success', False):
+        return False
+    error = result.get('error') or ''
+    if error.startswith('Sources trailed') or 'timed out' in error:
+        return False
+    return (result.get('sources_detected') or 0) >= NEIGHBOUR_MIN_SOURCES
+
+
+def neighbour_jobs(to_solve, results, infiles, read_header=fits.getheader):
+    """[(index into to_solve, WCS cards of its neighbour)] for the second pass: each frame worth one, with the frame
+    nearest to it in time that has a solution, solved this run or taken from the WCS cache (every listed frame not
+    in to_solve), and no more than NEIGHBOUR_MAX_GAP away."""
+    retry = [i for i, r in enumerate(results) if worth_a_second_pass(r)]
+    if not retry:
+        return []
+    solving = set(to_solve)
+    solved = {f for f, r in zip(to_solve, results) if r and r.get('success', False)}
+    headers, times = {}, {}
+    for f in [f for f in infiles if f in solved or f not in solving] + [to_solve[i] for i in retry]:
+        try:
+            headers[f] = read_header(f)
+            times[f] = _obs_seconds(headers[f])
+        except Exception:
+            times[f] = None
+    have = [f for f in infiles if (f in solved or f not in solving) and times.get(f) is not None
+            and headers[f].get('CTYPE1')]
+    jobs = []
+    for i in retry:
+        t = times.get(to_solve[i])
+        if t is None or not have:
+            continue
+        nearest = min(have, key=lambda f: abs(times[f] - t))
+        if abs(times[nearest] - t) > NEIGHBOUR_MAX_GAP:
+            continue
+        jobs.append((i, {k: headers[nearest][k] for k in WCS_KEYWORDS if k in headers[nearest]}))
+    return jobs
+
+
+def _solve_job(job, timeout, ext, db_path, total_files):
+    """One frame in a pool worker. job = (frame, None) in the first pass, (frame, the neighbour's cards) in the
+    second."""
+    infile, neighbour = job
+    return add_astrometry_with_timeout(infile, timeout=timeout, ext=ext, db_path=db_path, total_files=total_files,
+                                       neighbour=neighbour)
+
+
+def _lost_frame(job, why):
+    """The result of a frame the pool lost with its worker (or whose solve raised): failed, with the reason, logged
+    as any failed frame is."""
+    result = {'success': False, 'error': why, 'crpix': None, 'crval': None, 'stage': 'unknown'}
+    result.update((counter, None) for counter in _COUNTER_FILLED_IN)
+    print(_summary_line('', os.path.basename(job[0]), result), flush=True)
+    return result
+
+
+def _solve_in_pool(work, args, total_files):
+    """_solve_job on every job of `work`, in args.nproc worker processes; the results in order (astrom/frame_pool.py:
+    a dead or hung worker costs only its frame)."""
+    worker = partial(_solve_job, timeout=args.timeout, ext=args.ext, db_path=args.db_path, total_files=total_files)
+    return frame_pool.run(worker, work, int(args.nproc), hang_after=args.timeout + HANG_GRACE, lost=_lost_frame,
+                          label=lambda job: os.path.basename(job[0]))
+
+
 def main(args):
     import sys
     sys.stdout.flush()
@@ -277,17 +375,7 @@ def main(args):
     elif int(args.nproc) > 1:
         # Parallel processing with timeout
         print(f"Running in parallel mode with {args.nproc} processes", flush=True)
-        pool = multiprocessing.Pool(processes=int(args.nproc))
-
-        worker_func = partial(add_astrometry_with_timeout,
-                              timeout=args.timeout,
-                              ext=args.ext,
-                              db_path=args.db_path,
-                              total_files=files_to_process)
-
-        results = pool.map(worker_func, to_solve)
-        pool.close()
-        pool.join()
+        results = _solve_in_pool([(f, None) for f in to_solve], args, files_to_process)
     else:
         # Sequential processing with timeout
         print(f"Running in serial mode (nproc={args.nproc})", flush=True)
@@ -299,6 +387,21 @@ def main(args):
                                                        db_path=args.db_path,
                                                        total_files=files_to_process,
                                                        file_num=i))
+
+    # The second pass: failed frames tried again from the nearest frame with a solution (neighbour_jobs)
+    jobs = neighbour_jobs(to_solve, results, infiles)
+    if jobs:
+        print(f"Second pass: {len(jobs)} frames tried again from the nearest frame with a solution", flush=True)
+        work = [(to_solve[i], cards) for i, cards in jobs]
+        if int(args.nproc) > 1:
+            again = _solve_in_pool(work, args, files_to_process)
+        else:
+            again = [_solve_job(w, timeout=args.timeout, ext=args.ext, db_path=args.db_path,
+                                total_files=files_to_process) for w in work]
+        for (i, _), result in zip(jobs, again):
+            results[i] = result
+        print(f"Second pass: {sum(1 for r in again if r and r.get('success', False))} of {len(jobs)} solved",
+              flush=True)
 
     # Count successes and failures
     for result in results:
@@ -405,7 +508,32 @@ WCS_KEYWORDS = ['CTYPE1', 'CTYPE2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2',
                 'CDELT2', 'LONPOLE', 'LATPOLE', 'RADESYS']
 
 
-def add_astrometry(f, ext, db_path, file_num=None, total_files=None, progress=None):
+def _summary_line(prefix, filename, result):
+    """A frame's line in the T7 log (parsed by utils/promote_policy.py's SUMMARY)."""
+    # A counter of None means that stage never ran; print '?' so it is not
+    # mistaken for a stage that ran and came back empty.
+    def _n(key):
+        value = result.get(key)
+        return '?' if value is None else value
+
+    if result['success']:
+        crpix1, crpix2 = result['crpix']
+        crval1, crval2 = result['crval']
+        return (f"{prefix} {filename} SUCCESS - "
+                f"Sources: {_n('sources_detected')}→{_n('sources_used')} "
+                f"Gaia: {_n('gaia_queried')}→{_n('gaia_used')} "
+                f"Matches: {_n('matches')} "
+                f"Method: {result.get('method') or '?'} "
+                f"CRPIX=({crpix1:.2f},{crpix2:.2f}) "
+                f"CRVAL=({crval1:.6f},{crval2:.6f})")
+    return (f"{prefix} {filename} FAILED - "
+            f"Sources: {_n('sources_detected')}→{_n('sources_used')} "
+            f"Gaia: {_n('gaia_queried')}→{_n('gaia_used')} "
+            f"Matches: {_n('matches')} "
+            f"Error: {result['error']}")
+
+
+def add_astrometry(f, ext, db_path, file_num=None, total_files=None, progress=None, neighbour=None):
     if fnmatch.fnmatch(f, '*.' + ext):
         file = f
         # print("Add astrometry.net data to header of file: " + file)
@@ -413,7 +541,7 @@ def add_astrometry(f, ext, db_path, file_num=None, total_files=None, progress=No
         # Attempt WCS solving
         # result = twirl_wcs(str(file), verbose=False)
         result = pointer_wcs(str(file), db_path, wcs_keywords=WCS_KEYWORDS, clear_existing_wcs=True,
-                             verbose=False, progress=progress)
+                             verbose=False, progress=progress, neighbour=neighbour)
 
         # Create summary line
         filename = os.path.basename(file)
@@ -421,31 +549,7 @@ def add_astrometry(f, ext, db_path, file_num=None, total_files=None, progress=No
             prefix = f"[{file_num}/{total_files}]"
         else:
             prefix = ""
-
-        # A counter of None means that stage never ran; print '?' so it is not
-        # mistaken for a stage that ran and came back empty.
-        def _n(key):
-            value = result.get(key)
-            return '?' if value is None else value
-
-        if result['success']:
-            crpix1, crpix2 = result['crpix']
-            crval1, crval2 = result['crval']
-            summary = (f"{prefix} {filename} SUCCESS - "
-                       f"Sources: {_n('sources_detected')}→{_n('sources_used')} "
-                       f"Gaia: {_n('gaia_queried')}→{_n('gaia_used')} "
-                       f"Matches: {_n('matches')} "
-                       f"Method: {result.get('method') or '?'} "
-                       f"CRPIX=({crpix1:.2f},{crpix2:.2f}) "
-                       f"CRVAL=({crval1:.6f},{crval2:.6f})")
-        else:
-            summary = (f"{prefix} {filename} FAILED - "
-                       f"Sources: {_n('sources_detected')}→{_n('sources_used')} "
-                       f"Gaia: {_n('gaia_queried')}→{_n('gaia_used')} "
-                       f"Matches: {_n('matches')} "
-                       f"Error: {result['error']}")
-
-        print(summary)
+        print(_summary_line(prefix, filename, result))
         return result
 
     return None  # Add this for non-matching files

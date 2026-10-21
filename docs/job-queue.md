@@ -106,6 +106,36 @@ match a network, full-disk, I/O or memory pattern, or the exit code is 75, 137 o
 retried after an hour, at most twice. Anything else is **deterministic**: the job stops as failed, and after a
 fix `q requeue --signature "<text>"` puts every job with that signature back, with its retries restored.
 
+### Threads
+
+orchard-server's systemd scope (`docker-<id>.scope`, systemd 219 on CentOS 7) allows **4,096 tasks for the whole
+container**, and every thread counts. Docker sets no limit of its own (`PidsLimit` 0). By default every Python process
+that uses numpy starts OpenBLAS's pool of up to 64 threads, so one T7 with 20 workers held 1,280.
+
+So jobs run with **one BLAS/OpenMP thread per process**. `jobqueue.runner` sets `OPENBLAS_NUM_THREADS`,
+`OMP_NUM_THREADS` and `MKL_NUM_THREADS` to 1 for every job, unless the job's environment sets them, and
+`ZLP_pipeline.sh` does the same for runs outside the queue. Its log says `BLAS threads per process: ...`. `q release
+test` gives the suite the same. Orchard's parallelism is its process pools, and its BLAS calls are 2×2 inverses and
+small least-squares fits, so a single thread costs nothing.
+
+**What exhaustion looks like** (2026-10-20/21, v4.1.0 to v4.3.2: the new T7 solver's `np.linalg.inv` started the pool
+in every worker). When `pthread_create` fails, OpenBLAS prints `OpenBLAS blas_thread_init: pthread_create failed for
+thread N of 64` and raises SIGINT:
+
+- At numpy import, the stage dies with `KeyboardInterrupt`, exit 130, within a minute of the start. The queue counts it
+  as transient, and the retries are spent.
+- In a pool worker, either the worker dies mid-chunk (`Process ForkPoolWorker-N: ... KeyboardInterrupt`) and
+  `Pool.map` waits for the lost chunk for ever, or its BLAS call spins in `sched_yield` for ever, waiting for pool
+  threads that never started (one thread, state R, 100% CPU). Either way the job sits until its timeout. The pool's
+  idle workers keep their 64 threads, which makes the shortage worse.
+- Other signatures from the same cause: `RuntimeError: can't start new thread`; `AttributeError: 'DummyProcess' object
+  has no attribute 'terminate'` (a `ThreadPool` failing to start; `ThreadPool()` in createlists, pipered and condense
+  starts one thread per core, i.e. 128); `ImportError: numpy._core.multiarray failed to import`.
+
+To check, on appct run `systemctl show docker-$(docker inspect --format '{{.Id}}' orchard-server).scope -p TasksMax
+-p TasksCurrent`, or inside the container read `/sys/fs/cgroup/pids/pids.current` and `pids.max`. Scratch work in the
+container shares the same 4,096: give it the same three variables.
+
 ### Restarts and the watchdog
 
 The dispatcher holds an `flock` on `<queue_root>/dispatcher.lock` for its whole life, so only one runs. Every
@@ -280,6 +310,11 @@ with `--promote` runs with `--no_T12`, and a **promote** job follows it:
 The daily report lists the holds and rejects waiting for a decision, and any promotion that did not finish. The
 nightly runs from the watcher and the look-back still use T12 until `promote.nightly` is turned on.
 
+**Reruns from a late stage** (`q add --from T10 --promote`, or `--from pwv`; [rerun-from-stage.md](rerun-from-stage.md))
+queue a **restage** job first (`utils/restage.py`: hard links of the rerun's inputs from v2 into v3, 1 core, the night
+lock, a second or two), then the pipeline job with `--from_T10 --no_T12` for the restaged targets, which runs only if
+the restage succeeded, then the promote job, which overlays v2 with what the rerun wrote.
+
 ## The command line
 
 Inside the container it is `python -m jobqueue <command>`; on appct, `src/jobqueue/cron/q` does the
@@ -298,6 +333,8 @@ q add --class P2 --from-file backlog.csv --promote --campaign "ESO backfill reru
 q add --class P2 --telescope Europa --night 20251016 --promote             # one night the same way
 q add --class P2 --kind promote --after 1544-1670                          # promote jobs after pipeline jobs already queued
 q add --class P2 --kind promote --telescope Europa --night 20251016        # judge one night against its latest run
+q add --class P3 --telescope Europa --night 20260703 --from pwv --promote [--dry-run]   # restage, rerun T10+T11, overlay
+q add --class P3 --from-file nights.csv --from T10 --promote --campaign "PWV outage reruns"  # PROCESS-only lines
 q promote list                 # holds and rejects waiting for a decision (q promote = python utils/promote.py)
 q promote show 12              # q promote accept 12 --reason "..." [--apply]; q promote reject 12 --reason "..."
 q add --class P3 --kind sweep --cores 2 --no-disk-heavy --estimate 30 -- python tools/x.py
@@ -356,7 +393,8 @@ script was deleted on 19 Oct 2026.
   in `Archive_night_blocks`) has no survey frames by design and never counts; a telescope dark while two others
   observe is down itself; when none observes it is the weather, which needs nobody.
 - **The digest** of last night (at 07:45 the night before last, processed yesterday) goes out every morning even
-  when all is well: one line per telescope (frames, hours, light curves, or what went wrong), open and newly
+  when all is well: one line per telescope (frames, hours, light curves, or what went wrong, and the frames the
+  telescope itself lost as the night report recorded them: `docs/telescope-faults.md`), open and newly
   resolved incidents, messages that could not be sent, failure signatures, look-back actions, ESO query errors,
   the PWV outcome of the SSO light curves made in the last 24 h (corrected, without LHATPRO data, other failures,
   off by design), free disk, and the queue's work in two sections.
@@ -437,7 +475,7 @@ After a clean week of shadow reports. On appct as `speculoos`, in the daytime:
 2. **Crontab**: save it (`crontab -l > ~/crontab.backup.<date>`), add the four queue lines from
    `src/jobqueue/cron/crontab.live` (watchdog, watcher, look-back, daily report), remove any shadow lines, and
    comment out the five nightly lines (19:00 Io … 23:00 Artemis). Leave the 05:00 and 06:00 lines.
-   `crontab.live` is the whole proposed crontab, for reference.
+   `crontab.live` is now a copy of the whole crontab installed on appct, for reference.
 3. **Watch the first day**: `q status`, `queue/logs/watcher.log`, the P0 jobs' logs, `ESO_logs/`, and the usual
    pipeline emails, which now arrive in the afternoon. Io's nightly INCOMPLETE email stops. Every morning
    `queue/reports/report_<date>.md` lists, per telescope-night, when it was ready at ESO, when its download and
@@ -503,7 +541,9 @@ q release deploy --from /gaia_database/deploy_staging/main_<sha>/src --sha <sha>
 fails, and `--skip-tests` skips it), activates it, and brings the live tree up to it straight away if nothing
 runs from the live tree, else says what it is waiting for and leaves the update to the dispatcher. If the
 queue's own code changed it restarts the dispatcher (`q stop`; the watchdog starts the new one within 5
-minutes; running jobs carry on). The steps also run one at a time:
+minutes; running jobs carry on). The suite's temporary files (pytest's `--basetemp` and `TMPDIR`) go to
+`<release>/pytest-tmp` on the data disk and are removed when it ends, pass or fail; `tests.log` and `tests.json`
+stay in the release. The steps also run one at a time:
 
 ```bash
 q release build --from <stage>/src --sha <sha>   # or no --from: a snapshot of the live tree as it is
@@ -523,6 +563,28 @@ layout two runs would both write, say) still needs `q drain`, waiting for the ru
 **Data files in the tree** (`calibration/*.csv`, `utils/ml_40pc_v2.csv`) reach jobs with the next release. If
 one is edited in the live tree, snapshot it with `q release deploy` (no `--from`). The same goes for any
 hand edit in the live tree: until the next release, jobs do not see it.
+
+### Running the suite in orchard-server yourself
+
+**Always give pytest `--basetemp` and `TMPDIR` on `/data`, and delete them afterwards.** The container's root,
+`/tmp` included, is the overlay on appct's 20 GB `/var`, and `df` inside the container shows `/var`, not the data
+disk. A full suite leaves about 1.1 GB in `/tmp/pytest-of-unknown` and pytest keeps the last three runs. On
+2026-10-19 such runs filled `/var` twice, and production jobs 1877 and 1891 died with `Errno 28` in T9 and T10.
+The container has no pytest of its own: use the pylib, and run from the tree under test (`python -m` puts the
+working directory first on `sys.path`, and the container's default is the live tree). On appct, for a
+`git archive` stage in `mh_scratch/<dir>`:
+
+```bash
+docker exec orchard-server bash -c '
+  T=/data/SPECULOOSPipeline/mh_scratch/<dir>; P=$T/pytmp
+  mkdir -p $P/tmp && cd $T/src &&
+  TMPDIR=$P/tmp PYTHONPATH=/data/SPECULOOSPipeline/mh_scratch/k1-deploy-check/pylib:$T/src PYTHONDONTWRITEBYTECODE=1 \
+    nice -n 15 python -m pytest -q -p no:cacheprovider --basetemp=$P/basetemp tests jobqueue/tests
+  rm -rf $P'
+```
+
+`--basetemp` must be a directory of its own: pytest empties it when it starts. `q release test` and
+`q release deploy` do all of this themselves.
 
 ## Configuration
 
@@ -546,6 +608,7 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `releases_dir` | `<queue_root>/releases` | code releases; `current` is the one new jobs get |
 | `release_exclude` | see file | caches, logs, core dumps left out of a release (`/x` anchors at the tree's root) |
 | `test_pylib`, `test_paths` | `mh_scratch/k1-deploy-check/pylib`, `tests`, `jobqueue/tests` | `q release test` |
+| `test_tmp` | `<release>/pytest-tmp` | the suite's `--basetemp` and `TMPDIR` (`<test_tmp>/<release id>` if set), removed after each run; never the container's `/tmp` |
 | `minutes_per_1000_frames` | ANDOR 69, SPIRIT 22 | estimates (2026 production medians) |
 | `telescopes.<TEL>.force_platesolve` | true for Io, Europa, Ganymede, Callisto; false for Artemis | pipeline jobs pass `--force-platesolve`: T7 ignores the night's WCS cache, re-solves every frame and refreshes the cache rows ([wcs-cache.md](wcs-cache.md)). SSO stays forced until the cache is validated |
 | `watcher.*` | see file | stability, deadlines, `recent_days` = 5 |
@@ -582,7 +645,7 @@ Defaults are in `src/jobqueue/config.py`; a JSON file (`--config`, `$ORCHARD_QUE
 | `src/jobqueue/cli.py` | `q` |
 | `src/utils/promote.py`, `src/utils/promote_journal.py` | the promotion step and its journal ([promotion.md](promotion.md)) |
 | `src/jobqueue/cron/` | `queue-cron.sh`, `q`, `crontab.shadow`, `crontab.live` |
-| `src/jobqueue/tests/` | `pytest src/jobqueue/tests` |
+| `src/jobqueue/tests/` | `pytest src/jobqueue/tests`; in orchard-server, see [Running the suite in orchard-server yourself](#running-the-suite-in-orchard-server-yourself) |
 
 ## Limits and next steps
 

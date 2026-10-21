@@ -27,6 +27,9 @@ DEFAULTS = {
     'release_link': ['.env'],
     'test_pylib': '/data/SPECULOOSPipeline/mh_scratch/k1-deploy-check/pylib',   # pytest for the container
     'test_paths': ['tests', 'jobqueue/tests'],
+    # the suite's temporary files (pytest's --basetemp and TMPDIR), removed after each run: <test_tmp>/<release id>,
+    # default <release>/pytest-tmp. Never the container's /tmp: that is appct's 20 GB /var (filled 2026-10-19)
+    'test_tmp': None,
 
     # dispatcher
     'poll_seconds': 45,
@@ -85,7 +88,7 @@ DEFAULTS = {
     'pipeline_sthresh': '2',
     'minutes_per_1000_frames': {'ANDOR': 69.0, 'SPIRIT': 22.0},
     'min_estimate_minutes': 15.0,
-    # Callisto carried SPIRIT on these nights (measured; monitoring.py's dates are wrong)
+    # Callisto carried SPIRIT on these nights (measured from frame dimensions; monitoring.py uses them too)
     'spirit_spells': [['20220111', '20220111'], ['20220115', '20220115'],
                       ['20220510', '20230315'], ['20250226', None]],
 

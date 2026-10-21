@@ -2,7 +2,7 @@
 
 Read-only, but for one cache: everything comes from the queue database (the watcher's per-night rows, jobs and
 their failure signatures, look-back rows, whether ESO answered) and the production tree (raw night directories,
-SPOCK's night blocks, light curves). The PWV outcome of each finished SSO pipeline job is read from its log once
+SPOCK's night blocks, light curves, and the night report's record of the frames the telescope lost). The PWV outcome of each finished SSO pipeline job is read from its log once
 and kept in the job_pwv table (pwvlog), unless the Context is told not to record. Nothing here sends anything;
 notify.py delivers.
 
@@ -126,6 +126,24 @@ class Context:
             return log
         return self._get('pwv', load)
 
+    def faults(self, tel, night):
+        """What T11 found the telescope lost this night (utils/telescope_faults.py: frames exposed with the mount
+        stopped, pointing that walked off), from the record it leaves in v3/<TEL>/reports/telescope_faults/; None
+        if there is none. The record is read, never computed here: the raw headers of a SPIRIT night run to 20,000
+        files."""
+        def load():
+            try:
+                from utils import telescope_faults
+            except ImportError:
+                return None
+            doc = telescope_faults.read_summary(telescope_faults.summary_path(
+                os.path.join(self.basedir, 'PipelineOutput', 'v3', tel), night))
+            if doc is None:
+                return None
+            return {'text': telescope_faults.digest_text(doc['targets']),
+                    'episodes': telescope_faults.episodes(doc['targets'])}
+        return self._get(('faults', tel, night), load)
+
     def chilean(self, tel, night):
         p = self.plan(tel, night) or {}
         total = p.get('survey', 0.0) + p.get('chilean', 0.0)
@@ -233,6 +251,12 @@ def night_status(ctx, tel, night):
     else:
         state = 'unknown'
         parts.append('state unknown (watcher: {})'.format(w.get('state') or 'not seen'))
+    # frames the telescope lost, as the night report has them: what made the night's data poor, not the pipeline
+    faults = ctx.faults(tel, night) if names and state not in ('waiting', 'chilean', 'no-data') else None
+    if faults:
+        s['faults'] = faults['episodes']
+        if faults['text']:
+            parts.append(faults['text'])
     s['state'], s['text'] = state, ' · '.join(parts)
     return s
 
@@ -275,7 +299,8 @@ def queue_summary(ctx, hours=24):
     }
 
 
-DEFAULT_LABELS = {'pipeline': 'reruns', 'download': 'downloads', 'fetch': 'downloads', 'framepack': 'frame packing'}
+DEFAULT_LABELS = {'pipeline': 'reruns', 'download': 'downloads', 'fetch': 'downloads', 'framepack': 'frame packing',
+                  'restage': 'reruns'}
 
 
 def tidy_note(note, limit=40):
@@ -360,6 +385,58 @@ def disks(ctx, usage=disk_usage):
 
 
 # ---------------------------------------------------------------------------------------------- conditions
+
+# ---------------------------------------------------------------------------------------------- shutter state
+
+SHUTTER_KINDS = {
+    'CAMSHUTT': lambda d: 'but CAMSHUTT = {} on {} of {} frames'.format(d['header'], d['n_frames'], d['of']),
+    'override': lambda d: 'but the override window {} to {} says {}'.format(
+        d['window'][0][:16], d['window'][1][:16], 'shutter used' if d['override'] == 'T' else
+        'shutterless' + (' at {} s'.format(d['override_t_read']) if d.get('override_t_read') else '')),
+    'READOUTM': lambda d: 'but READOUTM names {}'.format(', '.join(d['header'])),
+    'no-header': lambda d: 'with no CAMSHUTT and no override window, so not de-smeared',
+}
+
+
+def _epoch(t):
+    return (t - dt.datetime(1970, 1, 1)).total_seconds()
+
+
+def shutter_notes(ctx, hours=24, limit=12):
+    """Digest lines for nights reduced in the last `hours` whose measured shutter state (reduction/shutter.json,
+    written at T2 by calibration/shutter_detect.py) disagrees with CAMSHUTT, the override table or READOUTM, or
+    is shutterless where no header says so. One line per disagreement, at most `limit`, then a count."""
+    cutoff = _epoch(ctx.now - dt.timedelta(hours=hours))
+    lines = []
+    for version in ('v3', 'v2'):
+        pattern = os.path.join(ctx.basedir, 'PipelineOutput', version, '*', 'output', '*', 'reduction', 'shutter.json')
+        for path in sorted(glob.glob(pattern)):
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    continue
+                with open(path) as f:
+                    rec = json.load(f)
+            except (OSError, ValueError):
+                continue
+            tel = path.split(os.sep)[-5]
+            for d in rec.get('disagreements') or []:
+                say = SHUTTER_KINDS.get(d.get('kind'))
+                if say is None:
+                    continue
+                measured = d.get('measured') or '?'
+                if measured == 'shutterless' and d.get('measured_t_read'):
+                    measured += ' ({} s)'.format(d['measured_t_read'])
+                try:
+                    detail = say(d)
+                except (KeyError, IndexError, TypeError):
+                    detail = 'disagrees with {}'.format(d.get('kind'))
+                lines.append('  • {}, night of {}: frames measure {}{} {}'.format(
+                    tel, fmt_night(rec.get('night') or path.split(os.sep)[-3]), measured,
+                    ' [{}]'.format(d['confidence']) if d.get('confidence') else '', detail))
+    if len(lines) > limit:
+        lines = lines[:limit] + ['  … and {} more'.format(len(lines) - limit)]
+    return lines
+
 
 def condition(key, kind, title, detail, telescope=None, night=None):
     return {'key': key, 'kind': kind, 'title': title, 'detail': detail, 'telescope': telescope, 'night': night}
@@ -668,9 +745,10 @@ def render_undelivered(failed, since, outbox):
 
 
 def render_digest(cfg, night, statuses, q, disk_list, open_incidents, resolved, now, report_path=None,
-                  undelivered=None, undelivered_since=None, outbox=None):
+                  undelivered=None, undelivered_since=None, outbox=None, shutter=None):
     """Subject and plain-text body of the morning digest. undelivered: messages whose sending failed since
-    undelivered_since (notify.Notifier.undelivered), so a digest that does get through says what did not."""
+    undelivered_since (notify.Notifier.undelivered), so a digest that does get through says what did not.
+    shutter: lines from shutter_notes()."""
     incident_tels = {i['telescope'] for i in open_incidents if i.get('telescope')}
     lines, flagged = [], 0
     for s in statuses:
@@ -694,6 +772,10 @@ def render_digest(cfg, night, statuses, q, disk_list, open_incidents, resolved, 
     if resolved:
         body.append('Resolved since the last digest')
         body += ['  • {} (resolved {})'.format(i['title'], fmt_time(i['resolved_at'])) for i in resolved]
+        body.append('')
+    if shutter:
+        body.append('Shutter state measured against the headers (nights reduced in the last 24 h)')
+        body += shutter
         body.append('')
     body += render_undelivered(undelivered, undelivered_since, outbox or 'the outbox')
 
