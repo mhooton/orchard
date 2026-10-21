@@ -19,9 +19,10 @@ Tracking stopped
     MaxIm DL frames (Artemis, and SSO before Astra) have no TRACKING and compute ALTITUDE from the target
     coordinates. There the mount's own position log can tell: the site's ASTELCO controller writes the axes'
     positions once a second into technical_logs/<YYYY-MM-DD>/<TEL>_pos.csv (SSO from February 2019, Artemis
-    September 2021 to June 2025). Tracking, the hour-angle axis turns at the sidereal rate; stopped, every axis
-    stands still while the log's RA runs at 15 deg/h. On the Astra nights the log finds the stops TRACKING finds
-    (MountLog). Its clock is set against the frames' from the slews ACP's log also records (clock_offset()).
+    2021-08-25 to 2025-06-10, but only a header from 2022-06-24 to 2023-07-28). Tracking, the hour-angle axis
+    turns at the sidereal rate; stopped, every axis stands still while the log's RA runs at 15 deg/h. On the Astra
+    nights the log finds the stops TRACKING finds (MountLog). Its clock is set against the frames' from the slews
+    ACP's log also records (clock_offset()).
     Without either, T7 can tell, by failing frames as "Sources trailed" (astrom/pointer_wcs.py, v4.1.0).
 
 Pointing drift
@@ -1078,8 +1079,8 @@ def describe(e, frames_total=None):
 def flags(result):
     """('Y'|'N'|'unknown', 'Y'|'N'|'unknown'): tracking lost, pointing drift, for the night report's events table.
     Tracking is unknown without Astra's TRACKING and without the mount's position log (MaxIm DL frames before 2019,
-    Artemis outside 2021-09..2025-06) unless T7 found trailed frames; drift is unknown when no frame had a
-    solution."""
+    Artemis outside 2021-08-25..2025-06-10 and from 2022-06-24 to 2023-07-28) unless T7 found trailed frames; drift
+    is unknown when no frame had a solution."""
     eps = episodes(result)
     tracking = 'Y' if any(e['kind'] in ('tracking', 'trailed') for e in eps) else \
         'N' if any(r['tracking_known'] for r in result.values()) else 'unknown'
