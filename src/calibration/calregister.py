@@ -919,14 +919,17 @@ def _name_mjd(base):
     return _mjd(t)
 
 
-def candidate_paths(telescope, night_dir, relpaths, eso_types, cubes, tolerance_s=1.0, known_nights=None):
+def candidate_paths(telescope, night_dir, relpaths, eso_types, cubes, tolerance_s=1.0, known_nights=None,
+                    objects=None):
     """Which files of a night the builder reads, without reading any header:
 
     - an ESO-named file (SPECUn.<time>[.<k>]) that ESO lists as BIAS, DARK or FLAT; on a night delivered as
       datacubes (SPIRIT from 2026-02) also any frame not inside an OBJECT cube's time span, which is how the
       frames unpacked from calibration cubes (named by their own time) are found;
-    - every ESO-named file of a night the ESO index has no row for at all (`known_nights`): some nights on disk
-      are not in ESO's archive (Ganymede 2024-12-19/20, ...), so their frames cannot be typed from it;
+    - with ESO's OBJECT identifiers (`objects`, eso-objects): every ESO-named file ESO does not list at all,
+      whatever the night - its header decides.  Some frames on disk are not in ESO's archive (Ganymede
+      2024-12-19/20, ...);
+    - without them, every ESO-named file of a night the ESO index has no row for (`known_nights`);
     - any other file in a subdirectory (AutoFlat/, Calibration/, ...) or named like a calibration frame
       (Bias-, Dark-, Flat-, AutoFlat-, Dusk-, ...).  Top-level ACP frames <target>-S001-R001-C001-<f>.fts are
       lights: in the 2026-10-16 header census no top-level non-ESO Io/Europa/Ganymede/Callisto/Artemis frame
@@ -949,17 +952,22 @@ def candidate_paths(telescope, night_dir, relpaths, eso_types, cubes, tolerance_
             out.append(rel)
             continue
         if m:
-            types = [eso_types[i] for i in (dp_key(base),) if i in eso_types]
+            key = dp_key(base)
+            types = [eso_types[key]] if key in eso_types else []
             if types:
                 if types[0] in ('BIAS', 'DARK', 'FLAT'):
                     out.append(rel)
                 continue
+            if objects is not None and key in objects:
+                continue  # ESO says science
             if starts:
                 # a frame unpacked from a cube: the latest cube that started by its time (+1 s)
                 mjd = _name_mjd(base)
                 i = bisect.bisect_right(starts, mjd + tolerance_s / 86400.0) - 1 if mjd is not None else -1
                 if i < 0 or cube_list[i][1] != 'OBJECT':
                     out.append(rel)
+            elif objects is not None:
+                out.append(rel)  # not in ESO's archive: read its header
             continue
         if '/' in rel or CALIBRATION_NAME.match(base):
             out.append(rel)
@@ -967,7 +975,7 @@ def candidate_paths(telescope, night_dir, relpaths, eso_types, cubes, tolerance_
 
 
 def build(register, basedir, telescopes, eso_index=None, since=None, until=None, workers=4, rate=0.0,
-          rescan=False, nights=None, log=print):
+          rescan=False, nights=None, eso_objects_dir=None, log=print):
     """Register every night of the telescopes (resumable: a night already registered by the builder with the
     same number of files is skipped unless rescan)."""
     from concurrent.futures import ProcessPoolExecutor
@@ -980,7 +988,7 @@ def build(register, basedir, telescopes, eso_index=None, since=None, until=None,
     t_start = time.time()
     try:
         _build(register, basedir, telescopes, eso_types, cubes, executor, since, until, rescan, nights, totals,
-               t_start, log, known=known)
+               t_start, log, known=known, objects_dir=eso_objects_dir)
     finally:
         executor.shutdown()
     log('done: {}'.format(totals))
@@ -988,7 +996,7 @@ def build(register, basedir, telescopes, eso_index=None, since=None, until=None,
 
 
 def _build(register, basedir, telescopes, eso_types, cubes, executor, since, until, rescan, nights, totals,
-           t_start, log, batch_files=400, known=None):
+           t_start, log, batch_files=400, known=None, objects_dir=None):
     batch = []
 
     def flush():
@@ -1032,7 +1040,9 @@ def _build(register, basedir, telescopes, eso_types, cubes, executor, since, unt
         if until:
             dirs = [d for d in dirs if d <= until]
         done = {} if rescan else {n['night_dir']: n for n in register.nights(telescope)}
-        log('{}: {} night directories'.format(telescope, len(dirs)))
+        objects = load_eso_objects(objects_dir, telescope) if objects_dir else None
+        log('{}: {} night directories{}'.format(telescope, len(dirs), '' if objects is None else
+                                                 ', {} ESO science identifiers'.format(len(objects))))
         for night_dir in dirs:
             path = os.path.join(images, night_dir)
             relpaths = night_files(path)
@@ -1040,7 +1050,8 @@ def _build(register, basedir, telescopes, eso_types, cubes, executor, since, unt
             if prev and prev.get('n_files') == len(relpaths):
                 totals['skipped'] += 1
                 continue
-            cands = candidate_paths(telescope, night_dir, relpaths, eso_types, cubes, known_nights=known)
+            cands = candidate_paths(telescope, night_dir, relpaths, eso_types, cubes, known_nights=known,
+                                    objects=objects)
             samples = science_samples(relpaths, cands)
             batch.append((telescope, night_dir, path, relpaths, cands, samples))
             if sum(len(b[4]) + len(b[5]) for b in batch) >= batch_files:
@@ -1147,16 +1158,71 @@ def eso_index(out_path, env_path, telescopes=None, first_year=2017, log=print):
     return n
 
 
-def validate(basedir, telescope, night_dirs, eso_index_path, workers=4, rate=0.0, log=print):
+def eso_objects_path(directory, telescope):
+    return os.path.join(directory, 'eso_objects_{}.txt'.format(telescope))
+
+
+def load_eso_objects(directory, telescope):
+    """The set of ESO OBJECT identifiers (dp_key form) of a telescope, from eso-objects; None if not fetched."""
+    path = eso_objects_path(directory, telescope)
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        return {line.strip() for line in f if line.strip()}
+
+
+def eso_objects(out_dir, env_path, telescopes=None, first_year=2014, log=print, maxrec=200000):
+    """Every OBJECT identifier ESO holds for the SSO programmes, one file per telescope (eso_objects_<Tel>.txt),
+    so the builder can tell a science frame from one ESO does not have.  Intervals that hit MAXREC are split."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from jobqueue.eso import EsoArchive
+    from jobqueue.util import to_mjd
+    archive = EsoArchive(env_path, log=log)
+    os.makedirs(out_dir, exist_ok=True)
+    for tel, prog in ESO_PROGS.items():
+        if telescopes and tel not in telescopes:
+            continue
+        path = eso_objects_path(out_dir, tel)
+        tmp = path + '.tmp'
+        n = 0
+
+        def fetch(a, b, w):
+            q = ("SELECT dp_id FROM dbo.raw WHERE prog_id = '{}' AND dp_id LIKE 'SPECU%' AND dp_type = 'OBJECT' "
+                 "AND mjd_obs >= {:.6f} AND mjd_obs < {:.6f}").format(prog, a, b)
+            rows = archive.tap(q)
+            if len(rows) >= maxrec:
+                mid = (a + b) / 2.0
+                return fetch(a, mid, w) + fetch(mid, b, w)
+            for r in rows:
+                w.write((dp_key(r['dp_id']) or r['dp_id']) + '\n')
+            return len(rows)
+
+        with open(tmp, 'w') as w:
+            for year in range(first_year, dt.date.today().year + 1):
+                for month in range(1, 13):
+                    a = dt.datetime(year, month, 1)
+                    b = dt.datetime(year + (month == 12), month % 12 + 1, 1)
+                    k = fetch(to_mjd(a), to_mjd(b), w)
+                    n += k
+                if year >= 2017:
+                    log('{} {}: {} OBJECT identifiers so far'.format(tel, year, n))
+        os.replace(tmp, path)
+        log('{}: wrote {} OBJECT identifiers to {}'.format(tel, n, path))
+
+
+def validate(basedir, telescope, night_dirs, eso_index_path, workers=4, rate=0.0, eso_objects_dir=None,
+             log=print):
     """Full header scan of the nights against the prefilter: calibration frames the builder would not read."""
     eso_types, cubes = load_eso_index(eso_index_path)
     known = eso_nights(eso_index_path) if eso_index_path else None
+    objects = load_eso_objects(eso_objects_dir, telescope) if eso_objects_dir else None
     throttle = Throttle(rate)
     report = []
     for night_dir in night_dirs:
         path = os.path.join(basedir, 'Observations', telescope, 'images', night_dir)
         relpaths = night_files(path)
-        cands = set(candidate_paths(telescope, night_dir, relpaths, eso_types, cubes, known_nights=known))
+        cands = set(candidate_paths(telescope, night_dir, relpaths, eso_types, cubes, known_nights=known,
+                                    objects=objects))
 
         def kind_of(rel):
             throttle()
@@ -1235,6 +1301,11 @@ def main(argv=None):
     b.add_argument('--workers', type=int, default=4)
     b.add_argument('--rate', type=float, default=0.0, help='file opens per second (0: unlimited)')
     b.add_argument('--rescan', action='store_true')
+    b.add_argument('--eso-objects', help='directory of eso_objects_<Tel>.txt (eso-objects)')
+    o = sub.add_parser('eso-objects')
+    o.add_argument('--out-dir', required=True)
+    o.add_argument('--env', default='/opt/orchard/src/reporting/.env')
+    o.add_argument('--telescopes', default='Io,Europa,Ganymede,Callisto')
     e = sub.add_parser('eso-index')
     e.add_argument('--out', required=True)
     e.add_argument('--env', default='/opt/orchard/src/reporting/.env')
@@ -1252,6 +1323,7 @@ def main(argv=None):
     v.add_argument('nights', help='comma-separated night directories')
     v.add_argument('--eso-index')
     v.add_argument('--rate', type=float, default=0.0)
+    v.add_argument('--eso-objects')
     v.add_argument('--out')
     sub.add_parser('summary')
     ro = sub.add_parser('rotations')
@@ -1265,8 +1337,12 @@ def main(argv=None):
     if a.cmd == 'eso-index':
         eso_index(a.out, a.env, telescopes=a.telescopes.split(','), log=log)
         return 0
+    if a.cmd == 'eso-objects':
+        eso_objects(a.out_dir, a.env, telescopes=a.telescopes.split(','), log=log)
+        return 0
     if a.cmd == 'validate':
-        rep = validate(a.basedir, a.telescope, a.nights.split(','), a.eso_index, rate=a.rate, log=log)
+        rep = validate(a.basedir, a.telescope, a.nights.split(','), a.eso_index, rate=a.rate,
+                       eso_objects_dir=a.eso_objects, log=log)
         if a.out:
             with open(a.out, 'a') as f:
                 for r in rep:
@@ -1277,7 +1353,7 @@ def main(argv=None):
         if a.cmd == 'build':
             build(reg, a.basedir, a.telescopes.split(','), eso_index=a.eso_index, since=a.since, until=a.until,
                   workers=a.workers, rate=a.rate, rescan=a.rescan,
-                  nights=set(a.nights.split(',')) if a.nights else None, log=log)
+                  nights=set(a.nights.split(',')) if a.nights else None, eso_objects_dir=a.eso_objects, log=log)
         elif a.cmd == 'night':
             row, _ = register_night(reg, a.basedir, a.telescope, a.night_dir, log=log)
             log(json.dumps(row))

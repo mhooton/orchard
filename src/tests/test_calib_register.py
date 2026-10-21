@@ -155,6 +155,13 @@ def test_candidates_from_eso_types_and_acp_names():
     known = {('Io', '20240409')}
     assert cr.candidate_paths('Io', '20240410', rel, types, {}, known_nights=known)[:2] == rel[:2]
     assert cr.candidate_paths('Io', '20240410', rel, types, {}, known_nights={('Io', '20240410')}) == got
+    # with ESO's OBJECT identifiers the rule is per frame: ESO's science frames are skipped, frames ESO does not
+    # have at all are read
+    rel2 = rel + ['SPECU1.2024-04-10T23:00:00.000.fits']
+    types2 = {cr.dp_key('SPECU1.2024-04-10T10:30:28.340'): 'FLAT'}
+    objects = {cr.dp_key('SPECU1.2024-04-10T22:53:25.660')}
+    got2 = cr.candidate_paths('Io', '20240410', rel2, types2, {}, objects=objects)
+    assert got2 == [rel2[1]] + got[1:] + ['SPECU1.2024-04-10T23:00:00.000.fits']
 
 
 def test_candidates_on_a_datacube_night_follow_the_cube_starts():

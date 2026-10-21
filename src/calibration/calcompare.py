@@ -117,9 +117,10 @@ class TelescopeView:
         if not modes:
             modes = collections.Counter(r.get('readmode') for r in own if r.get('readmode'))
         instrument = self.instrument.get(config)
+        full_frame = config.startswith('2048x2088 b1x1')
         if modes:
             readmode = modes.most_common(1)[0][0]
-        elif instrument == 'andor':
+        elif instrument == 'andor' and full_frame:
             from calibration import readout
             reg = readout.expected_regime(self.instrument.get(('telescop', config)), cr.night_of(night_dir))
             readmode = reg.mode if reg else 'NORMAL'
