@@ -124,9 +124,10 @@ thread N of 64` and raises SIGINT:
 
 - At numpy import, the stage dies with `KeyboardInterrupt`, exit 130, within a minute of the start. The queue counts it
   as transient, and the retries are spent.
-- In a pool worker, the worker dies mid-chunk (`Process ForkPoolWorker-N: ... KeyboardInterrupt`). `Pool.map` waits for
-  the lost chunk for ever, and the job sits until its timeout. Its idle workers keep their 64 threads, which makes the
-  shortage worse.
+- In a pool worker, either the worker dies mid-chunk (`Process ForkPoolWorker-N: ... KeyboardInterrupt`) and
+  `Pool.map` waits for the lost chunk for ever, or its BLAS call spins in `sched_yield` for ever, waiting for pool
+  threads that never started (one thread, state R, 100% CPU). Either way the job sits until its timeout. The pool's
+  idle workers keep their 64 threads, which makes the shortage worse.
 - Other signatures from the same cause: `RuntimeError: can't start new thread`; `AttributeError: 'DummyProcess' object
   has no attribute 'terminate'` (a `ThreadPool` failing to start; `ThreadPool()` in createlists, pipered and condense
   starts one thread per core, i.e. 128); `ImportError: numpy._core.multiarray failed to import`.
