@@ -99,8 +99,10 @@ something was flagged).
 All read frames only and write only the register; run inside orchard-server.
 
 ```
-python -m calibration.calregister eso-index --out <dir>/eso_index.csv     # ESO's calibration rows (prefilter)
-python -m calibration.calregister build --eso-index <dir>/eso_index.csv --workers 8 --rate 100
+python -m calibration.calregister eso-index --out <dir>/eso_index.csv     # ESO's calibration rows
+python -m calibration.calregister eso-objects --out-dir <dir>/eso_objects   # ESO's OBJECT identifiers
+python -m calibration.calregister build --eso-index <dir>/eso_index.csv --eso-objects <dir>/eso_objects \
+    --workers 8 --rate 100
 python -m calibration.calregister update --days 30
 python -m calibration.calregister night <Tel> <night>
 python -m calibration.calregister validate <Tel> <night,...> --eso-index <csv>
@@ -108,9 +110,22 @@ python -m calibration.calregister reflag | summary | export <csv> | rotations <T
 python -m calibration.calcompare --register <reg> compare --out <dir> [--science spirit_science.csv]
 ```
 
-The builder does not open every frame (11.1 M files): it reads ESO-named frames that ESO lists as BIAS, DARK or
-FLAT (on SPIRIT datacube nights, frames unpacked from calibration cubes), every non-ESO frame in a subdirectory or
-with a calibration name, and three science frames a night. `validate` compares this with full header scans.
+The builder does not open every frame (11.1 M files). ESO's archive types every SSO frame, so with the
+`eso-index` and `eso-objects` files it reads each ESO-named frame ESO lists as BIAS, DARK or FLAT, skips each one
+ESO lists as OBJECT, and reads the header of any ESO-named frame ESO does not have at all (some frames on disk
+never reached the archive: Ganymede 2024-12-19/20, ...). On SPIRIT datacube nights (2026-02 on) the frames
+unpacked from a cube are typed by the cube they fall in. Non-ESO frames (ACP-era SSO, Artemis, which is not in
+ESO) are read when they sit in a subdirectory or carry a calibration name; three science frames a night are read
+as a check. `validate` compares this with full header scans. None of this is needed after the build: T1, the
+queue's hook and `update` read every header of their night.
+
+## pipedark.py
+
+Exposure-matched darks are grouped by rounded exposure (the key pipered.py looks them up by), chunks of at most
+50 frames are cut evenly within each group and their masters averaged weighted by frame count (one bad frame
+alone in a chunk used to get half the weight: Callisto 20260309, MasterDark_8s 2,079 ADU/s against ~28), a master
+whose rate is more than 5x the night's other masters is reported, and `MasterDark.fits` is the highest-exposure
+master.
 
 ## Deploying
 
