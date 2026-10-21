@@ -96,10 +96,13 @@ or more sources, as the pipeline's.
 
 T7 runs its frames in a process pool (20 processes in production), and `astrometry.py` sets `OPENBLAS_NUM_THREADS`,
 `OMP_NUM_THREADS` and `MKL_NUM_THREADS` to 1 before numpy is first imported. Keep that assignment above every other
-import. Without it, a forked worker whose OpenBLAS starts its thread pool can deadlock. From v4.1.0 to v4.3.1,
-10 of 29 T7 runs on appct stalled that way (2026-10-20/21): workers with 64 threads, all asleep in `futex_wait`, which
-the 60 s per-frame alarm cannot interrupt, so the job sat until the queue's timeout. numpy and scipy each load their
-own OpenBLAS, and both read these variables.
+import. Without it, every worker's first BLAS call starts OpenBLAS's pool of 64 threads, so one T7 holds 1,280 of the
+4,096 threads that orchard-server's systemd scope allows the whole container (see [job-queue.md](job-queue.md),
+"Threads"). From v4.1.0 to v4.3.2, 10 of 29 T7 runs on appct stalled when concurrent jobs used them up (2026-10-20/21).
+A worker whose pool could not start either died of the SIGINT that OpenBLAS raises, so `Pool.map` waited for its lost
+chunk, or spun for ever in `sched_yield`, waiting for threads that never started (one thread, 100% CPU). The 60 s
+per-frame alarm reaches neither, so the job sat until the queue's timeout. The workers left with 64 threads asleep in
+`futex_wait` were idle, not stuck. numpy and scipy each load their own OpenBLAS, and both read these variables.
 
 ## Dead and hung workers
 

@@ -15,7 +15,7 @@ import subprocess
 import sys
 
 from .resources import proc_start_time
-from .util import iso, utcnow, write_json_atomic
+from .util import iso, one_blas_thread, utcnow, write_json_atomic
 
 
 def main(argv=None):
@@ -50,8 +50,9 @@ def main(argv=None):
                                         a.cwd or os.getcwd(), os.environ.get('ORCHARD_PATH', '-'),
                                         ' '.join(cmd)).encode())
         try:
+            # one BLAS thread per process: OpenBLAS's default pools exhaust the container's threads (util.py)
             child = subprocess.Popen(cmd, cwd=a.cwd or None, stdin=subprocess.DEVNULL, stdout=log,
-                                     stderr=subprocess.STDOUT)
+                                     stderr=subprocess.STDOUT, env=one_blas_thread(os.environ))
         except OSError as e:
             log.write('=== could not start: {}\n'.format(e).encode())
             rc = 127

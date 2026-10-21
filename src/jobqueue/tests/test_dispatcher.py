@@ -59,6 +59,21 @@ def test_runs_a_job_in_its_own_session_and_records_everything(cfg, store, clock)
     assert kinds[:2] == ['added', 'started'] and kinds[-1] == 'finished'
 
 
+def test_jobs_run_with_one_blas_thread_unless_their_env_sets_a_count(cfg, store, clock, monkeypatch):
+    """OpenBLAS's default pools (64 threads a process) ran orchard-server out of threads on 2026-10-20/21."""
+    for var in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS'):
+        monkeypatch.delenv(var, raising=False)
+    probe = ('import os; print("blas", *(os.environ.get(v) for v in '
+             '("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")))')
+    plain = add(store, [PY, '-c', probe], kind='pipeline')
+    four = add(store, [PY, '-c', probe], env={'OMP_NUM_THREADS': '4'})
+    d = make(cfg, store, clock)
+    d.poll()
+    logs = [open(poll_until(d, store, jid, ('done',))['log_path']).read() for jid in (plain, four)]
+    assert 'blas 1 1 1' in logs[0]
+    assert 'blas 1 4 1' in logs[1]
+
+
 def test_transient_failure_is_retried_after_the_delay(cfg, store, clock):
     jid = add(store, [PY, '-c', 'import sys; print("OSError: [Errno 28] No space left on device: /x/y"); sys.exit(1)'])
     d = make(cfg, store, clock)

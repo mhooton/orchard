@@ -1,9 +1,10 @@
 # This module makes a proper WCS-header of a FITS file.
 
-# One BLAS thread per process, set before numpy is first imported. T7's parallelism is its process pool, and BLAS
-# thread pools started inside the forked workers deadlock: on appct (2026-10-20/21) workers whose OpenBLAS had started
-# its 64 threads sat in futex_wait for hours, out of reach of the 60 s SIGALRM, until the queue's job timeout. numpy
-# and scipy each bring their own OpenBLAS; both read these.
+# One BLAS thread per process, set before numpy is first imported. T7's parallelism is its process pool. Otherwise
+# each worker's first BLAS call starts OpenBLAS's 64-thread pool, and on appct (2026-10-20/21) concurrent runs used up
+# orchard-server's 4,096 threads: a worker whose pool could not start died of OpenBLAS's SIGINT, losing its chunk, or
+# spun in sched_yield for ever, out of reach of the 60 s SIGALRM, until the queue's job timeout. numpy and scipy each
+# bring their own OpenBLAS; both read these.
 import os
 for _var in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS'):
     os.environ[_var] = '1'
