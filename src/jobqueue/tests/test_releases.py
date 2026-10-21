@@ -171,8 +171,10 @@ def fake_pytest(tmp_path, monkeypatch, exit_code=0):
           'os.chmod(os.path.join(base, "test_a0", "ro"), 0o555)\n'
           'fd, spill = tempfile.mkstemp()\n'
           'os.close(fd)\n'
+          'blas = [os.environ.get(v) for v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")]\n'
           'with open(os.environ["FAKE_PYTEST_RECORD"], "w") as f:\n'
-          '    json.dump({"argv": argv, "TMPDIR": os.environ.get("TMPDIR"), "found": found, "spill": spill}, f)\n'
+          '    json.dump({"argv": argv, "TMPDIR": os.environ.get("TMPDIR"), "found": found, "spill": spill,\n'
+          '               "blas": blas}, f)\n'
           'print("." * 72 + " [ 93%]")\nprint("." * 20 + " " * 52 + " [100%]")\n'
           'print("308 passed in 128.57s (0:02:08) cwd=" + os.getcwd())\n' +
           'sys.exit({})\n'.format(exit_code))
@@ -189,6 +191,18 @@ def test_run_tests_records_pytests_final_line(cfg, live, tmp_path, monkeypatch):
     cfg['test_pylib'] = str(tmp_path / 'none')
     with pytest.raises(ReleaseError):
         run_tests(cfg, rel['id'], log=lambda m: None)
+
+
+def test_the_suite_runs_with_one_blas_thread(cfg, live, tmp_path, monkeypatch):
+    """Under production load the suite hung in numpy.linalg.inv and failed with pthread_create errors (2026-10-20):
+    OpenBLAS's default pools ran the container out of threads."""
+    for var in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS'):
+        monkeypatch.delenv(var, raising=False)
+    cfg['test_pylib'] = fake_pytest(tmp_path, monkeypatch)
+    rel = build(cfg, log=lambda m: None)
+    assert run_tests(cfg, rel['id'], log=lambda m: None) == 0
+    with open(str(tmp_path / 'pytest_run.json')) as f:
+        assert json.load(f)['blas'] == ['1', '1', '1']
 
 
 def test_the_suite_keeps_its_temporary_files_next_to_the_release_and_removes_them(cfg, live, tmp_path, monkeypatch):

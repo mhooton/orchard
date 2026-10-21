@@ -5,6 +5,15 @@ set -o nounset
 set -o errexit
 set -o pipefail
 
+# One BLAS/OpenMP thread per process, unless the caller sets these. Without them every Python process that imports
+# numpy starts OpenBLAS's pool of up to 64 threads, and orchard-server's systemd scope allows 4,096 tasks (threads
+# count) for the whole container: one T7 with 20 workers holds 1,280. When the pool's pthread_create fails, OpenBLAS
+# raises SIGINT, so a stage dies with KeyboardInterrupt (exit 130 at numpy import), or a pool worker dies mid-chunk and
+# Pool.map waits for it until the queue's timeout (2026-10-20/21). Orchard's parallelism is its process pools.
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+
 abspath() {
     python -c "import os; print(os.path.realpath('${1}'))"
 }
@@ -200,6 +209,7 @@ else
     readonly CORES=1
     echo "Using default of 1 core (serial processing)"
 fi
+echo "BLAS threads per process: OPENBLAS ${OPENBLAS_NUM_THREADS}, OMP ${OMP_NUM_THREADS}, MKL ${MKL_NUM_THREADS}"
 # Wall-clock ceiling for the nightly PDF report (T11).  It is a presentation
 # stage, so it must never be able to hold up the stages after it.
 readonly PDF_REPORT_TIMEOUT=${PDF_REPORT_TIMEOUT:-3600}
