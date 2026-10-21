@@ -104,6 +104,35 @@ chunk, or spun for ever in `sched_yield`, waiting for threads that never started
 per-frame alarm reaches neither, so the job sat until the queue's timeout. The workers left with 64 threads asleep in
 `futex_wait` were idle, not stuck. numpy and scipy each load their own OpenBLAS, and both read these variables.
 
+## Dead and hung workers
+
+The pool is `astrom/frame_pool.py`, not `multiprocessing.Pool`. `Pool.map` lost a dead worker's chunk and waited for
+it for ever: on 2026-10-20/21 workers killed by OpenBLAS's SIGINT left T7 waiting until the queue's job timeout, 5-15 h
+later (job 1217: 55 dead workers). The parent now hands each worker one frame at a time, so it knows which frame a
+worker had.
+
+- A worker that exits while it has a frame (a signal, an uncaught KeyboardInterrupt, the OOM killer), or gives no
+  result within the per-frame timeout plus `HANG_GRACE` (240 s, so 300 s in production; it is then killed), costs that
+  frame one more attempt, in a new worker. The other workers' frames carry on.
+- A frame lost on both attempts fails, with the reason in its line:
+  `FAILED - Sources: ?→? Gaia: ?→? Matches: ? Error: Lost with its worker process: killed by SIGKILL (attempt 2 of 2)`.
+  It gets no WCS cache row and no second pass, and `promote_policy` counts it as the pipeline's loss.
+- Each loss is logged (`T7 pool: worker 1234 killed by SIGINT on proc….fits; trying it again in a new worker (attempt 2
+  of 2)`), and the run ends with a total. A run that loses no worker prints and writes exactly what it did before.
+- More than 10 frames lost on both attempts (`LOSS_LIMIT`) stops T7 with `WorkersLost`, and ZLP's errexit fails the
+  job: that many is not a few bad frames.
+- Workers flush their log lines after each frame, so a worker that dies takes none with it. If T7 itself is killed,
+  its workers exit when they next look for work.
+
+Serial runs (`--nproc=1`) are unchanged.
+
+Measured in orchard-server on scratch copies of Io 20230725 Sp1805-2758 (76 frames, 20 processes, 2026-10-21): with
+`multiprocessing.Pool`, one worker given SIGINT and another SIGKILL left T7 waiting at 600 s (a healthy run takes 50 s).
+With this pool, the same night with workers given SIGINT, SIGKILL and SIGSTOP solved 76/76 frames in 66 s, 66 s and
+336 s; its log lines and cache rows are those of `Pool` runs. Two runs of the same code can still differ in the last
+bits of CRPIX (up to 3e-6 px): `gaia_db_query` visits a field's Dec-band shards in set order, which follows the
+process's string-hash seed. Fix `PYTHONHASHSEED` when comparing runs bit for bit.
+
 ## Measured
 
 See the PR that introduced this (2026-10-19) for the before/after on 24 nights; the scratch work is in

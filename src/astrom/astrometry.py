@@ -12,7 +12,6 @@ for _var in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS'):
 from astropy.io import fits
 from functools import partial
 import argparse
-import multiprocessing
 import timeit
 import astrom.find_pa
 from calibration.pipeutils import detect_instrument, get_instrument_parameters, open_fits_file, proc_name
@@ -20,7 +19,7 @@ import fnmatch
 import shutil
 from astrom.twirl_speculoos import twirl_wcs
 from astrom.pointer_wcs import pointer_wcs
-from astrom import wcs_cache
+from astrom import frame_pool, wcs_cache
 import warnings
 from astropy.io.fits.verify import VerifyWarning
 warnings.filterwarnings('ignore', category=VerifyWarning)
@@ -36,6 +35,11 @@ SOLVER_EPOCH = 2
 # than NEIGHBOUR_MAX_GAP. Trailed and timed-out frames are not retried.
 NEIGHBOUR_MIN_SOURCES = 5
 NEIGHBOUR_MAX_GAP = 7200.0      # seconds
+
+# A pool worker that has had a frame this long past the per-frame timeout is stuck where SIGALRM cannot reach it (in C,
+# like the workers spinning in OpenBLAS's sched_yield on 2026-10-21) and is killed (astrom/frame_pool.py). Generous:
+# a long C call, a Gaia query or a slow disk, delays the alarm's exception until it returns.
+HANG_GRACE = 240                # seconds
 
 
 def add_astrometry_with_timeout(infile, timeout, ext, db_path, total_files, file_num=None, neighbour=None):
@@ -280,10 +284,29 @@ def neighbour_jobs(to_solve, results, infiles, read_header=fits.getheader):
     return jobs
 
 
-def _second_pass_worker(job, timeout, ext, db_path, total_files):
+def _solve_job(job, timeout, ext, db_path, total_files):
+    """One frame in a pool worker. job = (frame, None) in the first pass, (frame, the neighbour's cards) in the
+    second."""
     infile, neighbour = job
     return add_astrometry_with_timeout(infile, timeout=timeout, ext=ext, db_path=db_path, total_files=total_files,
                                        neighbour=neighbour)
+
+
+def _lost_frame(job, why):
+    """The result of a frame the pool lost with its worker (or whose solve raised): failed, with the reason, logged
+    as any failed frame is."""
+    result = {'success': False, 'error': why, 'crpix': None, 'crval': None, 'stage': 'unknown'}
+    result.update((counter, None) for counter in _COUNTER_FILLED_IN)
+    print(_summary_line('', os.path.basename(job[0]), result), flush=True)
+    return result
+
+
+def _solve_in_pool(work, args, total_files):
+    """_solve_job on every job of `work`, in args.nproc worker processes; the results in order (astrom/frame_pool.py:
+    a dead or hung worker costs only its frame)."""
+    worker = partial(_solve_job, timeout=args.timeout, ext=args.ext, db_path=args.db_path, total_files=total_files)
+    return frame_pool.run(worker, work, int(args.nproc), hang_after=args.timeout + HANG_GRACE, lost=_lost_frame,
+                          label=lambda job: os.path.basename(job[0]))
 
 
 def main(args):
@@ -352,17 +375,7 @@ def main(args):
     elif int(args.nproc) > 1:
         # Parallel processing with timeout
         print(f"Running in parallel mode with {args.nproc} processes", flush=True)
-        pool = multiprocessing.Pool(processes=int(args.nproc))
-
-        worker_func = partial(add_astrometry_with_timeout,
-                              timeout=args.timeout,
-                              ext=args.ext,
-                              db_path=args.db_path,
-                              total_files=files_to_process)
-
-        results = pool.map(worker_func, to_solve)
-        pool.close()
-        pool.join()
+        results = _solve_in_pool([(f, None) for f in to_solve], args, files_to_process)
     else:
         # Sequential processing with timeout
         print(f"Running in serial mode (nproc={args.nproc})", flush=True)
@@ -380,15 +393,11 @@ def main(args):
     if jobs:
         print(f"Second pass: {len(jobs)} frames tried again from the nearest frame with a solution", flush=True)
         work = [(to_solve[i], cards) for i, cards in jobs]
-        worker = partial(_second_pass_worker, timeout=args.timeout, ext=args.ext, db_path=args.db_path,
-                         total_files=files_to_process)
         if int(args.nproc) > 1:
-            pool = multiprocessing.Pool(processes=int(args.nproc))
-            again = pool.map(worker, work)
-            pool.close()
-            pool.join()
+            again = _solve_in_pool(work, args, files_to_process)
         else:
-            again = [worker(w) for w in work]
+            again = [_solve_job(w, timeout=args.timeout, ext=args.ext, db_path=args.db_path,
+                                total_files=files_to_process) for w in work]
         for (i, _), result in zip(jobs, again):
             results[i] = result
         print(f"Second pass: {sum(1 for r in again if r and r.get('success', False))} of {len(jobs)} solved",
@@ -499,6 +508,31 @@ WCS_KEYWORDS = ['CTYPE1', 'CTYPE2', 'CRVAL1', 'CRVAL2', 'CRPIX1', 'CRPIX2',
                 'CDELT2', 'LONPOLE', 'LATPOLE', 'RADESYS']
 
 
+def _summary_line(prefix, filename, result):
+    """A frame's line in the T7 log (parsed by utils/promote_policy.py's SUMMARY)."""
+    # A counter of None means that stage never ran; print '?' so it is not
+    # mistaken for a stage that ran and came back empty.
+    def _n(key):
+        value = result.get(key)
+        return '?' if value is None else value
+
+    if result['success']:
+        crpix1, crpix2 = result['crpix']
+        crval1, crval2 = result['crval']
+        return (f"{prefix} {filename} SUCCESS - "
+                f"Sources: {_n('sources_detected')}→{_n('sources_used')} "
+                f"Gaia: {_n('gaia_queried')}→{_n('gaia_used')} "
+                f"Matches: {_n('matches')} "
+                f"Method: {result.get('method') or '?'} "
+                f"CRPIX=({crpix1:.2f},{crpix2:.2f}) "
+                f"CRVAL=({crval1:.6f},{crval2:.6f})")
+    return (f"{prefix} {filename} FAILED - "
+            f"Sources: {_n('sources_detected')}→{_n('sources_used')} "
+            f"Gaia: {_n('gaia_queried')}→{_n('gaia_used')} "
+            f"Matches: {_n('matches')} "
+            f"Error: {result['error']}")
+
+
 def add_astrometry(f, ext, db_path, file_num=None, total_files=None, progress=None, neighbour=None):
     if fnmatch.fnmatch(f, '*.' + ext):
         file = f
@@ -515,31 +549,7 @@ def add_astrometry(f, ext, db_path, file_num=None, total_files=None, progress=No
             prefix = f"[{file_num}/{total_files}]"
         else:
             prefix = ""
-
-        # A counter of None means that stage never ran; print '?' so it is not
-        # mistaken for a stage that ran and came back empty.
-        def _n(key):
-            value = result.get(key)
-            return '?' if value is None else value
-
-        if result['success']:
-            crpix1, crpix2 = result['crpix']
-            crval1, crval2 = result['crval']
-            summary = (f"{prefix} {filename} SUCCESS - "
-                       f"Sources: {_n('sources_detected')}→{_n('sources_used')} "
-                       f"Gaia: {_n('gaia_queried')}→{_n('gaia_used')} "
-                       f"Matches: {_n('matches')} "
-                       f"Method: {result.get('method') or '?'} "
-                       f"CRPIX=({crpix1:.2f},{crpix2:.2f}) "
-                       f"CRVAL=({crval1:.6f},{crval2:.6f})")
-        else:
-            summary = (f"{prefix} {filename} FAILED - "
-                       f"Sources: {_n('sources_detected')}→{_n('sources_used')} "
-                       f"Gaia: {_n('gaia_queried')}→{_n('gaia_used')} "
-                       f"Matches: {_n('matches')} "
-                       f"Error: {result['error']}")
-
-        print(summary)
+        print(_summary_line(prefix, filename, result))
         return result
 
     return None  # Add this for non-matching files
