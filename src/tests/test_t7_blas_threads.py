@@ -39,20 +39,23 @@ print(len(os.listdir('/proc/self/task')))
 '''
 
 
-def _threads(first_import):
-    env = {k: v for k, v in os.environ.items() if k not in VARS}
+def _threads(first_import, blas_threads):
+    """Threads of a fresh process after BLAS work, with the thread variables set to blas_threads in its environment.
+    Never OpenBLAS's default: under load on appct its 64 threads per process fail to start."""
+    env = dict(os.environ)
+    env.update({k: str(blas_threads) for k in VARS})
     out = subprocess.run([sys.executable, '-c', CHECK, SRC, first_import], env=env, stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE, universal_newlines=True, check=True)
+                         stderr=subprocess.PIPE, universal_newlines=True, check=True, timeout=300)
     return int(out.stdout.split()[-1])
 
 
 @pytest.mark.skipif(not os.path.isdir('/proc/self/task'), reason='counts threads in /proc: run inside orchard-server')
 def test_t7_runs_with_one_blas_thread():
     pytest.importorskip('twirl')                     # astrometry.py imports it
-    with_t7 = _threads('astrometry')
+    with_t7 = _threads('astrometry', blas_threads=4)         # astrometry.py overrides what the environment says
     assert with_t7 <= 3, '{} threads after importing astrom.astrometry'.format(with_t7)
-    if (os.cpu_count() or 1) > 4:                   # the same work without it starts BLAS pools
-        assert _threads('numpy') > with_t7
+    if (os.cpu_count() or 1) >= 4:                  # the same work without it starts the BLAS pools
+        assert _threads('numpy', blas_threads=4) > with_t7
 
 
 def test_nothing_imports_numpy_before_the_threads_are_set():
