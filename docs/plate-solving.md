@@ -126,6 +126,13 @@ worker had.
 
 Serial runs (`--nproc=1`) are unchanged.
 
+Measured in orchard-server on scratch copies of Io 20230725 Sp1805-2758 (76 frames, 20 processes, 2026-10-21): with
+`multiprocessing.Pool`, one worker given SIGINT and another SIGKILL left T7 waiting at 600 s (a healthy run takes 50 s).
+With this pool, the same night with workers given SIGINT, SIGKILL and SIGSTOP solved 76/76 frames in 66 s, 66 s and
+336 s; its log lines and cache rows are those of `Pool` runs. Two runs of the same code can still differ in the last
+bits of CRPIX (up to 3e-6 px): `gaia_db_query` visits a field's Dec-band shards in set order, which follows the
+process's string-hash seed. Fix `PYTHONHASHSEED` when comparing runs bit for bit.
+
 ## Measured
 
 See the PR that introduced this (2026-10-19) for the before/after on 24 nights; the scratch work is in
