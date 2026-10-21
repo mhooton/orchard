@@ -231,3 +231,24 @@ def _alive(pid):
             return f.read().split(')')[-1].split()[0] != 'Z'
     except OSError:
         return True
+
+
+def test_a_worker_that_cannot_be_started(monkeypatch, capfd):
+    # fork fails with EAGAIN when the container is out of threads or processes
+    real, fails = frame_pool._Worker, []
+
+    def flaky(ctx, func):
+        if len(fails) < 3:
+            fails.append(1)
+            raise BlockingIOError(11, 'Resource temporarily unavailable')
+        return real(ctx, func)
+    monkeypatch.setattr(frame_pool, '_Worker', flaky)
+    results, _ = run(square, list(range(10)), poll=0.1)
+    assert results == [x * x for x in range(10)]               # once a start works, the run goes on
+    assert capfd.readouterr().out.count('T7 pool: could not start a worker') == 3
+
+    def never(ctx, func):
+        raise BlockingIOError(11, 'Resource temporarily unavailable')
+    monkeypatch.setattr(frame_pool, '_Worker', never)
+    with pytest.raises(frame_pool.WorkersLost, match='could not start a worker process 12 times in a row'):
+        frame_pool.run(square, [1, 2], 4, hang_after=30, lost=lost, poll=0.05)

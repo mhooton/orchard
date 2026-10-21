@@ -61,8 +61,13 @@ class _Worker(object):
     def __init__(self, ctx, func):
         self.conn, child = ctx.Pipe()
         self.proc = ctx.Process(target=_serve, args=(child, func, os.getpid()), daemon=True)
-        self.proc.start()
-        child.close()
+        try:
+            self.proc.start()
+        except BaseException:
+            self.conn.close()
+            raise
+        finally:
+            child.close()
         self.task = None            # index of the job it has, or None when idle
         self.started = None
 
