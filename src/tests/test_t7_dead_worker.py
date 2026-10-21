@@ -11,7 +11,6 @@ pipeline's own environment (astrometry.py imports twirl): run inside orchard-ser
 Run:  pytest src/tests/test_t7_dead_worker.py -q
 """
 import os
-import re
 import signal
 import sys
 import time
@@ -150,8 +149,8 @@ def test_the_pool_writes_what_a_serial_run_writes(tmp_path, solver, monkeypatch,
         _hard_frame(monkeypatch, night.procs[2])    # so the second pass runs too
         night.t7(nproc=nproc)
         out = capfd.readouterr().out
-        lines = sorted(re.sub(r'^\[\d+/\d+\] ', '', line.strip()) for line in out.splitlines()
-                       if ' SUCCESS - ' in line or ' FAILED - ' in line)   # the serial run numbers its lines
+        # each frame's summary, as promote_policy reads them (two workers' lines can share one)
+        lines = sorted(m.group(0).strip() for line in out.splitlines() for m in promote_policy.SUMMARY.finditer(line))
         headers = [{k: v for k, v in fits.getheader(p).items() if k in am.WCS_KEYWORDS} for p in night.procs]
         rows = {name: row['cards'] for name, row in night.rows().items()}
         return lines, headers, rows, 'T7 pool' in out
