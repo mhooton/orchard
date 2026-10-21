@@ -1048,6 +1048,12 @@ A night with no reduced targets - no science images at all, or every scheduled
 target failing before T10 - still produces a report; the target overview page
 carries a note in place of the per-target columns.
 
+**Frames lost to the telescope** (`src/utils/telescope_faults.py`, `docs/telescope-faults.md`): page 2's
+*Special Events* table says, beside the weather alert, whether the mount stopped tracking (Astra's `TRACKING`
+keyword, or T7's `Sources trailed`) and whether the pointing walked off (each solved frame's WCS), with a line per
+episode: target, UT range, frames. T11 also leaves the result in
+`reports/telescope_faults/<date>.json` for the queue's morning digest.
+
 **Resource use:**
 - `--nproc` sets the worker count for the image alignment behind the stack image.
   `ZLP_pipeline.sh` passes the pipeline's `CORES` budget; the default is 1.
