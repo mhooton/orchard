@@ -218,7 +218,7 @@ def import_night_img(args):
     targs = []
     outputs = []
 
-    label_names =['FWHM [pix]', 'BACKGROUND [ADU/pix]', 'RA MOVE [arcsec]', 'DEC MOVE [arcsec]', 'AIRMASS',
+    label_names = ['FWHM [pix]', 'BACKGROUND [ADU/pix]', 'RA MOVE [arcsec]', 'DEC MOVE [arcsec]', 'AIRMASS',
                    'ALTITUDE [deg]']
     names = ['FWHM', 'BKG SKYLEVEL', 'RA MOVE', 'DEC MOVE', 'AIRMASS', 'ALTITUDE']
 
