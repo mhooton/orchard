@@ -35,7 +35,7 @@ from .scheduler import plan
 from .signatures import extract, is_transient, read_tail
 from .util import iso, parse_iso, read_json, utcnow
 
-FITS_SUFFIXES = ('.fits', '.fts', '.fit', '.fits.fz', '.fits.gz')
+FITS_SUFFIXES = ('.fits', '.fts', '.fit', '.fits.fz', '.fts.fz', '.fit.fz', '.fits.gz')
 # A runner's start stamp may trail the attempt's started_at by this much (a clock step) and still count as its own.
 STATUS_CLOCK_SLACK = dt.timedelta(seconds=60)
 

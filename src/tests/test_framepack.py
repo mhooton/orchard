@@ -300,3 +300,87 @@ def test_command_line_writes_a_manifest(tmp_path):
     rows = open(manifest).read().splitlines()
     assert len(rows) == 4 and rows[0].startswith('path,op,final,status')
     assert sorted(os.listdir(d)) == [f'proc{i}.fits.fz' for i in range(3)]
+
+
+# --------------------------------------------------------------------------- byte-exact raw frames and readers
+
+def _eso_raw(path, shape=(96, 128), seed=3):
+    """A raw frame laid out as ESO serves it: uint16 as BZERO 32768, a CHECKSUM, cards in ESO's order."""
+    rng = np.random.default_rng(seed)
+    data = np.clip(1300 + 30 * rng.standard_normal(shape), 0, 65535).astype(np.uint16)
+    h = _header()
+    del h['CHECKSUM'], h['DATASUM']
+    hdu = fits.PrimaryHDU(data=data, header=h)
+    hdu.writeto(path, checksum=True)
+    return data
+
+
+def test_rawpack_rebuilds_the_original_byte_for_byte(tmp_path):
+    src = str(tmp_path / 'SPECU2.2026-10-16T23:08:07.000.fits')
+    data = _eso_raw(src)
+    os.utime(src, ns=(1_700_000_000_000_000_000, 1_700_000_000_123_456_789))
+    original = open(src, 'rb').read()
+    rep = fp.convert_in_place(src, 'rawpack')
+    assert rep.status == 'done', rep.reason
+    assert not os.path.exists(src) and os.path.exists(src + '.fz')
+    assert fp.plain_bytes(src + '.fz') == original
+    info = fp.original_info(src + '.fz')
+    assert info['ORIGSIZE'] == len(original) and info['ORIGMTIM'] == 1_700_000_000_123_456_789
+    rep = fp.convert_in_place(src + '.fz', 'decompress')
+    assert rep.status == 'done', rep.reason
+    assert open(src, 'rb').read() == original
+    assert os.stat(src).st_mtime_ns == 1_700_000_000_123_456_789
+    with fits.open(src, checksum=True) as h:          # the original's own CHECKSUM verifies again
+        assert np.array_equal(h[0].data, data)
+
+
+def test_rawpack_refuses_what_it_cannot_rebuild_exactly(tmp_path):
+    f32 = str(tmp_path / 'float.fits')
+    fits.PrimaryHDU(data=np.ones((8, 8), np.float32)).writeto(f32)
+    assert fp.convert_in_place(f32, 'rawpack').status == 'failed'
+    two = str(tmp_path / 'two.fits')
+    fits.HDUList([fits.PrimaryHDU(data=np.ones((8, 8), np.int16)), fits.ImageHDU(np.ones(4, np.int16))]).writeto(two)
+    rep = fp.convert_in_place(two, 'rawpack')
+    assert rep.status == 'failed' and 'after the image' in rep.reason
+    assert os.path.exists(f32) and os.path.exists(two)
+    assert not glob.glob(str(tmp_path / '.*'))
+
+
+def test_a_corrupted_exact_file_is_refused_on_reading(tmp_path):
+    src = str(tmp_path / 'r.fits')
+    _eso_raw(src)
+    fp.convert_in_place(src, 'rawpack')
+    with fits.open(src + '.fz', mode='update') as h:           # tamper with the kept header
+        h['ORIGHDR'].header['ORIGSHA'] = '0' * 64
+    with pytest.raises(fp.FramePackError):
+        fp.plain_bytes(src + '.fz')
+
+
+@pytest.mark.parametrize('kind', ['raw', 'exact', 'processed'])
+def test_open_frame_presents_a_compressed_frame_as_the_plain_file(tmp_path, kind):
+    src = str(tmp_path / ('procX.fits' if kind == 'processed' else 'X.fits'))
+    if kind == 'processed':
+        _float_frame(src)
+        fp.convert_in_place(src, 'int16')
+    elif kind == 'raw':
+        _raw_frame(src)
+    else:
+        _eso_raw(src)
+    with fits.open(src) as h:
+        want, want_header = h[0].data.copy(), h[0].header.copy()
+    fp.convert_in_place(src, 'rawpack' if kind == 'exact' else 'compress')
+    for name in (src, src + '.fz'):                    # the plain name is followed to the .fz
+        with fp.open_frame(name) as h:
+            assert h.filename() == src + '.fz'
+            assert len(h) == 1 and h[0].data.dtype == want.dtype
+            assert np.array_equal(h[0].data, want, equal_nan=True)
+            assert h[0].header['OBJECT'] == want_header['OBJECT'] and h[0].header['NAXIS2'] == want.shape[0]
+        assert fp.getheader(name)['EXPTIME'] == 30.0
+
+
+def test_open_frame_opens_a_plain_file_as_it_is(tmp_path):
+    src = str(tmp_path / 'X.fits')
+    data = _raw_frame(src)
+    with fp.open_frame(src) as h:
+        assert h.filename() == src and np.array_equal(h[0].data, data)
+    assert fp.stored_path(str(tmp_path / 'missing.fits')) == str(tmp_path / 'missing.fits')

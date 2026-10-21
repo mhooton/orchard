@@ -145,6 +145,10 @@ def reduce_file(filename, outdir, params, biasname, bias, dark_dict, flat_dict, 
 
             if os.path.exists(outname):
                 os.remove(outname)
+            # an earlier run's frame, packed after its T11 (utils/framepack.py): this one replaces it, and the
+            # packing after this run's T11 would otherwise leave the new frame as it is beside the stale .fz
+            if os.path.exists(outname + '.fz'):
+                os.remove(outname + '.fz')
             # writeto(checksum=False) would keep the raw frame's CHECKSUM/DATASUM, which no longer match;
             # checksum=True would re-sum the pixels in Python, holding the GIL this thread pool shares
             header_write.writeto(hdulist, outname)

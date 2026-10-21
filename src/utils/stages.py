@@ -215,8 +215,14 @@ def _match(parts, pats):
 
 
 def matches(rel, pattern, **kw):
-    """Whether a relative path matches a pattern ('*' within a component, '**' across them)."""
-    return _match(rel.replace('\\', '/').split('/'), fill(pattern, **kw).split('/'))
+    """Whether a relative path matches a pattern ('*' within a component, '**' across them).
+
+    A Rice-compressed frame is the same product as the plain file it stands for (utils/framepack.py: its plain
+    name + '.fz'), so 1/procX.fits.fz matches FRAMES as 1/procX.fits does."""
+    parts, pats = rel.replace('\\', '/').split('/'), fill(pattern, **kw).split('/')
+    if _match(parts, pats):
+        return True
+    return parts[-1].lower().endswith('.fz') and _match(parts[:-1] + [parts[-1][:-3]], pats)
 
 
 def writer(rel, scope=TARGET, **kw):

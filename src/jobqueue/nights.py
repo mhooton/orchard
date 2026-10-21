@@ -18,7 +18,8 @@ import glob
 import os
 import re
 
-FITS_SUFFIXES = ('.fits', '.fts', '.fit', '.fits.fz', '.fits.gz', '.fits.Z')
+# .fz: lossless Rice (utils/framepack.py), the plain name + '.fz' for every kind of frame, Artemis's .fts included
+FITS_SUFFIXES = ('.fits', '.fts', '.fit', '.fits.fz', '.fts.fz', '.fit.fz', '.fits.gz', '.fits.Z')
 DP_ID_TIME = re.compile(r'^SPECU\d+\.(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)')
 DP_ID_STAMP = re.compile(r'^SPECU\d+\.(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?)$')
 CUBE_ORIGFILE = re.compile(r'^SPECU\d+\.(\d{8}T\d{6})_')
@@ -186,8 +187,8 @@ def foreign_times(path, names=None):
     """{DATE-OBS: name} for the frames stored under other names (read from their headers)."""
     out = {}
     for rel in foreign_frames(path) if names is None else names:
-        if not rel.endswith(('.fits', '.fts', '.fit')):
-            continue  # compressed: the header is not readable without decompressing
+        if not rel.endswith(('.fits', '.fts', '.fit', '.fits.fz', '.fts.fz', '.fit.fz')):
+            continue  # gzip or compress: the header is not readable without decompressing
         try:
             stamp = read_header(os.path.join(path, rel), max_blocks=12).get('DATE-OBS')
         except OSError:
@@ -224,22 +225,37 @@ def _card_value(raw):
     return value
 
 
-def read_header(path, max_blocks=72):
-    """Primary-HDU header keywords of a FITS file (uncompressed), with the standard library only."""
+def _read_cards(f, max_blocks):
+    """The keywords of the header at f's position, up to END; (cards, reached END)."""
     out = {}
+    for _ in range(max_blocks):
+        block = f.read(2880)
+        if len(block) < 2880:
+            break
+        text = block.decode('ascii', 'replace')
+        for k in range(36):
+            card = text[80 * k:80 * (k + 1)]
+            key = card[:8].strip()
+            if key == 'END':
+                return out, True
+            if card[8:10] == '= ' and key not in out:
+                out[key] = _card_value(card[10:])
+    return out, False
+
+
+def read_header(path, max_blocks=72):
+    """Header keywords of a FITS file's image, with the standard library only: the primary HDU's or, for a
+    tile-compressed frame (.fz: an empty primary HDU, utils/framepack.py), the compressed image's, whose cards
+    are the frame's own."""
     with open(path, 'rb') as f:
-        for _ in range(max_blocks):
-            block = f.read(2880)
-            if len(block) < 2880:
-                break
-            text = block.decode('ascii', 'replace')
-            for k in range(36):
-                card = text[80 * k:80 * (k + 1)]
-                key = card[:8].strip()
-                if key == 'END':
-                    return out
-                if card[8:10] == '= ' and key not in out:
-                    out[key] = _card_value(card[10:])
+        out, ended = _read_cards(f, max_blocks)
+        if ended and out.get('NAXIS') == 0 and out.get('EXTEND') and path.endswith('.fz'):
+            ext, _ = _read_cards(f, max_blocks)     # no primary data: the first extension follows at once
+            if ext.get('ZIMAGE'):
+                for n in (1, 2, 3):
+                    if 'ZNAXIS{}'.format(n) in ext:
+                        ext['NAXIS{}'.format(n)] = ext['ZNAXIS{}'.format(n)]
+                out.update(ext)
     return out
 
 

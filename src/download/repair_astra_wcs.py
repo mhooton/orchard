@@ -166,6 +166,11 @@ def frames(night_dir):
     out = []
     for pattern in EXTS:
         out += glob.glob(os.path.join(night_dir, pattern))
+    packed = [p for pattern in EXTS for p in glob.glob(os.path.join(night_dir, pattern + '.fz'))]
+    if packed:
+        # header bytes are rewritten in place, which a Rice-compressed frame cannot take: decompress the night
+        # first (utils/rawpack.py unpack), repair, then repack it
+        print('{}: {} compressed frames (.fz) left alone; unpack the night to repair them'.format(night_dir, len(packed)))
     return sorted(out)
 
 

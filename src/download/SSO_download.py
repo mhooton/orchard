@@ -372,6 +372,9 @@ def check_num_images(imgdir, num_im_eso):
     try:
         xlist = os.listdir(imgdir)
         for x in xlist:
+            # a frame stored Rice-compressed (X.fits.fz, utils/framepack.py) is on disk too
+            if x.endswith(".fz"):
+                x = x[:-3]
             if x[-5:] == ".fits" or x[-4:] == ".fts":
                 num_im_dir = num_im_dir + 1
 
@@ -682,8 +685,10 @@ def eso_download(dir, telname, sdate, edate, wait, test_mode=False, query_only=F
                 downloaded_files = []
                 if os.path.exists(imgdir) and os.listdir(imgdir):
                     print(f"Images already exist for {telname[t]} on {date}")
-                    downloaded_files = [a.replace(".fits", "") for a in os.listdir(imgdir)
-                                        if a.endswith(('.fits', '.fts'))]
+                    # a frame stored Rice-compressed (X.fits.fz, utils/framepack.py) is downloaded too
+                    downloaded_files = [a[:-3].replace(".fits", "") if a.endswith(".fz") else a.replace(".fits", "")
+                                        for a in os.listdir(imgdir)
+                                        if a.endswith(('.fits', '.fts', '.fits.fz', '.fts.fz'))]
 
                     # Apply telescope-specific filtering
                     if telname[t] == 'Callisto':
