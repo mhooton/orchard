@@ -363,7 +363,8 @@ script was deleted on 19 Oct 2026.
   in `Archive_night_blocks`) has no survey frames by design and never counts; a telescope dark while two others
   observe is down itself; when none observes it is the weather, which needs nobody.
 - **The digest** of last night (at 07:45 the night before last, processed yesterday) goes out every morning even
-  when all is well: one line per telescope (frames, hours, light curves, or what went wrong), open and newly
+  when all is well: one line per telescope (frames, hours, light curves, or what went wrong, and the frames the
+  telescope itself lost as the night report recorded them: `docs/telescope-faults.md`), open and newly
   resolved incidents, messages that could not be sent, failure signatures, look-back actions, ESO query errors,
   the PWV outcome of the SSO light curves made in the last 24 h (corrected, without LHATPRO data, other failures,
   off by design), free disk, and the queue's work in two sections.
