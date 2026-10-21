@@ -60,6 +60,8 @@ diff_aperture = 5
 # PHOT_ZP depends on the filter, so only each camera's survey filter is plotted
 survey_filter = {'ANDOR': 'I+z', 'SPIRIT': 'zYJ'}
 cache_name = 'diff_values_cache.json'
+# raise when read_diff_values changes what it returns, so no run reuses values read the old way
+cache_version = 1
 # <target id>_<filter>_<night>_<aperture>_diff.fits; the id may itself contain underscores
 diff_name = re.compile(r'_(?P<filter>[^_]+)_(?P<night>\d{8})_(?P<ap>\d+)_diff\.fits$')
 
@@ -132,7 +134,7 @@ def read_diff_values(path):
     with fitsio.FITS(path) as f:
         header = f[0].read_header()
         if 'PHOT_ZP' in header:
-            phot_zp = float(header['PHOT_ZP'])
+            phot_zp = _float_or_none(header['PHOT_ZP'])     # some SPIRIT files carry the string 'N'
         if 'IMAGELIST' in f:
             imagelist = f['IMAGELIST']
             columns = {c.upper(): c for c in imagelist.get_colnames()}
@@ -141,9 +143,15 @@ def read_diff_values(path):
                 temps = temps[np.isfinite(temps)]
                 if temps.size:
                     ccd_temp = float(np.median(temps))
-    if phot_zp is not None and not np.isfinite(phot_zp):
-        phot_zp = None
     return {'ccd_temp': ccd_temp, 'phot_zp': phot_zp}
+
+
+def _float_or_none(value):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if np.isfinite(value) else None
 
 
 def cached_diff_values(path, cache, used):
@@ -187,18 +195,22 @@ def night_diff_values(date_dir, instrument, cache, used):
 
 
 def load_cache(path):
+    """{path: values} from the cache file; empty if it is missing, unreadable or from another cache_version."""
     try:
         with open(path) as f:
-            cache = json.load(f)
+            saved = json.load(f)
     except (OSError, ValueError):
         return {}
-    return cache if isinstance(cache, dict) else {}
+    if not isinstance(saved, dict) or saved.get('version') != cache_version:
+        return {}
+    files = saved.get('files')
+    return files if isinstance(files, dict) else {}
 
 
 def save_cache(cache, path):
     tmp = path + '.tmp'
     with open(tmp, 'w') as f:
-        json.dump(cache, f, sort_keys=True)
+        json.dump({'version': cache_version, 'files': cache}, f, sort_keys=True)
     os.replace(tmp, path)
 
 

@@ -263,6 +263,28 @@ def test_cache_spares_unchanged_files_and_rereads_rewritten_ones(tmp_path, monke
 
 
 @needs_fitsio
+def test_unreadable_phot_zp_keeps_the_ccd_temperature(tmp_path):
+    path = write_diff(str(tmp_path), 'Callisto', '20260313', '602', 'zYJ', [-50.0, -50.0], phot_zp='N')
+    assert mon.read_diff_values(path) == {'ccd_temp': pytest.approx(-50.0), 'phot_zp': None}
+
+
+def test_cache_of_another_version_is_ignored(tmp_path):
+    path = str(tmp_path / mon.cache_name)
+    cache = {'/x_I+z_20240101_5_diff.fits': {'stat': [1, 2], 'ccd_temp': -60.0, 'phot_zp': 23.9}}
+    mon.save_cache(cache, path)
+    assert mon.load_cache(path) == cache
+    with open(path, 'w') as f:
+        json.dump({'version': mon.cache_version + 1, 'files': cache}, f)
+    assert mon.load_cache(path) == {}
+    with open(path, 'w') as f:
+        json.dump(cache, f)                         # no version at all
+    assert mon.load_cache(path) == {}
+    with open(path, 'w') as f:
+        f.write('{truncated')
+    assert mon.load_cache(path) == {}
+
+
+@needs_fitsio
 def test_corrupt_diff_file_is_recorded_and_not_reread(tmp_path, monkeypatch):
     top = str(tmp_path)
     write_night(top, 'Ganymede', '20260228')
@@ -330,7 +352,7 @@ def test_run_with_readout_records_writes_gain_and_changes(tmp_path):
     assert '20251030  NORMAL -> GAIN3.8  (previous record 20251020)' in text
     assert '20251030  GAIN3.8 gain 3.820 measured, table says 3.400' in text
     with open(os.path.join(mdir, mon.cache_name)) as f:
-        assert json.load(f) == {}                                         # no _diff.fits in this tree
+        assert json.load(f) == {'version': mon.cache_version, 'files': {}}   # no _diff.fits in this tree
 
 
 @needs_fitsio
@@ -347,4 +369,4 @@ def test_run_writes_ccd_temperature_and_zero_point_plots(tmp_path):
     assert [float(r['phot_zp']) for r in rows] == pytest.approx([23.9, 23.85])
     assert [r['n_diff'] for r in rows] == ['1', '1']
     with open(os.path.join(mdir, mon.cache_name)) as f:
-        assert len(json.load(f)) == 2
+        assert len(json.load(f)['files']) == 2
