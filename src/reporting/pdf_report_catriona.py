@@ -216,8 +216,9 @@ def import_night_img(args):
     target_y_pos = []
     gaia = []
     targs = []
+    outputs = []
 
-    label_names = ['FWHM [pix]', 'BACKGROUND [ADU/pix]', 'RA MOVE [arcsec]', 'DEC MOVE [arcsec]', 'AIRMASS',
+    label_names =['FWHM [pix]', 'BACKGROUND [ADU/pix]', 'RA MOVE [arcsec]', 'DEC MOVE [arcsec]', 'AIRMASS',
                    'ALTITUDE [deg]']
     names = ['FWHM', 'BKG SKYLEVEL', 'RA MOVE', 'DEC MOVE', 'AIRMASS', 'ALTITUDE']
 
@@ -232,6 +233,7 @@ def import_night_img(args):
                 gaia_id = fitsfile.split("/")[-1].split("_")[0]
                 gaia.append(gaia_id)
                 targs.append(i)
+                outputs.append(fitsfile)
 
                 for a in range(len(names)):
                     outfig = temp_dir(args) + "/" + names[a] + "_" + gaia_id + ".png"
@@ -372,7 +374,7 @@ def import_night_img(args):
         # to push jdstart out of step with gaia, and the argsort of jdstart then
         # indexed past the end of gaia on page 3 of the report.
 
-    return ramove, decmove, airmass, fwhm, skybkg, altitude, jdstart, jdend, nimages, filt, ellip, target_x_pos, target_y_pos, targs, gaia
+    return ramove, decmove, airmass, fwhm, skybkg, altitude, jdstart, jdend, nimages, filt, ellip, target_x_pos, target_y_pos, targs, gaia, outputs
 
 def import_lcs_new(args,gaia):
     # s = (gaia).split(" ")
@@ -651,8 +653,11 @@ def import_water_vapor(args, jdstart, jdend, gaia):
     return water_vapor
 
 
-def stack_and_vals(args, liste, outstack, outstack_save, outstack_save_dir, outfig_dx, outfig_dy, target_x_pos,
-                   target_y_pos, target_count):
+def stack_and_vals(args, liste, outstack, outstack_save, outstack_save_dir, outfig_dx, outfig_dy):
+    """Median-stack the aligned frames in liste and read the night's values from their headers.
+
+    Returns (stack image data, values); stack_png() draws the stack panel for each star from it.
+    """
     print('Creating stack')
     datamatrix = []
     pa_vector = []
@@ -764,26 +769,30 @@ def stack_and_vals(args, liste, outstack, outstack_save, outstack_save_dir, outf
             orchard_version.stamp(head)
         fits.writeto(outstack, stack, head)
         fits.writeto(outstack_save, stack, head)  # to be commented for tests
-    stackim = outstack[:-5] + '.png'
-    if os.path.exists(stackim):
-        os.remove(stackim)
     stack_data = pyfits.getdata(outstack)
-    norm = pyvis.ImageNormalize(stack_data, interval=pyvis.ZScaleInterval(), stretch=pyvis.SqrtStretch())
-    plt.imshow(stack_data, cmap='gray', norm=norm, origin='lower')
-    if target_x_pos[target_count] != 'unknown' and target_y_pos[target_count] != 'unknown':
-        plt.scatter(target_x_pos[target_count], target_y_pos[target_count], s=70, facecolors='none', edgecolors='b')
-    plt.title("Stack image")
-    plt.savefig(stackim, bbox_inches='tight')
-    plt.close()
     # Cleaning
     for i in liste:
         if os.path.exists(i):
             os.remove(i)
     if os.path.exists(outstack):
         os.remove(outstack)
-    # stackim = 'fake_path'
 
-    return stackim, vals
+    return stack_data, vals
+
+
+def stack_png(stack_data, x, y, stackim):
+    """Draw one star's stack panel: its target directory's stack, with the star circled at (x, y)."""
+    if os.path.exists(stackim):
+        os.remove(stackim)
+    norm = pyvis.ImageNormalize(stack_data, interval=pyvis.ZScaleInterval(), stretch=pyvis.SqrtStretch())
+    plt.figure()
+    plt.imshow(stack_data, cmap='gray', norm=norm, origin='lower')
+    if x != 'unknown' and y != 'unknown':
+        plt.scatter(x, y, s=70, facecolors='none', edgecolors='b')
+    plt.title("Stack image")
+    plt.savefig(stackim, bbox_inches='tight')
+    plt.close()
+    return stackim
 
 
 def align_image(image_args):
@@ -865,58 +874,141 @@ def align(liste, tempdir, nproc=DEFAULT_NPROC, timeout=DEFAULT_ALIGN_TIMEOUT):
 
     return liste2
 
-def import_stack_and_vals(args, target_x_pos, target_y_pos, gaia, targs):
+# A frame belongs to a star's photometry when its JD-OBS is a row of the IMAGELIST in the star's
+# *_output.fits (condense copies the value from the frame).  The tolerance only absorbs rounding:
+# frames are never closer together than an exposure.
+FRAME_MATCH_TOLERANCE = 0.5 / 86400.
+
+
+def output_filter(outputfits):
+    """The filter in a <gaia>_<filter>_<night>_output.fits name."""
+    return os.path.basename(outputfits).split('_', 1)[1].rsplit('_', 2)[0]
+
+
+def photometry_jds(outputfits):
+    """JD-OBS of every frame in a star's photometry: the IMAGELIST of its *_output.fits."""
+    with fits.open(outputfits) as infile:
+        return np.asarray(infile['IMAGELIST'].data['JD-OBS'], dtype=float)
+
+
+def frame_jds(frames):
+    """{frame: JD-OBS} for proc*.fits paths.  A frame whose header cannot be read, or has no JD-OBS,
+    is left out: it cannot be matched, and would not stack either."""
+    jds = {}
+    for frame in frames:
+        try:
+            jd = fits.getheader(frame).get('JD-OBS')
+        except Exception:
+            continue
+        if jd is not None:
+            jds[frame] = float(jd)
+    return jds
+
+
+def photometry_frames(jds, used, tol=FRAME_MATCH_TOLERANCE):
+    """The frames of jds ({frame: JD-OBS}) whose JD-OBS is one of used, in name order."""
+    used = np.asarray(used, dtype=float)
+    if used.size == 0:
+        return []
+    return [frame for frame in sorted(jds) if np.min(np.abs(used - jds[frame])) <= tol]
+
+
+def stack_frames(frames, outputs):
+    """The frames to stack for a target directory: those its stars' photometry (outputs, their
+    *_output.fits) used, or every frame where that cannot be told.
+
+    1/ holds every frame of the night, and the photometry can use far fewer.  On Ganymede 20250716
+    tracking stopped at 00:30 UT and TOI-4336 c drifted for the rest of the night; the photometry
+    kept the 345 tracked frames of 916, and a stack of all of them was streaks with no stars.
     """
-    Updated function to pass args.datdir to align function
+    try:
+        used = np.concatenate([photometry_jds(o) for o in outputs])
+        keep = photometry_frames(frame_jds(frames), used)
+    except Exception as e:
+        print('Could not read the frames the photometry used (%s): stacking every frame' % e)
+        return frames
+    if not keep:
+        print('No frame in 1/ matches the photometry: stacking every frame')
+        return frames
+    print('Stacking the %d of %d frames the photometry used' % (len(keep), len(frames)))
+    return keep
+
+
+def build_stack(args, target_dir, name, outputs):
+    """Align and stack one target directory's frames once, for all of its stars.
+
+    Returns (stack image data or None, values, DX figure, DY figure).
+    """
+    procdir = args.datdir + "/output/" + args.date + "/" + target_dir + "/1/"
+    outstack = temp_dir(args) + "/" + name + "_stack.fits"
+    outstack_save = args.datdir + "/output/StackImages_nightly/" + args.date + "/" + name + "_stack.fits"
+    outstack_save_dir = args.datdir + "/output/StackImages_nightly/" + args.date
+    outfig_dx = temp_dir(args) + "/" + "DX_" + name + ".png"
+    outfig_dy = temp_dir(args) + "/" + "DY_" + name + ".png"
+    liste = sorted(glob.glob(procdir + 'proc*fits'))
+    if not liste:
+        return None, ['unknown'] * 7, outfig_dx, outfig_dy
+    try:
+        liste = stack_frames(liste, outputs)
+        liste2 = align(liste, temp_dir(args), nproc=getattr(args, 'nproc', DEFAULT_NPROC),
+                       timeout=getattr(args, 'align_timeout', DEFAULT_ALIGN_TIMEOUT))
+        stack_data, values = stack_and_vals(args, liste2, outstack, outstack_save, outstack_save_dir, outfig_dx,
+                                            outfig_dy)
+    except Exception as e:
+        # The stack is one panel of the report; losing it must not cost
+        # us the whole PDF.
+        print('Could not stack images for %s: %s' % (name, e))
+        return None, ['unknown'] * 7, outfig_dx, outfig_dy
+    return stack_data, values, outfig_dx, outfig_dy
+
+
+def import_stack_and_vals(args, target_x_pos, target_y_pos, gaia, targs, outputs):
+    """Each star's stack panel, header values and DX/DY figures, in the order of targs.
+
+    The stars of a target directory share one stack, aligned and stacked once: a directory with
+    three stars used to be stacked three times.  A directory observed in several filters gets one
+    stack per filter, named <target>_<filter>.
     """
     stacks = []
     vals = []
     dx = []
     dy = []
 
-    target_count = 0
-    for i in targs:
-        print(i)
-        procdir = args.datdir + "/output/" + args.date + "/" + i + "/1/"
-        outstack = temp_dir(args) + "/" + i + "_stack.fits"
-        outstack_save = args.datdir + "/output/StackImages_nightly/" + args.date + "/" + i + "_stack.fits"
-        outstack_save_dir = args.datdir + "/output/StackImages_nightly/" + args.date
-        outfig_dx = temp_dir(args) + "/" + "DX_" + i + ".png"
-        outfig_dy = temp_dir(args) + "/" + "DY_" + i + ".png"
-        dx.append(outfig_dx)
-        dy.append(outfig_dy)
-        liste = glob.glob(procdir + 'proc*fits')
-        if (len(liste) != 0):
-            liste.sort()
+    groups = {}                     # (target directory, filter) -> the output.fits of its stars
+    for i, outputfits in zip(targs, outputs):
+        groups.setdefault((i, output_filter(outputfits)), []).append(outputfits)
+    built = {}
+    for (i, filt), members in groups.items():
+        several = len([key for key in groups if key[0] == i]) > 1
+        name = i + '_' + filt if several else i
+        print(name)
+        built[(i, filt)] = (name,) + build_stack(args, i, name, members)
+
+    for k, (i, outputfits) in enumerate(zip(targs, outputs)):
+        name, stack_data, values, outfig_dx, outfig_dy = built[(i, output_filter(outputfits))]
+        stackim = 'fake_path'
+        if stack_data is not None:
             try:
-                liste2 = align(liste, temp_dir(args), nproc=getattr(args, 'nproc', DEFAULT_NPROC),
-                               timeout=getattr(args, 'align_timeout', DEFAULT_ALIGN_TIMEOUT))
-                stackim, values = stack_and_vals(args, liste2, outstack, outstack_save, outstack_save_dir, outfig_dx,
-                                                 outfig_dy, target_x_pos, target_y_pos, target_count)
+                stackim = stack_png(stack_data, target_x_pos[k], target_y_pos[k],
+                                    temp_dir(args) + "/" + name + "_" + gaia[k] + "_stack.png")
             except Exception as e:
-                # The stack is one panel of the report; losing it must not cost
-                # us the whole PDF.
-                print('Could not stack images for %s: %s' % (i, e))
-                stackim = 'fake_path'
-                values = ['unknown'] * 7
-        else:
-            stackim = 'fake_path'
-            values = ['unknown'] * 7
+                print('Could not draw the stack for %s: %s' % (gaia[k], e))
         stacks.append(stackim)
         vals.append(values)
-        target_count += 1
+        dx.append(outfig_dx)
+        dy.append(outfig_dy)
 
     return stacks, vals, dx, dy
 
 def import_images_and_vals(args):
     wea = import_weather(args)
-    ramove, decmove, airmass, fwhm, skybkg, altitude, jdstart, jdend, nimages, filt, ellip, target_x_pos, target_y_pos,targs,gaia = import_night_img(
+    ramove, decmove, airmass, fwhm, skybkg, altitude, jdstart, jdend, nimages, filt, ellip, target_x_pos, target_y_pos,targs,gaia,outputs = import_night_img(
         args)
     mb, md, mfs = import_masterframes_img(args, filt)
     HAoff, DECoff = import_donuts(args, jdstart, jdend,gaia)
     water_vapor = import_water_vapor(args, jdstart, jdend,gaia)
     dlc, mlc, complc, rmsflux, newap = import_lcs_new(args,gaia)
-    stacks, vals, dx, dy = import_stack_and_vals(args, target_x_pos, target_y_pos,gaia,targs)
+    stacks, vals, dx, dy = import_stack_and_vals(args, target_x_pos, target_y_pos,gaia,targs,outputs)
 
     imgs = (
         wea, mb, md, mfs, dlc, mlc, complc, rmsflux, ramove, decmove, airmass, fwhm, skybkg, altitude, HAoff, DECoff,
