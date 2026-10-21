@@ -41,7 +41,7 @@ import stat
 import subprocess
 import time
 
-from .util import iso, utcnow
+from .util import iso, one_blas_thread, utcnow
 
 CURRENT = 'current'
 RELEASE_JSON = 'RELEASE.json'
@@ -405,7 +405,7 @@ def run_tests(cfg, rid, log=print):
     remove_tree(tmp)                    # what a killed run left
     basetemp, tmpdir = os.path.join(tmp, 'basetemp'), os.path.join(tmp, 'tmp')
     os.makedirs(tmpdir, exist_ok=True)  # pytest empties basetemp when it starts, so TMPDIR is not inside it
-    env = os.environ.copy()
+    env = one_blas_thread(os.environ)   # under load, OpenBLAS's default pools hung the suite (2026-10-20)
     env.update({'PYTHONPATH': os.pathsep.join([pylib, rel['src']]), 'ORCHARD_PATH': rel['src'],
                 'PYTHONDONTWRITEBYTECODE': '1', 'TMPDIR': tmpdir})
     out = os.path.join(rel['path'], 'tests.log')
