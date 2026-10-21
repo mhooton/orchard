@@ -92,6 +92,15 @@ or more sources, as the pipeline's.
   the target is outside them.
 - **Star trails.** Frames from a telescope that stopped tracking are reported, not solved.
 
+## One BLAS thread per process
+
+T7 runs its frames in a process pool (20 processes in production), and `astrometry.py` sets `OPENBLAS_NUM_THREADS`,
+`OMP_NUM_THREADS` and `MKL_NUM_THREADS` to 1 before numpy is first imported. Keep that assignment above every other
+import. Without it, a forked worker whose OpenBLAS starts its thread pool can deadlock. From v4.1.0 to v4.3.1,
+10 of 29 T7 runs on appct stalled that way (2026-10-20/21): workers with 64 threads, all asleep in `futex_wait`, which
+the 60 s per-frame alarm cannot interrupt, so the job sat until the queue's timeout. numpy and scipy each load their
+own OpenBLAS, and both read these variables.
+
 ## Measured
 
 See the PR that introduced this (2026-10-19) for the before/after on 24 nights; the scratch work is in
