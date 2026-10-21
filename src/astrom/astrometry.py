@@ -1,7 +1,14 @@
 # This module makes a proper WCS-header of a FITS file.
 
-from astropy.io import fits
+# One BLAS thread per process, set before numpy is first imported. T7's parallelism is its process pool, and BLAS
+# thread pools started inside the forked workers deadlock: on appct (2026-10-20/21) workers whose OpenBLAS had started
+# its 64 threads sat in futex_wait for hours, out of reach of the 60 s SIGALRM, until the queue's job timeout. numpy
+# and scipy each bring their own OpenBLAS; both read these.
 import os
+for _var in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS'):
+    os.environ[_var] = '1'
+
+from astropy.io import fits
 from functools import partial
 import argparse
 import multiprocessing
