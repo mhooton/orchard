@@ -74,7 +74,8 @@ def test_patterns_match_path_components():
     ('1/zYJ_processed.dat_phot', 9), ('1/zYJ_stacked.dat', 8), ('599_Callisto_spirit_{}_outstack_zYJ.fits', 8),
     ('599_Callisto_spirit_{}_stack_catalogue_zYJ.fits', 8), ('599_Callisto_spirit_{}_stack_catalogue_pm_zYJ.fits', 9),
     ('.active_stack_catalogue_zYJ', 8), ('599_zYJ_{}_output.fits', 9), ('599_zYJ_{}_5_diff.fits', 10),
-    ('599_zYJ_{}_pwv_processed.fits', 10), ('lightcurves/599_zYJ_{}_5_MCMC', 10), ('1/procX_psf.png', None)])
+    ('599_zYJ_{}_pwv_processed.fits', 10), ('lightcurves/599_zYJ_{}_5_MCMC', 10), ('1/procX_psf.png', 9),
+    ('1/procX.png', 9), ('1_initial-catalogue.fits', 9), ('notes.txt', None)])
 def test_the_last_stage_to_write_a_file_is_its_maker(rel, stage):
     assert stages.writer(rel.format(NIGHT), night=NIGHT) == stage
 
@@ -98,10 +99,15 @@ def test_a_rerun_from_t11_also_reads_the_light_curves():
     assert stages.rerun_outputs(11) == []                              # the PDF is not in the target directory
 
 
-def test_from_t9_back_frames_would_be_edited_in_place_so_they_cannot_be_linked():
+def test_a_rerun_from_t9_copies_the_frames_it_edits_and_links_what_it_reads():
     got = {(s, p): ln for s, p, _, ln in stages.restage_inputs(9)}
-    assert got[(stages.TARGET, stages.FRAMES)] is False
-    assert 9 not in stages.RESTAGE
+    assert got[(stages.TARGET, stages.FRAMES)] is False                  # T9's wcsfit writes into them
+    assert got[(stages.TARGET, '1/*_processed.dat')] is True
+    assert got[(stages.TARGET, '*_stack_catalogue_*.fits')] is False     # condense opens it read-write
+    assert (stages.TARGET, '*_{night}_output.fits') not in got           # T9 makes it
+    assert stages.edited_by_rerun('1/procX.fits', 9) and not stages.edited_by_rerun('1/procX.fits', 10)
+    assert stages.is_output('599_Io_andor_{}_stack_catalogue_pm_I+z.fits'.format(NIGHT), 9, night=NIGHT)
+    assert {8, 9} <= set(stages.RESTAGE) and 7 not in stages.RESTAGE
 
 
 def test_causes_resolve_to_their_first_stage():

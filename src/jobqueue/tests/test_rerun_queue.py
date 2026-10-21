@@ -76,13 +76,40 @@ def test_q_add_from_t10_queues_the_restaged_targets(cfg, capsys):
     pl = jobs[1]
     assert pl['targets'] == '{} Sp2209-3707'.format(TARGET) and '--from_T10' in pl['argv']
     assert pl['est_minutes'] >= cfg['min_estimate_minutes']
-    assert pl['cores'] == min(jobspec.RERUN_CORES, cfg['pipeline_cores'])
+    assert pl['cores'] == min(jobspec.RERUN_CORES[10], cfg['pipeline_cores'])
+    assert not jobs[0]['disk_heavy']
     assert 'restage job' in capsys.readouterr().out
+
+
+def test_a_rerun_from_t9_copies_frames_so_its_restage_is_disk_heavy(cfg, store):
+    spec = jobspec.pipeline_job(cfg, 'P3', 'Europa', NIGHT, run_targets=[TARGET], no_t12=True,
+                                extra_flags=['--from_T9'])
+    rid, pl, _, _ = jobspec.add_rerun(store, cfg, spec, 9, promote=True)
+    r = store.get_job(rid)
+    assert r['disk_heavy'] and r['argv'][-3:] == ['9', '--target', TARGET]
+    assert '--from_T9' in store.get_job(pl)['argv']
+
+
+def test_a_rerun_from_t9_of_a_night_with_an_old_catalogue_is_queued_from_t8(cfg, capsys):
+    base = cfg['basedir']
+    d = os.path.join(base, 'PipelineOutput', 'v2', 'Europa', 'output', NIGHT, TARGET)
+    os.makedirs(os.path.join(d, '1'))
+    with open(os.path.join(d, '1', 'I+z_processed.dat'), 'w') as f:
+        f.write(os.path.join(d, '1', 'procX.fits') + '\n')
+    open(os.path.join(d, '1', 'procX.fits'), 'w').close()
+    open(os.path.join(d, 'SP0451+0305_stack_catalogue_I+z.fits'), 'w').close()      # no TARGET_ROLE
+    red = os.path.join(base, 'PipelineOutput', 'v2', 'Europa', 'output', NIGHT, 'reduction')
+    os.makedirs(red)
+    open(os.path.join(red, '1_image_{}.list'.format(TARGET)), 'w').close()
+    rc, jobs = add(cfg, '--telescope', 'Europa', '--night', NIGHT, '--from', 'stale-pc', '--promote')
+    assert rc == 0 and [j['kind'] for j in jobs] == ['restage', 'pipeline', 'promote']
+    assert '--from_T8' in jobs[1]['argv'] and jobs[0]['argv'][jobs[0]['argv'].index('--from') + 1] == '8'
+    assert 'predates TARGET_ROLE' in capsys.readouterr().out
 
 
 def test_q_add_from_refuses_what_it_cannot_do(cfg, capsys):
     promoted_night(cfg)
-    for args, why in ((['--from', 'T9', '--promote'], 'not supported'),
+    for args, why in ((['--from', 'T7', '--promote'], 'not supported'),
                       (['--from', 'T10'], 'needs --promote'),
                       (['--from', 'T10', '--promote', '--download'], 'does not go with --download')):
         rc, jobs = add(cfg, '--telescope', 'Europa', '--night', NIGHT, *args)

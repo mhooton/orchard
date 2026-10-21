@@ -274,6 +274,13 @@ def queue_rerun(cfg, store, cls, tel, night, first, targets=None, priority=0.0, 
         log('{} {} {}: not queued: no target of the night has the inputs of a rerun from T{} in v3 or v2'.format(
             cls, tel, night, first))
         return None
+    if first == 9:
+        # a catalogue from before T8 wrote TARGET_ROLE (2026-03-31) cannot be condensed by today's T9: the night is
+        # rerun from T8 instead, which makes a new one
+        _, lines = restage.Restager(cfg['basedir'], apply=False).night(tel, night, first, targets)
+        if any('rerun this night from T8' in line for line in lines):
+            log('{} {} {}: its stack catalogue predates TARGET_ROLE: rerun from T8'.format(cls, tel, night))
+            first = 8
     if dry_run:
         r = restage.Restager(cfg['basedir'], apply=False)
         _, lines = r.night(tel, night, first, targets)
@@ -287,7 +294,7 @@ def queue_rerun(cfg, store, cls, tel, night, first, targets=None, priority=0.0, 
         cfg, cls, tel, night, lock_targets=targets, run_targets=targets, frames=frames,
         est_minutes=jobspec.rerun_estimate(cfg, tel, night, frames, first), source='cli', priority=priority,
         no_t12=True, extra_flags=list(extra_flags or ()) + ['--from_T{}'.format(first)], note=note,
-        cores=cores or min(jobspec.RERUN_CORES, int(cfg['pipeline_cores'])))
+        cores=cores or min(jobspec.RERUN_CORES.get(first) or int(cfg['pipeline_cores']), int(cfg['pipeline_cores'])))
     rid, jid, created, pid = jobspec.add_rerun(store, cfg, spec, first, promote=promote, campaign=campaign)
     log('{} {} {}: restage job {}, then {} pipeline job {} (--from_T{}, {}){}'.format(
         cls, tel, night, rid, 'queued' if created else 'already queued as', jid, first, ' '.join(targets),

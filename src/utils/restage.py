@@ -36,6 +36,7 @@ queue (jobqueue.resources.parse_promote_argv), as a promotion does.
 import argparse
 import datetime as dt
 import errno
+import fnmatch
 import getpass
 import hashlib
 import json
@@ -57,6 +58,7 @@ SUPERSEDED = 'superseded'
 EX_TEMPFAIL = 75
 FITS = ('.fits', '.fit', '.fts')
 CARDS = ('ORCHVER', 'ORCHREL', 'ORCHMOD')
+FRAME_LISTS = stages.FRAME_LISTS      # lists of calibrated frames by absolute path: copied, pointed at the copies
 
 
 class RestageError(Exception):
@@ -134,10 +136,14 @@ def fits_cards(path):
 # ---------------------------------------------------------------------------
 
 def target_inputs(first, root, night, target):
-    """[(rel, link)] of the files in a target directory that a rerun from `first` reads (made by earlier stages)."""
+    """[(rel, link)] of the files in a target directory that a rerun from `first` reads (made by earlier stages). A
+    file a stage of the rerun writes is never one, whatever read pattern it matches: T9 makes the
+    *_stack_catalogue_pm_* that T9's read of T8's *_stack_catalogue_* would otherwise take in, and writes it anew."""
     pats = [(p, ln) for scope, p, _, ln in stages.restage_inputs(first) if scope == stages.TARGET]
     out = []
     for rel in walk_files(root) if os.path.isdir(root) else []:
+        if stages.is_output(rel, first, night=night, target=target):
+            continue
         for p, ln in pats:
             if stages.matches(rel, p, night=night, target=target):
                 out.append((rel, ln))
@@ -159,9 +165,17 @@ def reduction_inputs(first, root, night, target):
 
 
 def has_inputs(first, root, night, target):
-    """Whether a target directory holds what the first stage of the rerun needs to run at all: the night's
-    *_output.fits from T10 on (T11 also needs T10's curves)."""
+    """Whether a target directory holds what the first stage of the rerun needs to run at all: for T8 a non-empty
+    frame list, for T9 that and T8's stack catalogue; from T10 on the night's *_output.fits (T11 also needs T10's
+    curves)."""
     names = os.listdir(root) if os.path.isdir(root) else []
+    if first <= 9:
+        lists = [n for n in (os.listdir(os.path.join(root, RUNNAME)) if os.path.isdir(os.path.join(root, RUNNAME))
+                             else []) if n.endswith('_processed.dat')]
+        if not any(os.path.getsize(os.path.join(root, RUNNAME, n)) for n in lists):
+            return False
+        return first <= 8 or \
+            any('_stack_catalogue_' in n and '_stack_catalogue_pm_' not in n and n.endswith('.fits') for n in names)
     if not any(n.endswith('_{}_output.fits'.format(night)) for n in names):
         return False
     return first < 11 or any(n.endswith('_diff.fits') for n in names)
@@ -214,19 +228,23 @@ def save_record(rec):
 
 
 def check(rec):
-    """How the record's inputs are now. unchanged: as placed. changed / missing: in the rerun's directory (a linked
+    """How the record's inputs are now. unchanged: as placed. edited: a copy the stage map says the rerun edits (a
+    frame's WCS), so part of what it wrote. changed / missing: an input the rerun should only have read (a linked
     input changed in place means v2's file changed too). src_changed: the v2 file it came from is no longer the one
     restaged (v2 changed since). reduction_changed: the night's v3 reduction files it relies on."""
-    out = {'unchanged': [], 'changed': [], 'missing': [], 'src_changed': [], 'reduction_changed': []}
+    out = {'unchanged': [], 'changed': [], 'edited': [], 'missing': [], 'src_changed': [], 'reduction_changed': []}
     for e in rec.get('files', []):
         now = ident(os.path.join(rec['dest'], e['rel']))
         if now is None:
             out['missing'].append(e['rel'])
         elif now == [e['ino'], e['size'], e['mtime_ns']]:
             out['unchanged'].append(e['rel'])
+        elif e.get('edited'):
+            out['edited'].append(e['rel'])          # a copy the rerun edits by design (a frame's WCS): its output
         else:
             out['changed'].append(e['rel'])
-        if e['how'] in ('link', 'copy') and ident(e['src']) != [e['src_ino'], e['size'], e['mtime_ns']]:
+        was = [e['src_ino'], e.get('src_size', e['size']), e.get('src_mtime_ns', e['mtime_ns'])]
+        if e['how'] in ('link', 'copy', 'rewritten') and ident(e['src']) != was:      # not 'made' or 'in-place'
             out['src_changed'].append(e['rel'])
     red = output_dir(rec['base'], 'v3', rec['telescope'], rec['night'], 'reduction')
     for e in rec.get('reduction', []):
@@ -291,10 +309,92 @@ def place(src, dst, link):
     return 'copy'
 
 
-def entry(rel, how, src, dst):
+def place_list(src, dst, src_dir, dst_dir):
+    """Copy a list of frames (absolute paths), pointing each line at the restaged copy of that frame when there is one.
+    In production the paths are already the v3 ones restaging recreates, so the copy is the same; a scratch tree, or
+    a night whose lists name another place, needs them rewritten. Returns 'rewritten' or 'copy'."""
+    with open(src) as f:
+        lines = f.read().splitlines()
+    out = []
+    for line in lines:
+        name = os.path.basename(line.strip())
+        if line.strip() and os.path.lexists(os.path.join(dst_dir, name)):
+            out.append(os.path.join(dst_dir, name))
+        else:
+            out.append(line)
+    text = '\n'.join(out) + ('\n' if lines else '')
+    if os.path.lexists(dst):
+        with open(dst) as f:
+            if f.read() == text:
+                return 'rewritten' if out != lines else 'copy'
+        raise RestageError('{} exists and is not the restaged {}'.format(dst, src))
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    tmp = os.path.join(os.path.dirname(dst), '.{}.restage-{}'.format(os.path.basename(dst), os.getpid()))
+    with open(tmp, 'w') as f:
+        f.write(text)
+    shutil.copystat(src, tmp)
+    os.rename(tmp, dst)
+    return 'rewritten' if out != lines else 'copy'
+
+
+def zlp_catalogue(root, filt):
+    """The stack catalogue ZLP_pipeline.sh's choose_stack_catalogue would give T9 for a filter in a target directory, or
+    None: the one .active_stack_catalogue_<filter> names, else (with .expected_stack_catalogue) a Gaia-named one that
+    is not the expected one, else the expected one, else (without either record) any Gaia-named one."""
+    active = os.path.join(root, '.active_stack_catalogue_' + filt)
+    if os.path.isfile(active):
+        name = open(active).read().strip()
+        if name and os.path.isfile(os.path.join(root, name)):
+            return name
+    expected = None
+    if os.path.isfile(os.path.join(root, '.expected_stack_catalogue')):
+        expected = open(os.path.join(root, '.expected_stack_catalogue')).read().strip() or None
+    for n in sorted(os.listdir(root)):
+        if n[:1].isdigit() and fnmatch.fnmatchcase(n, '[0-9]*_stack_catalogue_[!p]*.fits') and n != expected:
+            return n
+    return expected
+
+
+def filters_of(root):
+    run = os.path.join(root, RUNNAME)
+    return sorted(n[:-len('_processed.dat')] for n in (os.listdir(run) if os.path.isdir(run) else [])
+                  if n.endswith('_processed.dat'))
+
+
+def catalogue_records(root, night, target):
+    """For a night reduced before T8 recorded the catalogue it validated (target-named catalogues, before 2026-10):
+    {filter: name} of the .active_stack_catalogue_<filter> records T9 needs, naming the only stack catalogue of that
+    filter in the directory, the one the night's products were made with. Raises when there is more than one."""
+    out = {}
+    for filt in filters_of(root):
+        if zlp_catalogue(root, filt):
+            continue
+        cands = sorted(n for n in os.listdir(root) if n.endswith('_stack_catalogue_{}.fits'.format(filt)) and
+                       '_stack_catalogue_pm_' not in n)
+        if len(cands) != 1:
+            raise RestageError('T9 would find no stack catalogue for {} {} and there is {} to choose from: {}'.format(
+                target, filt, 'none' if not cands else 'more than one', ', '.join(cands) or '-'))
+        out[filt] = cands[0]
+    return out
+
+
+def has_target_roles(path):
+    """Whether a stack catalogue has the TARGET_ROLE column condense reads (T8 writes it since 2026-03-31)."""
+    try:
+        from astropy.io import fits
+        with fits.open(path) as h:
+            for hdu in h[1:]:
+                if hdu.name.upper() == 'GAIA_CROSSMATCH':
+                    return 'TARGET_ROLE' in [c.upper() for c in hdu.columns.names]
+    except Exception:
+        return False
+    return False
+
+
+def entry(rel, how, src, dst, edited=False):
     d, s = os.lstat(dst), os.lstat(src)
     return {'rel': rel, 'how': how, 'src': src, 'size': d.st_size, 'mtime_ns': d.st_mtime_ns, 'ino': d.st_ino,
-            'src_ino': s.st_ino}
+            'src_ino': s.st_ino, 'src_size': s.st_size, 'src_mtime_ns': s.st_mtime_ns, 'edited': bool(edited)}
 
 
 class Restager(object):
@@ -358,11 +458,21 @@ class Restager(object):
         aside = []
         if source == 'v3':
             aside = [rel for rel in walk_files(v3) if stages.is_output(rel, first, night=night, target=target)]
+        records = catalogue_records(src_dir, night, target) if first == 9 else {}     # T8 makes its own
+        if first == 9:
+            for filt in sorted(set(filters_of(src_dir)) - set(records)) + sorted(records):
+                name = records.get(filt) or zlp_catalogue(src_dir, filt)
+                if name and not has_target_roles(os.path.join(src_dir, name)):
+                    raise RestageError('{} predates the TARGET_ROLE column condense reads (T8 writes it since '
+                                       '2026-03-31): rerun this night from T8'.format(name))
         links = sum(1 for _, ln in files if ln)
-        summary = '{} for a rerun from T{}: {} inputs ({} as hard links), reduction {} ({} placed){}'.format(
+        copied = sum(os.path.getsize(os.path.join(src_dir, rel)) for rel, ln in files if not ln) if source == 'v2' else 0
+        summary = '{} for a rerun from T{}: {} inputs ({} as hard links{}), reduction {} ({} placed){}'.format(
             'restaged from v2' if source == 'v2' else 'restaged in place in v3', first, len(files), links,
+            ', {} copied: {:.2f} GB'.format(len(files) - links, copied / 1e9) if copied else '',
             ', '.join(sorted(n for n, _, _ in red)), sum(1 for _, _, how in red if how == 'place'),
-            '; {} earlier outputs set aside'.format(len(aside)) if aside else '')
+            '; {} earlier outputs set aside'.format(len(aside)) if aside else '') + ''.join(
+            '; T9 told to use {} for {}'.format(name, filt) for filt, name in sorted(records.items()))
         if not self.apply:
             return 'would be ' + summary
         stamp = self.now().strftime('%Y%m%dT%H%M%SZ')
@@ -380,15 +490,31 @@ class Restager(object):
             set_aside(v3, rec['set_aside'])
             # the inputs are the products of the earlier stages; anything no stage writes (clutter) is not one, and
             # the promotion's S1 sees it as it would in any run
-            rec['files'] = [entry(rel, 'in-place', os.path.join(v3, rel), os.path.join(v3, rel))
+            rec['files'] = [entry(rel, 'in-place', os.path.join(v3, rel), os.path.join(v3, rel),
+                                  edited=stages.edited_by_rerun(rel, first, night=night, target=target))
                             for rel in walk_files(v3) if stages.made_before(rel, first, night=night, target=target)]
         else:
             done = {e['rel'] for e in rec['files']}
-            for rel, ln in files:
+            lists = [(rel, ln) for rel, ln in files if any(stages.matches(rel, p) for p in FRAME_LISTS)]
+            for rel, ln in [x for x in files if x not in lists] + lists:     # frames first: the lists point at them
                 if rel in done:
                     continue
                 src, dst = os.path.join(src_dir, rel), os.path.join(v3, rel)
-                rec['files'].append(entry(rel, place(src, dst, ln), src, dst))
+                if (rel, ln) in lists:
+                    how = place_list(src, dst, os.path.dirname(src), os.path.dirname(dst))
+                else:
+                    how = place(src, dst, ln)
+                rec['files'].append(entry(rel, how, src, dst, edited=not ln))
+                if len(rec['files']) % 500 == 0:
+                    save_record(rec)                                          # a long copy can be resumed
+        for filt, name in sorted(records.items()):
+            rel = '.active_stack_catalogue_' + filt
+            if rel in {e['rel'] for e in rec['files']}:
+                continue
+            with open(os.path.join(v3, rel), 'w') as f:                      # what T8 writes since 2026-10-17
+                f.write(name + '\n')
+            path = os.path.join(v3, rel)
+            rec['files'].append(entry(rel, 'made', path, path))
         rec['reduction'] = []
         for name, ln, how in red:
             dst = os.path.join(red_v3, name)
@@ -456,7 +582,7 @@ def clear(base, tel, night, target, reason, apply=False, now_fn=utcnow):
     """Retire a restage: a v2 one's directory (inputs and whatever the rerun wrote) goes to
     superseded/<TEL>/<NIGHT>/<TARGET>/<stamp>-restage/ with the record, its links to v2's files dropped; a v3 one
     keeps its directory and gets its record moved beside the outputs it set aside. Returns a summary."""
-    from utils.promote import claim_and_rename, write_note
+    from utils.promote import claim_and_rename, thin, write_note
     rec = load_record(base, tel, night, target)
     if rec is None:
         raise RestageError('{} {} {} is not restaged'.format(tel, night, target))
@@ -475,9 +601,11 @@ def clear(base, tel, night, target, reason, apply=False, now_fn=utcnow):
     dst = superseded_dir(base, tel, night, target, stamp + '-restage')
     if not apply:
         return 'would move {} to {} and drop its links to v2'.format(rec['dest'], dst)
+    thinned = None
     if os.path.isdir(rec['dest']):
         claim_and_rename(rec['dest'], dst)
         dropped = drop_links(dst, rec)
+        thinned = thin(dst)['deleted']          # copies of v2's frames (a restage from T9 or T8), and what a rerun made
     else:
         os.makedirs(dst, exist_ok=True)
         dropped = 0
@@ -486,8 +614,9 @@ def clear(base, tel, night, target, reason, apply=False, now_fn=utcnow):
         os.rmdir(os.path.dirname(rec['_path']))         # .restage/, if no other target of the night is restaged
     except OSError:
         pass
-    write_note(dst, {'cleared_at': iso(now_fn()), 'reason': reason, 'was': rec['dest'], 'links_dropped': dropped})
-    return 'moved to {} ({} links to v2 dropped)'.format(dst, dropped)
+    write_note(dst, {'cleared_at': iso(now_fn()), 'reason': reason, 'was': rec['dest'], 'links_dropped': dropped,
+                     'frames_thinned': thinned})
+    return 'moved to {} ({} links to v2 dropped, {} files thinned)'.format(dst, dropped, thinned or 0)
 
 
 def drop_links(root, rec):

@@ -6,13 +6,17 @@ again. Before this, that was possible only while a night was still in v3: the pr
 directories into v2, so no stage could be rerun afterwards, and a partial rerun in v3 was held by S1, because every
 file it did not rewrite predates it.
 
-This adds four things:
+The same goes for the stale-PC reprocess (forced apertures placed with a stale PC matrix: a T9 fault, fixed on
+2026-10-17), planned as ~1,200 full reruns only because the frames had already moved into v2.
+
+This adds four things, for reruns from T8, T9, T10 or T11:
 
 1. **The stage map** (`src/utils/stages.py`): what each stage reads and writes, so that "PWV failed" resolves to
-   T10 + T11, and a rerun's inputs and outputs are known file by file.
-2. **`--from_TN`** in `ZLP_pipeline.sh`, and `q add --from TN` (or `--from pwv`) in the queue.
+   T10 + T11 and "stale PC" to T9-T11, and a rerun's inputs and outputs are known file by file.
+2. **`--from_TN`** in `ZLP_pipeline.sh`, and `q add --from TN` (or `--from pwv`, `--from stale-pc`) in the queue.
 3. **A restage step** (`src/utils/restage.py`, a `restage` queue job): puts exactly the inputs of the rerun back
-   into a fresh v3 target directory, as hard links to v2's own files, and records them.
+   into a fresh v3 target directory, as hard links to v2's own files where the rerun only reads them and as copies
+   where it edits them (the frames, from T9 back), and records them.
 4. **An overlay promotion**: the promotion of a restaged rerun replaces only the files the rerun wrote (its
    manifest) in v2, sets the v2 files they replace aside, and judges S1 on the manifest only.
 
@@ -33,9 +37,9 @@ masters of T2-T4). Every stage also adds rows to `reports/Pipeline_Report` and w
 | T4 master flat | `create_master_flat` | `calibration/pipeflat.py` | `reduction` 1_flat_*.list (T1)<br>`reduction` 1_MasterBias.fits (T2)<br>`reduction` 1_MasterDark*.fits (T3)<br>`raw` * | `reduction` 1_MasterFlat_*.fits<br>`reduction` datafile.dat<br>`reduction` expdata.dat<br>`reduction` flats/** | - |
 | T5 bad pixel map | `create_bad_pixel_map` | `calibration/pipebadpixel.py` | `reduction` 1_image_{target}.list (T1)<br>`reduction` 1_Master*.fits (T4) | `reduction` 1_BadPixelMap.fits<br>`reduction` hot_pixel_map.fits<br>`reduction` cold_pixel_map.fits<br>`reduction` flatbad_pixel_map.fits<br>`reduction` darkcurrent.dat | - |
 | T6 calibrate | `reduce_science_images` | `calibration/pipered.py` | `reduction` 1_image_{target}.list (T1)<br>`reduction` 1_Master*.fits (T4)<br>`reduction` 1_BadPixelMap.fits (T5)<br>`reduction` *.dat (T5)<br>`reduction` readout.json (T2)<br>`raw` * | `target` 1/proc*.fits<br>`target` 1/*_processed.dat | - |
-| T7 astrometry | `check_astrometry` | `astrom/astrometry.py` | `target` 1/*_processed.dat (T6)<br>`target` 1/proc*.fits (T6)<br>`reduction` 1_image_{target}.list (T1)<br>`data` Gaia database | - | `target` 1/proc*.fits<br>`raw` * |
-| T8 stack | `create_stack_image` | `photometry/catalogue_fov.py` | `target` 1/*_processed.dat (T6)<br>`target` 1/proc*.fits (T6)<br>`obs` schedule/**<br>`data` ml_40pc_v2.csv<br>`data` PipelineOutput/v2/StackImages/** | `target` 1/*_stacked.dat<br>`target` 1_initial-catalogue.fits<br>`target` *_outstack_*.fits<br>`target` *_stack_catalogue_*<br>`target` .expected_stack_catalogue<br>`target` .active_stack_catalogue_*<br>`data` PipelineOutput/v2/StackImages/** | `target` 1/proc*.fits |
-| T9 photometry | `perform_aperture_photometry` | `photometry/ZLP_app_photom.py, condense/condense_photometry.py` | `target` 1/*_processed.dat (T6)<br>`target` 1/proc*.fits (T6)<br>`target` .active_stack_catalogue_* (T8)<br>`target` *_stack_catalogue_*.fits (T8)<br>`data` ml_40pc_v2.csv | `target` 1/*.phot<br>`target` 1/*.cat<br>`target` 1/*.ell<br>`target` 1/*_processed.dat_phot<br>`target` *_stack_catalogue_pm_*.fits<br>`target` *_{night}_output.fits<br>`telescope` output/StackImages/already_run.txt | `target` 1/proc*.fits<br>`telescope` output/output.fits |
+| T7 astrometry | `check_astrometry` | `astrom/astrometry.py` | `target` 1/*_processed.dat (T6)<br>`target` 1/proc*.fits (T6)<br>`reduction` 1_image_{target}.list (T1)<br>`raw` *<br>`data` PipelineOutput/wcs_cache/{tel}/{night}.ecsv<br>`data` Gaia database | `data` PipelineOutput/wcs_cache/{tel}/{night}.ecsv | `target` 1/proc*.fits |
+| T8 stack | `create_stack_image` | `photometry/catalogue_fov.py` | `target` 1/*_processed.dat (T6)<br>`target` 1/proc*.fits (T6)<br>`obs` schedule/**<br>`data` ml_40pc_v2.csv<br>`data` PipelineOutput/v2/StackImages/** | `target` 1/*_stacked.dat<br>`target` 1/*.cat<br>`target` 1_initial-catalogue.fits<br>`target` *_outstack_*.fits<br>`target` *_stack_catalogue_*<br>`target` .expected_stack_catalogue<br>`target` .active_stack_catalogue_*<br>`data` PipelineOutput/v2/StackImages/** | `target` 1/proc*.fits |
+| T9 photometry | `perform_aperture_photometry` | `photometry/ZLP_app_photom.py, condense/condense_photometry.py` | `target` 1/*_processed.dat (T6)<br>`target` 1/proc*.fits (T6)<br>`target` .active_stack_catalogue_* (T8)<br>`target` .expected_stack_catalogue (T8)<br>`target` *_stack_catalogue_*.fits (T8)<br>`obs` schedule/**<br>`data` ml_40pc_v2.csv<br>`data` Gaia database | `target` 1/*.cat<br>`target` 1/*.phot<br>`target` 1/*.ell<br>`target` 1/*.png<br>`target` 1/*_processed.dat_phot<br>`target` 1_initial-catalogue.fits<br>`target` *_stack_catalogue_pm_*.fits<br>`target` *_{night}_output.fits<br>`telescope` output/StackImages/already_run.txt | `target` 1/proc*.fits<br>`target` *_stack_catalogue_*.fits<br>`telescope` output/*_output.fits |
 | T10 light curves | `perform_differential_photometry` | `diff_photometry/SPlightcurve.py` | `target` *_{night}_output.fits (T9)<br>`reduction` 1_image_{target}.list (T1)<br>`raw` *<br>`data` ml_40pc_v2.csv<br>`data` pwv/PWV_grids/*<br>`data` tests/targetListTeffEsts.csv<br>`data` ESO LHATPRO | `target` *_diff.fits<br>`target` *_pwv_original.fits<br>`target` *_pwv_processed.fits<br>`target` *_pwv_interpolated.fits<br>`target` lightcurves/** | - |
 | T11 PDF report | `pdf_report` | `reporting/pdf_report_catriona.py` | `reduction` 1_Master*.fits (T4)<br>`target` *_output.fits (T9)<br>`target` *_diff.fits (T10)<br>`target` lightcurves/** (T10)<br>`target` 1/proc*.fits (T6)<br>`obs` technical_logs/{day}/*<br>`obs` technical_logs/log_dome_closure.txt<br>`obs` schedule/Archive_night_blocks/* | `telescope` reports/{tel}_{night}.pdf<br>`telescope` output/StackImages_nightly/{night}/*<br>`obs` technical_logs/{day}/*_PSF_*.png | - |
 | T12 sweep | `perform_version_migration` | `main/ZLP_pipeline.sh` | - | - | - |
@@ -47,12 +51,30 @@ masters of T2-T4). Every stage also adds rows to `reports/Pipeline_Report` and w
 | `comparison-stars` | T10 | T10 T11 | comparison-star weights and the artificial light curve |
 | `light-curves` | T10 | T10 T11 | anything else in SPlightcurve.py: apertures 3-8, MCMC files, plots, best aperture |
 | `pdf` | T11 | T11 | the night report only |
+| `stale-pc` | T9 | T9 T10 T11 | forced apertures placed with a stale PC matrix over the fitted CD (fixed 2026-10-17, PR #30) |
 | `photometry` | T9 | T9 T10 T11 | aperture photometry, condensing, the night's *_output.fits |
 | `stack` | T8 | T8 T9 T10 T11 | the stack, its catalogue, the Gaia crossmatch, which stars are targets |
 | `astrometry` | T7 | T7 T8 T9 T10 T11 | plate solving of the calibrated frames |
 | `calibration` | T6 | T6 T7 T8 T9 T10 T11 | calibration of the science frames (pipered.py) |
 | `masters` | T2 | T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 | master bias, dark or flat, the bad pixel map |
 | `lists` | T1 | T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 | which frame is what (createlists.py) |
+
+| Rerun from T8: input | Made by | Restaged as |
+|---|---|---|
+| `target` 1/*_processed.dat | T6 | copy, each path pointed at the restaged frame |
+| `target` 1/proc*.fits | T6 | copy |
+| `reduction` 1_image_{target}.list | T1 | hard link |
+| `reduction` 1_Master*.fits | T4 | hard link |
+
+| Rerun from T9: input | Made by | Restaged as |
+|---|---|---|
+| `target` 1/*_processed.dat | T6 | copy, each path pointed at the restaged frame |
+| `target` 1/proc*.fits | T6 | copy |
+| `target` .active_stack_catalogue_* | T8 | hard link |
+| `target` .expected_stack_catalogue | T8 | hard link |
+| `target` *_stack_catalogue_*.fits | T8 | copy |
+| `reduction` 1_image_{target}.list | T1 | hard link |
+| `reduction` 1_Master*.fits | T4 | hard link |
 
 | Rerun from T10: input | Made by | Restaged as |
 |---|---|---|
@@ -70,12 +92,25 @@ masters of T2-T4). Every stage also adds rows to `reports/Pipeline_Report` and w
 | `target` lightcurves/** | T10 | hard link |
 | `target` 1/proc*.fits | T6 | hard link |
 
-**Why restage stops at T10.** From T9 back, a rerun edits the calibrated frames in place: T7 writes WCS into them,
-and `wcsfit` (T8's stacked frames, T9's every frame) rewrites their headers. A hard link shares one file between v2
-and the rerun, so an in-place edit would change v2's frame too; such a rerun needs its own copy of every frame
-(1-19 GB per target-night here), and its overlay replaces the frames and their per-frame files as well.
-`utils/stages.py` marks those inputs as copies, and `restage.py` refuses a rerun from T9 or earlier until that
-path is built and tried. What it would save (T1-T8, including T7's plate solving) has not been measured.
+**From T9 and T8 the frames are copies.** Those reruns edit the calibrated frames in place: `wcsfit` (T8's stacked
+frames, T9's every frame) rewrites their headers, T9 removes a stale PC matrix and sets `wcscompl`. A hard link
+shares one file between v2 and the rerun, so an in-place edit would change v2's frame too; the rerun gets its own
+copy of every frame (1-19 GB per target-night), and its overlay replaces the frames and their per-frame files. The
+stack catalogue is a copy as well: condense opens it read-write.
+
+**T9 needs a catalogue with TARGET_ROLE.** Condense reads the targets T8 identified from the catalogue's
+TARGET_ROLE column, which T8 writes since the stack/catalogue overhaul of 2026-03-31. A night whose catalogue is older
+cannot be rerun from T9 with today's code: restage says so, and the night is rerun from T8, which makes a new stack
+and catalogue. Such nights also have target-named catalogues (`SP1054-5431_stack_catalogue_I+z.fits`) and no record
+of the one T9 used; for a rerun from T9 of a night that has exactly one catalogue per filter, restage writes the
+`.active_stack_catalogue_<filter>` record T8 writes today, naming it, and refuses to guess between several.
+
+**Why not from T7 back.** Until PR #64 (merged 2026-10-20) T7 wrote each frame's new WCS into the raw frame its
+image list names, by absolute path, so a rerun anywhere would have written production raw frames. T7 now keeps its
+solutions in a WCS cache (`PipelineOutput/wcs_cache/<TEL>/<NIGHT>.ecsv`) instead, which makes it the next stage to
+add (a cache hit re-applies a solution, so such a rerun is for a solver change or `--force-platesolve`); it has not
+been tried. From T6 back the frames themselves are made anew, so a rerun costs what a run from raw does.
+From T6 back the frames themselves are made anew, so a rerun costs what a run from raw does.
 
 ## `--from_TN` and the log
 
@@ -89,7 +124,8 @@ Two guards for runs that skip earlier stages:
 - the target-name helpers (`correct_target_names.py`, `already_run_targs.py`, which rewrites the telescope's
   `already_run.txt`) run only with T9, the only stage that uses their result;
 - frame packing (16-bit) is skipped after a run from T10 or later: T10 and T11 only read the frames, and a restaged
-  frame is v2's own file.
+  frame is v2's own file. A run from T9 or T8 packs its own copies, as any run does: float32 frames in v2 come back
+  16-bit.
 
 ## Restaging
 
@@ -97,10 +133,13 @@ Two guards for runs that skip earlier stages:
 `q add --from` queues. For each target of the night (default: every target with the rerun's inputs in v3 or v2):
 
 - **in v2** (promoted): a fresh `v3/<TEL>/output/<NIGHT>/<TARGET>/` gets the inputs from the table above, as hard
-  links to v2's files (v2, v3 and `superseded/` are all on sda1: device 2049 on appct, checked 2026-10-20; across
-  filesystems it would copy). The night's v3 reduction keeps what it has (promotion leaves it in v3; for a
-  single-target run it is the reduction that run made) and gets the image list and masters from v2 where it lacks
-  them. v2 is only read.
+  links to v2's files where the rerun only reads them and copies where it edits them (v2, v3 and `superseded/` are
+  all on sda1: device 2049 on appct, checked 2026-10-20; across filesystems a link would be a copy). A file a stage of
+  the rerun writes is never an input, whatever read pattern it matches (T9's proper-motion catalogue matches T9's
+  read of T8's catalogues). The frame lists (`1/*_processed.dat`, absolute paths) are copied with each line pointed
+  at the restaged frame: in production the same paths, in a scratch tree new ones. The night's v3 reduction keeps
+  what it has (promotion leaves it in v3; for a single-target run it is the reduction that run made) and gets the
+  image list and masters from v2 where it lacks them. v2 is only read.
 - **in v3** (never promoted, or held): the directory's earlier outputs of the rerun's stages are moved to
   `superseded/<TEL>/<NIGHT>/<TARGET>/<stamp>-prerun/`, so nothing of the earlier run can mix with the rerun's (a
   stale `*_bestap.txt` that the new T10 would otherwise read and compare against, an aperture the new run fails to
@@ -112,18 +151,20 @@ placed (link, copy, in place, present), its inode, size and mtime, and the v2 fi
 (`staging`) and marked `staged` at the end, so a restage cut short is finished by running it again, and one already
 done is checked and left alone. `restage.py show [--manifest]` shows a night's records and what the rerun has
 written so far; `restage.py clear --reason ... --apply` retires a restage that will not be promoted (a v2 one's
-directory goes to `superseded/.../<stamp>-restage/` with its links to v2 dropped). A restage with `--apply
+directory goes to `superseded/.../<stamp>-restage/` with its links to v2 dropped and its frame copies thinned).
+A restage with `--apply
 --telescope T --night N` on its command line holds the night against the queue, like a promotion.
 
-**Why hard links are safe here.** Every input of a rerun from T10 or T11 is only read by those stages, and every
-writer in them replaces a file rather than writing into it (astropy's `writeto(overwrite=True)` removes the old
-file first, framepack writes a temporary file and renames it). The promotion checks it anyway (O1 below): a linked
-input that changed during the rerun means v2's file changed with it, and nothing moves until a person has looked.
+**Why hard links are safe here.** A linked input is one the stage map says the rerun only reads, and the writers
+of those stages replace a file rather than write into it (astropy's `writeto(overwrite=True)` removes the old file
+first, framepack writes a temporary file and renames it). The promotion checks it anyway (O1 below): a linked input
+that changed during the rerun means v2's file changed with it, and nothing moves until a person has looked. A copied
+input the rerun edits by design (a frame) is part of what it wrote.
 
 ## The manifest
 
 What a restaged rerun wrote: every file in the restaged directory that is not an unchanged input
-(`restage.manifest()`). Each entry has its size, mtime, ctime and sha1, and for FITS files the provenance orchard
+(`restage.manifest()`), so the frames a rerun from T9 rewrote too. Each entry has its size, mtime, ctime and sha1, and for FITS files the provenance orchard
 stamps on what it makes (ORCHVER and ORCHREL at creation, ORCHMOD on an edit: PR #56 and #60). The promotion journal
 keeps the manifest in the promotion's plan, and `<stamp>-overlay/superseded.json` keeps it beside the files it
 replaced.
@@ -140,7 +181,7 @@ replaced.
 | touch | the `*_5_diff.fits` get the current mtime, for the portal's 90-day window |
 | records | the run's log and PDF are copied into v2 as `.run<start>[-j<job>]`; the PDF also takes the plain name `<TEL>_<NIGHT>.pdf` when the rerun was given every target of the night that has products (else the night's PDF would lose the others); the old plain file is kept under its own `.run` name or set aside |
 | leftover | the restaged directory, now only inputs, goes to `superseded/.../<stamp>-restage/` with its record; its hard links to v2's files are dropped there |
-| thin | as for any promotion |
+| thin | as for any promotion; after a rerun from T9 or T8 also the replaced frames and per-frame files under `-overlay/1/` (raw is on disk, as for any superseded copy) |
 
 v2's directory keeps its inode, and every v2 file outside the manifest is untouched: same inode, size and mtime.
 The reduction is never changed (the rerun only read it). Nothing is deleted outside `superseded/`.
@@ -156,9 +197,9 @@ An output of the rerun's own stages that predates it still holds, as before.
 
 | Check | Holds when | Policy |
 |---|---|---|
-| O1 | a restaged input changed or went after the restage (for a hard link: v2's file too), the record never reached `staged`, or the night's v3 reduction changed | person (`restage-inputs`) |
+| O1 | an input the rerun should only have read changed or went after the restage (for a hard link: v2's file too), the record never reached `staged`, or the night's v3 reduction changed | person (`restage-inputs`) |
 | O2 | a v2 file the rerun read is no longer the one restaged (v2 changed since, e.g. another promotion) | reprocess (`v2-changed-since-restage`): clear, restage and rerun |
-| O3 | a FITS file of the manifest carries another code release (ORCHREL) than the run's queue job | person (`restage-inputs`) |
+| O3 | a FITS file the rerun made carries another code release (ORCHREL) than the run's queue job (a restaged frame it edited keeps its maker's) | person (`restage-inputs`) |
 
 A restaged candidate is not judged until a run covering it has started after the restage (a restage from T11 holds
 T10's curves from the start); one restaged but never rerun is named in the promote job's output.
@@ -169,12 +210,14 @@ T10's curves from the start); one restaged but never rerun is named in the promo
 q add --class P3 --telescope Callisto --night 20250317 --from pwv --promote --campaign "PWV outage reruns"
 q add --class P3 --telescope Callisto --night 20250317 --from T10 --promote --dry-run     # says what it would do
 q add --class P3 --from-file pwv_v2_nights.txt --from T10 --promote --campaign "PWV outage reruns"
+q add --class P3 --telescope Io --night 20260223 --from stale-pc --promote                # T9; T8 if restage says so
 ```
 
-`--from` takes a stage (T10, T11) or a cause from the table above. It queues three jobs:
+`--from` takes a stage (T8-T11) or a cause from the table above. It queues three jobs:
 
-1. **restage** (`utils/restage.py stage --apply ...`): 1 core, not disk-heavy, night lock, about a second;
-2. **pipeline**: `ZLP_pipeline.sh --from_T10 --no_T12 ... <targets>`, given the restaged targets explicitly, so
+1. **restage** (`utils/restage.py stage --apply ...`): 1 core, night lock; from T10 on links only (seconds, not
+   disk-heavy), from T9 and T8 copies of the frames (disk-heavy, a few seconds per GB);
+2. **pipeline**: `ZLP_pipeline.sh --from_TN --no_T12 ... <targets>`, given the restaged targets explicitly, so
    that its log and PDF say which targets it covers; it runs only if the restage succeeded, and has its own dedupe
    key, so it never merges with a full run of the night;
 3. **promote**, as for any `--promote` run.
@@ -182,9 +225,12 @@ q add --class P3 --from-file pwv_v2_nights.txt --from T10 --promote --campaign "
 `--from` needs `--promote` (or `--no-T12` to keep the rerun in v3): T12 would sweep the restaged inputs into v2.
 It refuses `--download`, and a `--from-file` line with DOWNLOAD=1. A rerun is queued with a share of a full run's
 estimate (`jobspec.RERUN_SHARE`); at launch the dispatcher re-estimates it from the frames like any pipeline job, so
-its timeout stays a full run's.
+its timeout stays a full run's. Reruns from T10 or T11 reserve 8 cores (SPlightcurve.py is one process); from T9 or
+T8 a full run's, since their WCS fits and photometry use every core.
 
 ## Verified
+
+### Reruns from T10: the PWV-lost nights
 
 Scratch trial, 2026-10-20 (`mh_scratch/rerun_from_stage/` on appct; nothing written outside it). The scratch root
 holds copies of five PWV-lost v2 nights (and what production v3 holds for them), raw frames and schedules by symlink;
@@ -219,6 +265,34 @@ the code is this branch as a `git archive` snapshot. Per night: `restage.py stag
   `--from-file` list is `dryrun95/pwv_v2_nights.txt`.
 - The suite in orchard-server (67df8e9, `--basetemp` on /data): 770 passed, 2 skipped.
 
+### Reruns from T9 and T8: the stale-PC nights
+
+Four stale-PC nights still in v2 from before the fix (`trial9/`, `trial8/`; `compare9.py`, `noise.py`), with the code
+of this branch. Ganymede 20260731's catalogue has TARGET_ROLE and was rerun from T9; the three Io nights of March
+2026 have target-named catalogues from before it, so restage refused T9 (as designed) and they were rerun from T8.
+
+| Night | Target | From | Frames | Restage | Rerun | Original run | v2 files untouched | Installed (frames) | Ap-3 scatter, target | Ap-3 scatter, field median |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Ganymede 20260731 | Sp1705-5441 | T9 | 108 | 3 s | 414 s | 19.5 min | 27 of 942 | 918 (108) | 20.0 -> 6.6 ppt | 132 -> 12 ppt |
+| Io 20260223 | Sp1054-5431 | T8 | 174 | 12 s | 656 s | 20.6 min | 14 of 1,467 | 1,456 (174) | 69.8 -> 9.7 ppt | 189 -> 25 ppt |
+| Io 20260307 | Sp1054-5431 | T8 | 101 | 8 s | 523 s | 17.2 min | 308 of 1,171 | 863 (101) | 236 -> 8.3 ppt | 196 -> 19 ppt |
+| Io 20260304 | Sp1054-5431 | T8 | 728 | 46 s | 1,445 s | 51.4 min | 14 of 5,881 | 5,870 (728) | 259 -> 6.7 ppt | 251 -> 31 ppt |
+
+- **Only the manifest changed**, on every night: what changed in v2 is exactly what the journal lists as installed
+  (the frames with their new WCS, their per-frame files, the night's photometry, the curves), and, after a rerun
+  from T8, the 9-12 files of the old target-named stacks and catalogues the rerun no longer writes went to
+  `-overlay/`. The replaced frames and per-frame files there were thinned (750 to 5,754 files a night). What
+  stayed untouched is what no stage of the rerun writes (on Io 20260307 also 294 files of an old
+  `1_postastrometrypy/` copy). The frames lost their stale PC matrix (13 of 1,111 kept one: frames whose WCS fit
+  failed) and came back 16-bit (frame packing).
+- **The stale PC is gone from the curves.** Every target's aperture-3 and -4 scatter fell 3-39 times, and the
+  field's median at every aperture; the note's own figure for Sp1054-5431 (71 -> 7.5 ppt at aperture 3, Ganymede
+  2026-02-23) reappears on Io (69.8 -> 9.7). On Io 20260304 the target's apertures 7 and 8 got somewhat noisier
+  (7.7 -> 9.8 and 6.9 -> 9.9 ppt) while its best aperture improved (6.9 ppt at 8 -> 4.4 at 5).
+- A rerun took 36% of its night's original run from T9 and 48-54% from T8 (T8, the stack and Gaia crossmatch,
+  221-299 s; T10 on these fields is a third of the rerun). Restaging copies frames at ~260 MB/s; promotion took
+  1-30 s (it reads every installed file back).
+
 ## What it costs: the 95 PWV-lost nights in v2
 
 Their original full runs (the queue jobs that lost PWV, `cost/v2_nights.csv`) took **68.9 job-hours** (median 33
@@ -243,9 +317,28 @@ With the queue running several nights at once (they hold only their night locks)
 The largest uncertainty is the crowded bulge fields of Sp1804-1616 (up to 11,072 stars; the trial's had 6,606):
 the model puts their T10 at up to ~17 minutes each.
 
+## What it costs: the stale-PC reprocess
+
+The reprocess list (`aperture_centring/reproc/nights.csv`, 1,198 nights) has **1,063 nights (1,742 target-nights)**
+whose v2 products still predate the fix (`cost/pc_nights.csv`, `pc_summary.json`): 913 target-nights can be rerun
+from T9, 829 have a catalogue from before TARGET_ROLE and need T8; 582 nights are T9 throughout. Their frames are
+1.46 million, 11.1 TB.
+
+| | Full reruns (original runs' durations) | Reruns from T9 / T8 |
+|---|---:|---:|
+| job time | ~1,240 h (992 of the nights logged a duration; scaled to all) | **~570 h** (36% of T9 nights' runs, 51% of T8 nights'): 46% |
+| raw frames read | all of them | none (one header per target) |
+| frames written | every frame recalibrated | 11.1 TB of copies (~12 h of copying), packed to 16-bit, the old ones thinned |
+| restage and promotion | - | seconds to a minute a night |
+
+`q add --from stale-pc` takes T9 and falls back to T8 per night when the catalogue predates TARGET_ROLE. The
+`--from-file` list, nothing queued: `stalepc/stale_pc_nights.txt`. Matthew's standing decision (2026-10-17) is not
+to reprocess these until orchard has settled; this only makes the reprocess cheaper when he does.
+
 ## Not done
 
-- **Reruns from T9 or earlier** of promoted nights (see "Why restage stops at T10").
+- **Reruns from T7 or earlier** of promoted nights (see "Why not from T7 back"); T7 can follow now that PR #64 is on
+  main, after a trial.
 - **The archive PWV campaign** (the parked reprocessing of 3,541 nights): its nights were reduced by older
   pipelines, and their image lists can name paths that no longer exist (`/import/appct/...`); T10 opens the list's
   first frame. Restage would have to copy such a list with its paths rewritten. Their v2 directories may also lack

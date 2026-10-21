@@ -785,8 +785,11 @@ class Promoter(object):
                 hold.append('O2 v2 changed after the restage: {} of the files the rerun read are no longer what v2 '
                             'holds ({})'.format(len(st['src_changed']), ', '.join(sorted(st['src_changed'])[:3])))
             if overlay and run and run.get('code'):
+                # files the rerun made (a restaged frame it edited keeps the ORCHREL of the run that made it)
                 m = restage_mod.manifest(rec, sha=False)
-                foreign = sorted(e['rel'] for e in m['written'] if e.get('orchrel') and e['orchrel'] != run['code'])
+                restaged = {e['rel'] for e in rec['files']}
+                foreign = sorted(e['rel'] for e in m['written'] if e['rel'] not in restaged and e.get('orchrel') and
+                                 e['orchrel'] != run['code'])
                 if foreign:
                     hold.append('O3 {} file(s) of the rerun were made by another code release than its run ({}): '
                                 '{}'.format(len(foreign), run['code'], ', '.join(foreign[:3])))
@@ -1284,10 +1287,14 @@ class Promoter(object):
         out = {}
         red = plan['reduction'].get('superseded') if plan['reduction'].get('action') != 'keep' else None
         aside = (plan.get('aside') or {}).get('dir')
+        # an overlay of a rerun from T9 replaced v2's frames and their per-frame files: the old ones, under
+        # <stamp>-overlay/1/, go as a superseded copy's do
         for key, path in (('target', plan['superseded']), ('reduction', red), ('aside', aside),
-                          ('restaged', plan.get('leftover'))):
+                          ('restaged', plan.get('leftover')), ('overlay', plan.get('overlay_dir'))):
             if not path or not os.path.isdir(path):
                 continue
+            if key == 'overlay' and not any(n.isdigit() for n in os.listdir(path)):
+                continue                    # an overlay from T10 on replaced no frames
             if not self.tree.under_superseded(path):
                 raise PromoteError('refusing to delete anything outside {}: {}'.format(SUPERSEDED, path))
             out[key] = thin(path, reduction=(key == 'reduction'))

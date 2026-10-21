@@ -50,7 +50,7 @@ SCOPES = OrderedDict([
 ])
 
 LAST = 11           # T12 (the v3 -> v2 sweep) is replaced by the promotion step: reruns run --no_T12
-RESTAGE = (10, 11)  # stages utils/restage.py can rerun a promoted night from (see restage_inputs for why not earlier)
+RESTAGE = (8, 9, 10, 11)  # stages utils/restage.py can rerun a promoted night from (restage_inputs: why not before)
 
 Read = namedtuple('Read', 'scope pattern made_by what')
 Write = namedtuple('Write', 'scope pattern what')
@@ -66,6 +66,7 @@ def W(scope, pattern, what=''):
 
 
 FRAMES = '1/proc*.fits'      # calibrated frames: made by T6, WCS written into them by T7, T8 and T9
+FRAME_LISTS = ('1/*_processed.dat',)   # name the frames by absolute path: restaged as copies pointed at the copies
 
 STAGES = OrderedDict((s.n, s) for s in [
     Stage(1, 'lists', 'create_input_lists', 'main/createlists.py',
@@ -96,13 +97,18 @@ STAGES = OrderedDict((s.n, s) for s in [
           'a target with nothing calibrated skips T7-T10'),
     Stage(7, 'astrometry', 'check_astrometry', 'astrom/astrometry.py',
           [R(TARGET, '1/*_processed.dat', 6), R(TARGET, FRAMES, 6), R(REDUCTION, '1_image_{target}.list', 1),
+           R(RAW, '*', what='headers of the frames the image list names'),
+           R(DATA, 'PipelineOutput/wcs_cache/{tel}/{night}.ecsv', what="earlier runs' solutions"),
            R(DATA, 'Gaia database', what='$GAIADATABASEPATH')],
-          [], [R(TARGET, FRAMES, 6, 'WCS'), R(RAW, '*', what='WCS, until the WCS cache (PR #64)')], ''),
+          [W(DATA, 'PipelineOutput/wcs_cache/{tel}/{night}.ecsv', 'the WCS cache (PR #64): raw frames are no '
+                                                                  'longer written')],
+          [R(TARGET, FRAMES, 6, 'WCS')], ''),
     Stage(8, 'stack', 'create_stack_image', 'photometry/catalogue_fov.py',
           [R(TARGET, '1/*_processed.dat', 6), R(TARGET, FRAMES, 6), R(OBS, 'schedule/**', what='plan files'),
            R(DATA, 'ml_40pc_v2.csv', what='the 40 pc target list'),
            R(DATA, 'PipelineOutput/v2/StackImages/**', what='backup catalogues')],
-          [W(TARGET, '1/*_stacked.dat'), W(TARGET, '1_initial-catalogue.fits'), W(TARGET, '*_outstack_*.fits'),
+          [W(TARGET, '1/*_stacked.dat'), W(TARGET, '1/*.cat', 'of the stacked frames'),
+           W(TARGET, '1_initial-catalogue.fits'), W(TARGET, '*_outstack_*.fits'),
            W(TARGET, '*_stack_catalogue_*'), W(TARGET, '.expected_stack_catalogue'),
            W(TARGET, '.active_stack_catalogue_*'), W(DATA, 'PipelineOutput/v2/StackImages/**', 'backup catalogues')],
           [R(TARGET, FRAMES, 6, 'WCS of the stacked frames (wcsfit)')],
@@ -110,11 +116,18 @@ STAGES = OrderedDict((s.n, s) for s in [
     Stage(9, 'photometry', 'perform_aperture_photometry',
           'photometry/ZLP_app_photom.py, condense/condense_photometry.py',
           [R(TARGET, '1/*_processed.dat', 6), R(TARGET, FRAMES, 6), R(TARGET, '.active_stack_catalogue_*', 8),
-           R(TARGET, '*_stack_catalogue_*.fits', 8), R(DATA, 'ml_40pc_v2.csv', what='the 40 pc target list')],
-          [W(TARGET, '1/*.phot'), W(TARGET, '1/*.cat'), W(TARGET, '1/*.ell'), W(TARGET, '1/*_processed.dat_phot'),
+           R(TARGET, '.expected_stack_catalogue', 8), R(TARGET, '*_stack_catalogue_*.fits', 8),
+           R(OBS, 'schedule/**', what="plan files (the target's Gaia ID)"),
+           R(DATA, 'ml_40pc_v2.csv', what='the 40 pc target list'),
+           R(DATA, 'Gaia database', what="wcsfit's reference stars ($GAIADATABASEPATH)")],
+          [W(TARGET, '1/*.cat'), W(TARGET, '1/*.phot'), W(TARGET, '1/*.ell'), W(TARGET, '1/*.png', 'PSF plots'),
+           W(TARGET, '1/*_processed.dat_phot'), W(TARGET, '1_initial-catalogue.fits'),
            W(TARGET, '*_stack_catalogue_pm_*.fits'), W(TARGET, '*_{night}_output.fits', 'the night\'s photometry'),
            W(TELESCOPE, 'output/StackImages/already_run.txt', 'targets seen per telescope')],
-          [R(TARGET, FRAMES, 6, 'WCS (wcsfit)'), R(TELESCOPE, 'output/output.fits', 9, 'the night appended')], ''),
+          [R(TARGET, FRAMES, 6, 'WCS: wcsfit, the stale PC matrix removed, wcscompl'),
+           R(TARGET, '*_stack_catalogue_*.fits', 8, "opened read-write by condense (fitsio 'rw')"),
+           R(TELESCOPE, 'output/*_output.fits', 9, 'the multi-night file per star: the night replaced')],
+          'condense reads TARGET_ROLE, which T8 writes since 2026-03-31: older catalogues need a rerun from T8'),
     Stage(10, 'light curves', 'perform_differential_photometry', 'diff_photometry/SPlightcurve.py',
           [R(TARGET, '*_{night}_output.fits', 9), R(REDUCTION, '1_image_{target}.list', 1, 'its first raw frame'),
            R(RAW, '*', what='the header of the first frame of the image list'),
@@ -145,6 +158,7 @@ CAUSES = OrderedDict([
     ('comparison-stars', (10, 'comparison-star weights and the artificial light curve')),
     ('light-curves', (10, 'anything else in SPlightcurve.py: apertures 3-8, MCMC files, plots, best aperture')),
     ('pdf', (11, 'the night report only')),
+    ('stale-pc', (9, 'forced apertures placed with a stale PC matrix over the fitted CD (fixed 2026-10-17, PR #30)')),
     ('photometry', (9, 'aperture photometry, condensing, the night\'s *_output.fits')),
     ('stack', (8, 'the stack, its catalogue, the Gaia crossmatch, which stars are targets')),
     ('astrometry', (7, 'plate solving of the calibrated frames')),
@@ -246,7 +260,11 @@ def restage_inputs(first):
     it: [(scope, pattern, made_by, link)], one per (scope, pattern). link: no stage of the rerun edits the file in
     place, so v2's own file can be shared by a hard link; otherwise it must be a copy. From T10 on, every input can be
     shared. From T9 back, the calibrated frames get new WCS headers (wcsfit writes into the file), so a rerun needs
-    its own copy of every frame; restage.py does not do that yet."""
+    its own copy of every frame. A file a stage of the rerun writes is never an input, whatever pattern it matches
+    (T9's *_stack_catalogue_pm_*.fits matches what T9 reads of T8's): restage.py leaves those out.
+    From T7 back a rerun is not restaged yet: T7 wrote each frame's WCS into the raw frame its image list names until
+    PR #64's WCS cache replaced that (2026-10-20), so T7 is the next stage to try; from T6 back the frames
+    themselves are new, so a run from raw costs the same."""
     edited = [(e.scope, e.pattern) for n in rerun_stages(first) for e in STAGES[n].edits]
     out, seen = [], set()
     for n in rerun_stages(first):
@@ -268,6 +286,11 @@ def rerun_outputs(first, scope=TARGET):
 
 def is_output(rel, first, **kw):
     return any(matches(rel, p, **kw) for p in rerun_outputs(first))
+
+
+def edited_by_rerun(rel, first, scope=TARGET, **kw):
+    """Whether a stage of a rerun from `first` edits this file in place (an input it must have its own copy of)."""
+    return any(e.scope == scope and matches(rel, e.pattern, **kw) for n in rerun_stages(first) for e in STAGES[n].edits)
 
 
 def cause_stage(cause):
@@ -317,7 +340,9 @@ def markdown():
     for n in RESTAGE:
         lines += ['', '| Rerun from T{}: input | Made by | Restaged as |'.format(n), '|---|---|---|']
         for scope, pattern, made_by, link in restage_inputs(n):
-            lines.append('| `{}` {} | T{} | {} |'.format(scope, pattern, made_by, 'hard link' if link else 'copy'))
+            how = 'copy, each path pointed at the restaged frame' if pattern in FRAME_LISTS else \
+                'hard link' if link else 'copy'
+            lines.append('| `{}` {} | T{} | {} |'.format(scope, pattern, made_by, how))
     return '\n'.join(lines) + '\n'
 
 

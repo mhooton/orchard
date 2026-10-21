@@ -5,6 +5,7 @@ with only what the rerun wrote. Toy data roots (tests/promote_toys.py), nights i
 directory: nothing here can touch a real night.
 """
 import datetime as dt
+import glob
 import json
 import os
 import sys
@@ -86,13 +87,46 @@ def with_pwv(path, ap, frames=120):
         h.append(fits.ImageHDU(np.ones((1, frames)), name='PWV_LIGHTCURVE_%d' % ap))
 
 
-def rerun_t10(env, target, aps=(3, 4, 5), pwv=True, pdf=True, specified=True):
-    """What ZLP_pipeline.sh --from_T10 --no_T12 writes into a restaged directory: a log, new curves (the same
-    differential flux, now with PWV), the light-curve files, PWV files, and the night's PDF. Returns the start."""
+def start_run(env, target, stages, specified=True):
     time.sleep(2.2)                     # run starts are logged to the second, and S1 allows one second
     start = now()
     time.sleep(1.1)
-    env.toy.log('v3', TEL, NIGHT, start, [target], specified=specified, stages=[10, 11])
+    env.toy.log('v3', TEL, NIGHT, start, [target], specified=specified, stages=stages)
+    return start
+
+
+def rerun_t10(env, target, aps=(3, 4, 5), pwv=True, pdf=True, specified=True):
+    """What ZLP_pipeline.sh --from_T10 --no_T12 writes into a restaged directory: a log, new curves (the same
+    differential flux, now with PWV), the light-curve files, PWV files, and the night's PDF. Returns the start."""
+    start = start_run(env, target, [10, 11], specified)
+    write_t10(env, target, aps, pwv, pdf)
+    return start
+
+
+def rerun_t9(env, target, aps=(3, 4, 5)):
+    """What ZLP_pipeline.sh --from_T9 --no_T12 writes: each frame's WCS written into it (the copy restage made), its
+    per-frame files, the night's photometry and proper-motion catalogue, then T10's and T11's."""
+    start = start_run(env, target, [9, 10, 11])
+    d = env.v3('output', NIGHT, target)
+    for f in sorted(glob.glob(os.path.join(d, '1', 'proc*.fits'))):
+        with fits.open(f, mode='update') as h:                       # in place, as wcsfit does
+            h[0].header['CD1_1'] = 9.7e-5
+            h[0].header['WCSCOMPL'] = True
+        for name in (f + '.phot', f + '.ell', f[:-len('.fits')] + '.cat', f[:-len('.fits')] + '_psf.png'):
+            with open(name, 'w') as out:
+                out.write('rerun')
+    with open(os.path.join(d, '1', '{}_processed.dat_phot'.format(FILTER)), 'w') as out:
+        out.write('rerun')
+    gid = gaia_id(target)
+    fits.PrimaryHDU(header=fits.Header([('RERUN', 9)])).writeto(
+        os.path.join(d, '{}_{}_{}_output.fits'.format(gid, FILTER, NIGHT)), overwrite=True)
+    fits.PrimaryHDU().writeto(os.path.join(d, '{}_stack_catalogue_pm_{}.fits'.format(target.upper(), FILTER)),
+                              overwrite=True)
+    write_t10(env, target, aps, True, True)
+    return start
+
+
+def write_t10(env, target, aps, pwv, pdf):
     d = env.v3('output', NIGHT, target)
     gid = gaia_id(target)
     os.makedirs(os.path.join(d, 'lightcurves'), exist_ok=True)
@@ -111,7 +145,6 @@ def rerun_t10(env, target, aps=(3, 4, 5), pwv=True, pdf=True, specified=True):
         p = env.toy.pdf('v3', TEL, NIGHT)
         with open(p, 'a') as f:
             f.write('rerun with PWV\n')
-    return start
 
 
 def verdicts(env):
@@ -167,7 +200,7 @@ def test_restage_fills_a_missing_v3_reduction_from_v2(env):
 
 def test_restage_refuses_what_it_cannot_do(env, capsys):
     promoted(env)
-    assert stage(env, '--apply', first='9') == 2                     # frames would be edited in place
+    assert stage(env, '--apply', first='7') == 2                     # not restaged from T7 back
     assert 'cannot be restaged' in capsys.readouterr().out
     os.makedirs(env.v3('output', NIGHT, A, '1'))                      # a v3 directory without the inputs
     assert stage(env, '--apply', '--target', A) == 1
@@ -180,6 +213,7 @@ def test_a_night_still_in_v3_is_restaged_in_place_with_its_old_outputs_set_aside
     start = now() - dt.timedelta(hours=2)
     env.toy.night(TEL, NIGHT, [A], start)
     d = env.v3('output', NIGHT, A)
+    open(os.path.join(d, 'notes.txt'), 'w').close()
     old = sorted(r for r in restage.walk_files(d) if r.endswith('_diff.fits') or r.startswith('lightcurves'))
     assert stage(env, '--apply') == 0
     rec = restage.load_record(env.base, TEL, NIGHT, A)
@@ -189,10 +223,9 @@ def test_a_night_still_in_v3_is_restaged_in_place_with_its_old_outputs_set_aside
     aside = rec['set_aside']['dir']
     assert aside.startswith(env.sup(NIGHT, A)) and sorted(
         r for r in restage.walk_files(aside) if r != 'superseded.json') == old
-    # the inputs it keeps are the earlier stages' products; files no stage writes are not inputs
+    # the inputs it keeps are the earlier stages' products; a file no stage writes is not one
     names = {e['rel'] for e in rec['files']}
-    assert '1/proc{}-0000-{}.fits'.format(A, FILTER) in names and '1/proc{}-0000-{}_psf.png'.format(A, FILTER) \
-        not in names
+    assert '1/proc{}-0000-{}.fits'.format(A, FILTER) in names and 'notes.txt' not in names
 
 
 # ---------------------------------------------------------------------------- the overlay
@@ -319,7 +352,7 @@ def test_a_failed_rerun_is_reported_and_can_be_cleared(env, capsys):
     assert restage.load_record(env.base, TEL, NIGHT, A) is None
     assert snapshot(env.v2()) == v2_before
     (d,) = os.listdir(env.sup(NIGHT, A))
-    assert restage.walk_files(env.sup(NIGHT, A, d)) == ['restage.json', 'superseded.json']
+    assert restage.walk_files(env.sup(NIGHT, A, d)) == ['restage.json', 'superseded.json', 'thinned.tsv']
 
 
 def test_a_night_restaged_in_place_is_published_whole_without_s1_holds(env):
@@ -329,13 +362,151 @@ def test_a_night_restaged_in_place_is_published_whole_without_s1_holds(env):
     rerun_t10(env, A)
     assert promote_night(env) == 0
     (v,) = verdicts(env)
-    # S1 sees only what no stage writes (the toy's per-frame _psf.png): clutter, which the policy sets aside
-    assert v['state'] == 'accepted' and v['decided_by'] == 'policy:v1:clutter-only', v['reasons']
-    assert 'S1 6 of its' in v['reasons'] and '_psf.png' in v['reasons'] and '_diff' not in v['reasons']
+    assert v['verdict'] == 'PROMOTE' and v['state'] == 'promoted', v['reasons']
     assert os.path.isdir(env.v2('output', NIGHT, A)) and not os.path.exists(env.v3('output', NIGHT, A))
     assert restage.load_record(env.base, TEL, NIGHT, A) is None       # the record went with the promotion
     assert any(os.path.exists(os.path.join(env.sup(NIGHT, A), d, 'restage.json'))
                for d in os.listdir(env.sup(NIGHT, A)))
+
+
+# ---------------------------------------------------------------------------- reruns from T9
+
+
+def frames(d):
+    return sorted(r for r in restage.walk_files(d) if r.startswith('1/proc') and r.endswith('.fits'))
+
+
+def with_roles(env, target, roles=True):
+    """The v2 stack catalogue as T8 writes it since 2026-03-31: a Gaia_Crossmatch table with TARGET_ROLE."""
+    cols = [fits.Column(name='GAIA_DR2_ID', format='25A', array=np.array([gaia_id(target)]))]
+    if roles:
+        cols.append(fits.Column(name='TARGET_ROLE', format='12A', array=np.array(['primary'])))
+    path = env.v2('output', NIGHT, target, '{}_stack_catalogue_{}.fits'.format(target.upper(), FILTER))
+    fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU.from_columns(cols, name='GAIA_CROSSMATCH')]).writeto(
+        path, overwrite=True)
+    return path
+
+
+def test_a_restage_from_t9_copies_the_frames_and_points_the_frame_lists_at_them(env):
+    promoted(env)
+    with_roles(env, A)
+    v2d = env.v2('output', NIGHT, A)
+    pm = os.path.join(v2d, '{}_stack_catalogue_pm_{}.fits'.format(A.upper(), FILTER))
+    open(pm, 'w').close()                                               # an old T9 product: never an input
+    v2_before = snapshot(env.v2())
+    assert stage(env, '--apply', first='9') == 0
+    d = env.v3('output', NIGHT, A)
+    got = set(restage.walk_files(d))
+    assert set(frames(d)) == set(frames(v2d)) and frames(d)
+    for rel in frames(d):                                               # copies: T9 writes WCS into them
+        assert not os.path.samefile(os.path.join(d, rel), os.path.join(v2d, rel))
+    cat = '{}_stack_catalogue_{}.fits'.format(A.upper(), FILTER)
+    assert not os.path.samefile(os.path.join(d, cat), os.path.join(v2d, cat))   # condense opens it read-write
+    assert not got & {os.path.basename(pm), '{}_{}_{}_output.fits'.format(gaia_id(A), FILTER, NIGHT)}
+    assert not [r for r in got if r.endswith(('.phot', '.ell', '.cat', '.png', '_diff.fits'))]
+    lines = open(os.path.join(d, '1', '{}_processed.dat'.format(FILTER))).read().split()
+    assert lines and all(x.startswith(os.path.join(d, '1') + os.sep) and os.path.exists(x) for x in lines)
+    # the toy's catalogue is target-named, as before 2026-10: T9 is told which one the night's products used
+    assert open(os.path.join(d, '.active_stack_catalogue_' + FILTER)).read().strip() == cat
+    rec = restage.load_record(env.base, TEL, NIGHT, A)
+    how = {e['rel']: (e['how'], e['edited']) for e in rec['files']}
+    assert how['.active_stack_catalogue_' + FILTER] == ('made', False)
+    assert all(how[r] == ('copy', True) for r in frames(d)) and how[cat] == ('copy', True)
+    assert how['1/{}_processed.dat'.format(FILTER)] == ('rewritten', False)
+    assert snapshot(env.v2()) == v2_before
+
+
+def test_a_restage_from_t8_brings_the_frames_but_none_of_t8s_products(env):
+    promoted(env)
+    assert stage(env, '--apply', first='8') == 0
+    d = env.v3('output', NIGHT, A)
+    got = set(restage.walk_files(d))
+    assert got == set(frames(d)) | {'1/{}_processed.dat'.format(FILTER)}
+    for rel in frames(d):
+        assert not os.path.samefile(os.path.join(d, rel), env.v2('output', NIGHT, A, rel))
+    assert not os.path.exists(os.path.join(d, '.active_stack_catalogue_' + FILTER))
+
+
+def test_clearing_a_restage_from_t9_drops_its_frame_copies_and_leaves_v2_alone(env):
+    promoted(env)
+    with_roles(env, A)
+    assert stage(env, '--apply', first='9') == 0
+    v2_before = snapshot(env.v2())
+    assert restage.main(['clear', '--base', env.base, '--queue-db', env.qdb, '--telescope', TEL, '--night', NIGHT,
+                         '--reason', 'not wanted', '--apply']) == 0
+    (d,) = os.listdir(env.sup(NIGHT, A))
+    left = restage.walk_files(env.sup(NIGHT, A, d))
+    assert not [r for r in left if r.startswith('1/proc')] and '1/{}_processed.dat'.format(FILTER) in left
+    assert snapshot(env.v2()) == v2_before and not os.path.exists(env.v3('output', NIGHT, A))
+
+
+def test_a_catalogue_from_before_target_roles_needs_a_rerun_from_t8(env, capsys):
+    promoted(env)
+    with_roles(env, A, roles=False)
+    assert stage(env, '--apply', first='9') == 1
+    assert 'rerun this night from T8' in capsys.readouterr().out
+    assert not os.path.exists(env.v3('output', NIGHT, A))
+    assert stage(env, '--apply', first='8') == 0
+
+
+def test_a_restage_from_t9_will_not_guess_between_stack_catalogues(env, capsys):
+    promoted(env)
+    with_roles(env, A)
+    other = env.v2('output', NIGHT, A, 'SP0451+0305_OLD_stack_catalogue_{}.fits'.format(FILTER))
+    open(other, 'w').close()
+    assert stage(env, '--apply', first='9') == 1
+    assert 'more than one' in capsys.readouterr().out and not os.path.exists(env.v3('output', NIGHT, A))
+    # a Gaia-named one the pipeline's own rule picks needs no record
+    import shutil
+    shutil.copy(with_roles(env, A), env.v2('output', NIGHT, A, '4123_Europa_andor_{}_stack_catalogue_{}.fits'.format(
+        NIGHT, FILTER)))
+    assert stage(env, '--apply', first='9') == 0
+    assert not os.path.exists(env.v3('output', NIGHT, A, '.active_stack_catalogue_' + FILTER))
+
+
+def test_a_rerun_from_t9_replaces_v2s_frames_and_their_files_and_nothing_else(env):
+    promoted(env)
+    with_roles(env, A)
+    v2d = env.v2('output', NIGHT, A)
+    before = snapshot(v2d)
+    old_frames = {r: os.stat(os.path.join(v2d, r)).st_ino for r in frames(v2d)}
+    assert stage(env, '--apply', first='9') == 0
+    copies = {r: os.stat(env.v3('output', NIGHT, A, r)).st_ino for r in frames(v2d)}
+    rerun_t9(env, A)
+    assert promote_night(env) == 0
+    (v,) = verdicts(env)
+    assert v['verdict'] == 'PROMOTE' and v['state'] == 'promoted', v['reasons']
+    after = snapshot(v2d)
+    for rel, ino in copies.items():                                    # the rerun's copies, with the new WCS
+        assert os.stat(os.path.join(v2d, rel)).st_ino == ino != old_frames[rel]
+        assert fits.getheader(os.path.join(v2d, rel))['CD1_1'] == 9.7e-5
+    rerun = {r for r in after if not os.path.isdir(os.path.join(v2d, r))} - set(
+        r for r in before if before[r] == after.get(r))
+    for rel in rerun:
+        assert rel.startswith(('1/proc', 'lightcurves', '1/' + FILTER + '_processed.dat_phot')) or \
+            rel.endswith(('_diff.fits', '_output.fits', '_pwv_processed.fits', '_pm_' + FILTER + '.fits')), rel
+    same = {r for r in before if before[r] == after.get(r) and not os.path.isdir(os.path.join(v2d, r))}
+    assert {'1/{}_processed.dat'.format(FILTER), '1/{}_stacked.dat'.format(FILTER),
+            '{}_stack_catalogue_{}.fits'.format(A.upper(), FILTER),
+            '{}_outstack_{}.fits'.format(A.upper(), FILTER)} <= same
+    # the old frames and per-frame files, set aside under <stamp>-overlay/1/, were thinned like any superseded copy
+    (od,) = [x for x in os.listdir(env.sup(NIGHT, A)) if x.endswith(promote.OVERLAY)]
+    left = restage.walk_files(env.sup(NIGHT, A, od, '1'))
+    assert left == [] and sum(1 for _ in open(env.sup(NIGHT, A, od, 'thinned.tsv'))) == 6 * 5
+    assert not os.path.exists(env.v3('output', NIGHT, A))
+
+
+def test_a_read_only_input_changed_by_a_rerun_from_t9_holds(env):
+    promoted(env)
+    with_roles(env, A)
+    assert stage(env, '--apply', first='9') == 0
+    rerun_t9(env, A)
+    lst = env.v3('output', NIGHT, A, '1', '{}_processed.dat'.format(FILTER))
+    with open(lst, 'a') as f:                                           # T9 only reads its frame list
+        f.write('extra\n')
+    assert promote_night(env) == 0
+    (v,) = verdicts(env)
+    assert v['verdict'] == 'HOLD' and 'O1 1 of the' in v['reasons'], v['reasons']
 
 
 # ---------------------------------------------------------------------------- S1 after a run from a later stage
@@ -346,8 +517,8 @@ def test_s1_does_not_hold_the_inputs_of_a_run_that_started_at_t10(env):
     start = now() - dt.timedelta(hours=2)
     env.toy.night(TEL, NIGHT, [A], start, pdf=False)
     d = env.v3('output', NIGHT, A)
-    for rel in restage.walk_files(d):     # the T10 run rewrites its own outputs; no stage writes the toy's _psf.png
-        if rel.endswith(('_diff.fits', '_psf.png')) or rel.startswith('lightcurves'):
+    for rel in restage.walk_files(d):                                 # the T10 run rewrites its own outputs
+        if rel.endswith('_diff.fits') or rel.startswith('lightcurves'):
             os.unlink(os.path.join(d, rel))
     rerun_t10(env, A, specified=False)
     assert promote_night(env, '--no-policy') == 0
@@ -361,8 +532,7 @@ def test_s1_still_holds_a_t10_output_the_run_from_t10_did_not_rewrite(env):
     d = env.v3('output', NIGHT, A)
     env.toy.target_dir('v3', TEL, NIGHT, A, aps=(8,))                 # an old aperture-8 curve
     for rel in restage.walk_files(d):
-        if (rel.endswith('_diff.fits') and not rel.endswith('_8_diff.fits')) or rel.startswith('lightcurves') or \
-                rel.endswith('_psf.png'):
+        if (rel.endswith('_diff.fits') and not rel.endswith('_8_diff.fits')) or rel.startswith('lightcurves'):
             os.unlink(os.path.join(d, rel))
     rerun_t10(env, A, specified=False)
     assert promote_night(env, '--no-policy') == 0
