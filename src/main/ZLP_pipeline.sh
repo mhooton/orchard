@@ -931,16 +931,10 @@ perform_differential_photometry(){
 pdf_report(){
     echo "Create PDF report for the night"
 
-    # Convert TARGET array items from double-hyphens to spaces for display
-    DISPLAY_TARGETS=""
-    for t in ${TARGET[*]}; do
-        if [ -z "$DISPLAY_TARGETS" ]; then
-            # Convert back from double-hyphens to spaces
-            DISPLAY_TARGETS="$(echo "$t" | sed 's/--/ /g')"
-        else
-            DISPLAY_TARGETS="$DISPLAY_TARGETS $(echo "$t" | sed 's/--/ /g')"
-        fi
-    done
+    # The report reads each target from its directory, so it gets the directory names as they are, separated by
+    # spaces: a space in a target's name is '--' there ('TOI-4336--c').  The report turns '--' back into a space
+    # for display.  Turning it into a space here split 'TOI-4336 c' into two targets, 'TOI-4336' and 'c', and the
+    # report never read TOI-4336--c.
 
     # One BLAS/OpenMP thread per process.  The report aligns the night's images
     # over a multiprocessing pool, and each worker otherwise sizes its own thread
@@ -957,7 +951,7 @@ pdf_report(){
         --datdir \"${DATDIR}\" \
         --obsdir \"${OBSDIR}\" \
         --date \"${DATE}\" \
-        --target \"${DISPLAY_TARGETS}\" \
+        --target \"${TARGET[*]}\" \
         --ap \"5\" \
         --telescope \"${TEL}\" \
         --version \"${VERSION}\" \

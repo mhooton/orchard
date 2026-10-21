@@ -90,6 +90,23 @@ DEFAULT_NPROC = int(os.environ.get('PDF_REPORT_NPROC', '1'))
 DEFAULT_ALIGN_TIMEOUT = float(os.environ.get('PDF_REPORT_ALIGN_TIMEOUT', '1800'))
 
 
+def target_dirs(args):
+    """The night's target directories under output/<date>/, in the order --target gives them.
+
+    ZLP_pipeline.sh passes the directory names, separated by spaces.  A space in a
+    target's own name is '--' in its directory (createlists.py), so 'TOI-4336 c'
+    arrives as 'TOI-4336--c'.  ZLP used to turn '--' back into a space first, and
+    the split then read that as two targets, 'TOI-4336' and 'c', neither of them
+    its directory: the target's stack, light curves and detail pages were missing.
+    """
+    return list(dict.fromkeys(args.target.split()))
+
+
+def display_name(target_dir):
+    """A target's name as the schedule spells it: its directory name with '--' back to a space."""
+    return target_dir.replace('--', ' ')
+
+
 def get_chronological_order(jdstart):
     order = np.argsort(jdstart)
     return order
@@ -97,7 +114,7 @@ def get_chronological_order(jdstart):
 
 def import_spids(fname, args):
     target_id = []
-    s = (args.target).split(" ")
+    s = [display_name(t) for t in target_dirs(args)]
     if os.path.exists(fname):
         data = ascii.read(fname)
         target_list = [d.upper() for d in data['Name']]
@@ -204,7 +221,7 @@ def import_night_img(args):
                    'ALTITUDE [deg]']
     names = ['FWHM', 'BKG SKYLEVEL', 'RA MOVE', 'DEC MOVE', 'AIRMASS', 'ALTITUDE']
 
-    s = (args.target).split(" ")
+    s = target_dirs(args)
     # targ_count = 0
     for i in s:
         tardir = args.datdir + "/output/" + args.date + "/" + i
@@ -434,7 +451,7 @@ def import_lcs(args):
     rmsflux = []
     newap = []
 
-    s = (args.target).split(" ")
+    s = target_dirs(args)
     for i in s:
         lcdir = args.datdir + "/output/" + args.date + "/" + i + "/lightcurves"
         bestap_pwv_file = glob.glob("%s/*_bestap_pwv.txt" % (lcdir))
@@ -1377,7 +1394,7 @@ def make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap
         targ_count = 0
         for i in order:
             ax = page.add_subplot(gs[1, targ_count * 2])
-            txt = gaia[i] + "\n (" + targs[i] + ")"
+            txt = gaia[i] + "\n (" + display_name(targs[i]) + ")"
             ax.text(0.5, 0.8, txt, size=12, fontweight='bold', ha="center")
             ax.axis('off')
 
@@ -1680,7 +1697,9 @@ if __name__ == '__main__':
     parser.add_argument('--datdir', required=True)
     parser.add_argument('--obsdir', required=True)
     parser.add_argument('-d', '--date', required=True)
-    parser.add_argument('-t', '--target', required=True)
+    parser.add_argument('-t', '--target', required=True,
+                        help="the night's target directory names under output/<date>/, separated by spaces "
+                             "(a space in a target's name is '--' there)")
     parser.add_argument('-a', '--ap', required=True)
     parser.add_argument('-tel', '--telescope', required=True)
     parser.add_argument('-v', '--version', required=True)
