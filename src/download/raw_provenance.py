@@ -50,8 +50,8 @@ def stamp_ingest(header, script):
 
 # --- FITS checksums by hand, for a header written as bytes ---------------------------------------------------------
 
-def read_header_bytes(path):
-    """The primary header exactly as stored (to the END card, padded to whole blocks), and its parse."""
+def header_bytes(path):
+    """The primary header exactly as stored: to the END card, padded to whole blocks."""
     chunks = []
     with open(path, 'rb') as f:
         while True:
@@ -60,8 +60,13 @@ def read_header_bytes(path):
                 raise ValueError('{}: no END card before the end of the file'.format(path))
             chunks.append(block)
             if any(block[i:i + 8] == b'END     ' for i in range(0, BLOCK, 80)):
-                raw = b''.join(chunks)
-                return raw, fits.Header.fromstring(raw.decode('ascii'))
+                return b''.join(chunks)
+
+
+def read_header_bytes(path):
+    """The primary header exactly as stored (header_bytes), and its parse."""
+    raw = header_bytes(path)
+    return raw, fits.Header.fromstring(raw.decode('ascii'))
 
 
 def ones_add(a, b):
@@ -128,6 +133,20 @@ def data_sum(path, offset, header):
             remaining -= len(chunk)
             total = ones_sum(chunk, total)
     return total
+
+
+def array_datasum(data):
+    """The DATASUM of the data unit astropy writes for `data`, a numpy array of floats or of signed integers wider
+    than a byte (which astropy writes unscaled), from memory: nothing is read from disk. A 32-bit word has the same
+    value whichever byte order holds it, so 4-byte items are summed as they are; other sizes go through their
+    big-endian bytes (a copy)."""
+    a = np.ascontiguousarray(data)
+    if a.dtype.kind not in 'fi' or a.dtype.itemsize < 2:
+        raise ValueError('astropy writes {} data scaled; sum the file instead'.format(a.dtype))
+    if a.dtype.itemsize == 4:
+        words = a.view(np.dtype('u4').newbyteorder(a.dtype.byteorder))
+        return ones_add(0, int(words.sum(dtype=np.uint64)))
+    return ones_sum(a.astype(a.dtype.newbyteorder('>')).tobytes())
 
 
 def claimed_datasum(raw_header, header):
