@@ -192,8 +192,10 @@ T2 writes the night's measurements to `reduction/readout.json`.
 `python -m calibration.readout <reduction dir>` prints them for any night without writing
 anything. Instruments without an overscan (SPIRIT, MOANA) keep the configured values.
 
-To do: nothing yet collects these values over time or flags a change of mode
-([#31](https://github.com/mhooton/orchard/issues/31)).
+`src/monitoring/monitoring.py` collects each night's mode, gain and bias level from `readout.json`
+every night (see [Detector trends](#detector-trends)) and lists mode changes and nights that disagree
+with `REGIMES`. Still to do from [#31](https://github.com/mhooton/orchard/issues/31): flagging a change
+in the daily digest or the night's email, and showing the series on the portal.
 
 ### Instrument-Specific Features
 
@@ -1345,13 +1347,28 @@ The pipeline generates comprehensive quality metrics tracked over time:
 
 ### Accessing QC Data
 
-Quality control metrics are stored in `/data/SPECULOOSPipeline/PipelineOutput/{VERSION}/{TELESCOPE}/reports/QC/`.
+`PipelineOutput/v2/{TELESCOPE}/reports/QC` is a per-night table of pass/fail checks written by the report
+stage, and `reports/{TELESCOPE}_{NIGHT}.pdf` is each night's report.
 
-View time-series plots:
+### Detector trends
 
-```bash
-ls /data/SPECULOOSPipeline/PipelineOutput/v3/Io/reports/QC/*.png
-```
+`src/monitoring/monitoring.py` runs from cron on appct every morning at 06:30
+(`src/jobqueue/cron/crontab.live`) and rewrites `PipelineOutput/v2/{TELESCOPE}/monitoring/` from every v2 night:
+
+| File | What |
+|------|------|
+| `monitoring_timeseries.csv` / `.txt` | one row per night: read noise, overscan level, dark current, readout mode, gain and its source, bias level, CCD temperature, PHOT_ZP |
+| `readoutnoise_log.pdf`, `readoutnoise_linear.pdf` | read noise (e⁻) from `reduction/readoutnoise.dat` |
+| `zeropoint.pdf` | overscan level (ADU) from `overscan.dat` (the name predates PHOT_ZP) |
+| `darkcurrent_log.pdf`, `darkcurrent_linear.pdf` | dark current (e⁻/s) from `darkcurrent.dat` |
+| `gain.pdf`, `readout_changes.txt` | gain and readout mode of the bias frames from `readout.json`, mode changes, disagreements with `readout.REGIMES` |
+| `ccdtemp.pdf`, `photzp.pdf` | median CCD-TEMP and PHOT_ZP (I+z; zYJ on SPIRIT) of the night's `*_5_diff.fits` |
+| `missing_data.txt` | nights with a reduction directory but no `.dat` files |
+
+Callisto's files carry `_ANDOR` or `_SPIRIT`, split on the measured SPIRIT spells in `jobqueue/config.py`.
+`readout.json` exists only for nights reduced since 2026-10-17, so the gain series fills in as the archive is
+rerun. The `_diff.fits` values are cached in `diff_values_cache.json` beside the plots, so a run only opens files
+that are new or rewritten. For a trial run, `--out-dir DIR` writes `DIR/{TELESCOPE}/monitoring` instead.
 
 ---
 

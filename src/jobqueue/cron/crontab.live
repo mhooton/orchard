@@ -21,3 +21,7 @@ SHELL=/bin/bash
 # queue/notify/outbox until notify.transport is smtp in queue/config.json (docs/job-queue.md, Notifications)
 10,40 * * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh alerts
 45 7 * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh digest
+
+# detector monitoring (added 2026-10-21): readout noise, overscan level and dark current per night from the v2
+# reduction/*.dat files, as plots and CSVs in PipelineOutput/v2/<tel>/monitoring/ (rewritten each run, ~7 min).
+30 06 * * * ulimit -u 2061801; docker exec orchard-server python /opt/orchard/src/monitoring/monitoring.py > "/home/speculoos/monitoring.out" 2>&1

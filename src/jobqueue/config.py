@@ -83,7 +83,7 @@ DEFAULTS = {
     'pipeline_sthresh': '2',
     'minutes_per_1000_frames': {'ANDOR': 69.0, 'SPIRIT': 22.0},
     'min_estimate_minutes': 15.0,
-    # Callisto carried SPIRIT on these nights (measured; monitoring.py's dates are wrong)
+    # Callisto carried SPIRIT on these nights (measured from frame dimensions; monitoring.py uses them too)
     'spirit_spells': [['20220111', '20220111'], ['20220115', '20220115'],
                       ['20220510', '20230315'], ['20250226', None]],
 
