@@ -48,6 +48,10 @@ try:
     from utils import orchard_version
 except Exception:
     orchard_version = None
+try:
+    from utils import telescope_faults
+except Exception:
+    telescope_faults = None
 
 
 def version_line():
@@ -1035,6 +1039,44 @@ def check_logs(args):
     return flags
 
 
+def night_faults(args):
+    """What the telescope lost this night (utils/telescope_faults.py): frames exposed with the mount stopped, and
+    pointing that walked away from where a block began, per target. Read from the night's raw frame headers, this
+    run's calibrated frames (T7's solutions), T7's WCS cache and the night's logs. None if that cannot be done; the
+    report then says 'unknown'."""
+    if telescope_faults is None:
+        return None
+    try:
+        basedir = os.path.dirname(os.path.dirname(os.path.abspath(args.obsdir)))
+        logs = sorted(glob.glob(os.path.join(args.datdir, 'logs', args.date + '_*.log')), key=os.path.getmtime)
+        faults = telescope_faults.night(
+            os.path.join(args.obsdir, 'images', args.date), logs,
+            processed=telescope_faults.processed_frames([os.path.join(args.datdir, 'output', args.date)]),
+            cache=telescope_faults.cache_path(basedir, args.telescope, args.date))
+    except Exception as e:
+        print('Could not check the night for telescope faults: %s' % e)
+        return None
+    for line in fault_lines(faults):
+        print('Telescope fault: ' + line)
+    try:            # for the queue's morning digest (jobqueue/digest.py)
+        telescope_faults.write_summary(telescope_faults.summary_path(args.datdir, args.date), faults,
+                                       args.telescope, args.date, version_line())
+    except Exception as e:
+        print('Could not record the telescope faults: %s' % e)
+    return faults
+
+
+def fault_lines(faults, limit=6):
+    """The night's telescope faults, a line each, for page 2; [] if none or unknown."""
+    if not faults or telescope_faults is None:
+        return []
+    eps = telescope_faults.episodes(faults)
+    lines = [telescope_faults.describe(e, faults[e['target']]['frames']) for e in eps[:limit]]
+    if len(eps) > limit:
+        lines.append('... and {} more'.format(len(eps) - limit))
+    return lines
+
+
 def clean(imgs, args,targs):
     if os.path.exists(imgs[0][1]):
         os.remove(imgs[0][1])
@@ -1077,7 +1119,8 @@ def clean(imgs, args,targs):
         targ_count += 1
 
 
-def make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap, flags, ellip, order,targs,gaia):
+def make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap, flags, ellip, order,targs,gaia,
+             faults=None):
     print('Creating PDF')
 
     version = version_line()
@@ -1162,52 +1205,53 @@ def make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap
     plt.close()
 
     # Page 2 - Events + Health Check + Master frames
+    # The telescope's own faults (utils/telescope_faults.py) sit in the events table beside the weather, and each
+    # episode gets a line under it: which target, when, which frames.
+    if faults is None or telescope_faults is None:
+        tracking_flag, drift_flag = 'unknown', 'unknown'
+    else:
+        tracking_flag, drift_flag = telescope_faults.flags(faults)
+    lines = fault_lines(faults)
     page = plt.figure(dpi=300, figsize=(11.69, 8.27))
-    height_ratios = [1, 1, 4]
+    height_ratios = [1, 0.55 + 0.17 * len(lines), 1, 4] if lines else [1, 1, 4]
     ncols = 2 + len(imgs[3])
-    gs = gridspec.GridSpec(ncols=ncols, nrows=3, height_ratios=height_ratios)
+    gs = gridspec.GridSpec(ncols=ncols, nrows=len(height_ratios), height_ratios=height_ratios)
     gs.update(wspace=0.02, hspace=0.02, left=0.05, bottom=0.05, right=0.95, top=0.95)
 
     ax = page.add_subplot(gs[0, :])
-    columns = ('Weather alert', 'Error(s)', 'Emergency Closure', 'Strong shaking', 'Data transfer', 'ESO report')
-    colours = (
-    'lightsteelblue', 'lightsteelblue', 'lightsteelblue', 'lightsteelblue', 'lightsteelblue', 'lightsteelblue')
-    data = [[flags[0], flags[1], flags[3], flags[4], flags[2], 'OK/KO [TBD]']]
+    columns = ('Weather alert', 'Error(s)', 'Emergency\nClosure', 'Strong shaking', 'Tracking lost',
+               'Pointing drift', 'Data transfer', 'ESO report')
+    colours = ('lightsteelblue',) * len(columns)
+    cells = [flags[0], flags[1], flags[3], flags[4], tracking_flag, drift_flag, flags[2]]
+    data = [cells + ['OK/KO [TBD]']]
     the_table = ax.table(cellText=data, colLabels=columns, loc='center', cellLoc='center', colColours=colours)
     the_table.auto_set_font_size(False)
     the_table.set_fontsize(10)
     for i in range(2):
-        for j in range(6):
-            the_table._cells[(i, j)].set_height(.3)
-    if (flags[0] == 'N'):
-        the_table._cells[(1, 0)]._text.set_color('green')
-    if (flags[0] == 'Y'):
-        the_table._cells[(1, 0)]._text.set_color('red')
-        the_table._cells[(1, 0)].set_text_props(fontproperties=FontProperties(weight='bold'))
-    if (flags[1] == 'N'):
-        the_table._cells[(1, 1)]._text.set_color('green')
-    if (flags[1] == 'Y'):
-        the_table._cells[(1, 1)]._text.set_color('red')
-        the_table._cells[(1, 1)].set_text_props(fontproperties=FontProperties(weight='bold'))
-    if (flags[3] == 'N'):
-        the_table._cells[(1, 2)]._text.set_color('green')
-    if (flags[3] == 'Y'):
-        the_table._cells[(1, 2)]._text.set_color('red')
-        the_table._cells[(1, 2)].set_text_props(fontproperties=FontProperties(weight='bold'))
-    if (flags[4] == 'N'):
-        the_table._cells[(1, 3)]._text.set_color('green')
-    if (flags[4] == 'Y'):
-        the_table._cells[(1, 3)]._text.set_color('red')
-        the_table._cells[(1, 3)].set_text_props(fontproperties=FontProperties(weight='bold'))
-    if (flags[2] == 'OK'):
-        the_table._cells[(1, 4)]._text.set_color('green')
-    if (flags[2] == 'KO'):
-        the_table._cells[(1, 4)]._text.set_color('red')
-        the_table._cells[(1, 4)].set_text_props(fontproperties=FontProperties(weight='bold'))
+        for j in range(len(columns)):
+            the_table._cells[(i, j)].set_height(.42 if i == 0 else .3)
+    for j, value in enumerate(cells):
+        if value in ('N', 'OK'):
+            the_table._cells[(1, j)]._text.set_color('green')
+        elif value in ('Y', 'KO'):
+            the_table._cells[(1, j)]._text.set_color('red')
+            the_table._cells[(1, j)].set_text_props(fontproperties=FontProperties(weight='bold'))
     ax.axis('off')
     ax.set_title('Special Events', y=0.9, fontweight='bold', size=12)
 
-    ax = page.add_subplot(gs[1, :])
+    row = 1
+    if lines:
+        ax = page.add_subplot(gs[1, :])
+        ax.axis('off')
+        h = height_ratios[1]                # the lines sit 0.17 height-ratio units apart, from the top of the row
+        ax.text(0.0, 1 - 0.12 / h, 'Frames lost to the telescope, not the pipeline:', size=9, fontweight='bold',
+                ha='left', va='center', transform=ax.transAxes)
+        for k, line in enumerate(lines):
+            ax.text(0.01, 1 - (0.12 + 0.17 * (k + 1)) / h, line, size=8, color='firebrick', ha='left',
+                    va='center', transform=ax.transAxes)
+        row = 2
+
+    ax = page.add_subplot(gs[row, :])
     columns = ('Overscan \n[ADU]', 'RON \n[el]', 'Dark current \n[el/sec/pix]', 'CCD Temp. \n[deg]', 'PA \n[deg]',
                'PSF Ellipticity', 'Readout \n[el/ADU]')
     colours = ('lightsteelblue',) * len(columns)
@@ -1333,14 +1377,14 @@ def make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap
     ax.axis('off')
     ax.set_title('Health Check', y=0.9, fontweight='bold', size=12)
 
-    ax = page.add_subplot(gs[2, 0])
+    ax = page.add_subplot(gs[row + 1, 0])
     if os.path.exists(imgs[1]):
         im = Image.open(imgs[1])
         ax.imshow(im, interpolation='nearest')
     else:
         ax.text(0.5, 0.5, 'No Masterbias', size=10, ha="center")
     ax.axis('off')
-    ax = page.add_subplot(gs[2, 1])
+    ax = page.add_subplot(gs[row + 1, 1])
     if os.path.exists(imgs[2]):
         im = Image.open(imgs[2])
         ax.imshow(im, interpolation='nearest')
@@ -1351,7 +1395,7 @@ def make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap
     ax.axis('off')
 
     for f in range(len(imgs[3])):
-        ax = page.add_subplot(gs[2, 2 + f])
+        ax = page.add_subplot(gs[row + 1, 2 + f])
         if os.path.exists(imgs[3][f]):
             im = Image.open(imgs[3][f])
             ax.imshow(im, interpolation='nearest')
@@ -1681,9 +1725,11 @@ def create_pdf(args):
     # target_ids = import_spids(fname, args)
     schedule = import_schedule(args)
     flags = check_logs(args)
+    faults = night_faults(args)
     imgs, vals, jdstart, jdend, nimages, newap, ellip, targs, gaia = import_images_and_vals(args)
     order = get_chronological_order(jdstart)
-    make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap, flags, ellip, order, targs, gaia)
+    make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap, flags, ellip, order, targs, gaia,
+             faults=faults)
     clean(imgs, args,targs)
     try:
         os.rmdir(temp_dir(args))
