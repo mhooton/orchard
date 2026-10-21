@@ -653,10 +653,12 @@ def test_night_faults_reads_the_mount_log_on_maxim_nights(tmp_path):
     args = _Args(str(base / 'PipelineOutput' / 'v3' / 'Callisto'))
     args.obsdir, args.telescope, args.date = str(base / 'Observations' / 'Callisto'), 'Callisto', '20230612'
     os.makedirs(os.path.join(args.datdir, 'reports', 'temp'))
-    faults_test.maxim_stop_night(args.obsdir, night_=args.date, telescope=args.telescope)
+    # the position log's clock 40 s ahead of the frames', as Europa's was in 2019; ACP's log beside it sets it back
+    faults_test.maxim_stop_night(args.obsdir, night_=args.date, telescope=args.telescope, lead=40)
     faults = rep.night_faults(args)
     (e,) = rep.telescope_faults.episodes(faults)
-    assert e['kind'] == 'tracking' and e['n'] == 25 and e['detail']['source'] == 'mount log'
+    assert e['kind'] == 'tracking' and (e['i0'], e['n']) == (21, 25) and e['detail']['source'] == 'mount log'
+    assert e['detail']['clock_offset'] == pytest.approx(40.0, abs=0.1)
     assert rep.telescope_faults.flags(faults)[0] == 'Y'
     assert "the mount's position log has it standing still" in rep.fault_lines(faults)[0]
 

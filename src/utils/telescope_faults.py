@@ -21,7 +21,8 @@ Tracking stopped
     positions once a second into technical_logs/<YYYY-MM-DD>/<TEL>_pos.csv (SSO from February 2019, Artemis
     September 2021 to June 2025). Tracking, the hour-angle axis turns at the sidereal rate; stopped, every axis
     stands still while the log's RA runs at 15 deg/h. On the Astra nights the log finds the stops TRACKING finds
-    (MountLog). Without either, T7 can tell, by failing frames as "Sources trailed" (astrom/pointer_wcs.py, v4.1.0).
+    (MountLog). Its clock is set against the frames' from the slews ACP's log also records (clock_offset()).
+    Without either, T7 can tell, by failing frames as "Sources trailed" (astrom/pointer_wcs.py, v4.1.0).
 
 Pointing drift
     Each solved frame's WCS puts the block's pointing (its header target position) somewhere on the detector.
@@ -69,8 +70,13 @@ LOW_ALTITUDE = 25.0       # deg: a stop this low may be the mount's altitude lim
 STILL_RATE = 0.1          # share of the sidereal rate below which the mount's log has an axis standing still
 LOG_STEP_MAX = 10.0       # s: a longer gap between the position log's lines (once a second) is a gap in the log
 LOG_COVER_MIN = 0.5       # share of an exposure the position log must cover to say whether the mount tracked
+SLEW_RATE = 0.05          # deg/s: an axis faster than this in the position log is slewing
+OFFSET_MATCH = 150.0      # s: an ACP slew and a slew in the position log further apart are not the same slew
+OFFSET_AGREE = 3.0        # s: slews whose clock differences agree this closely vote for the same clock offset
+OFFSET_VOTES = 2          # slews that must agree before the position log's clock is moved onto the frames'
 
 TRAILED = 'Sources trailed'
+ACP_SLEW = re.compile(r'^[^,]*,(\d{4})-(\d\d)-(\d\d),(\d\d):(\d\d):(\d\d),\s*Start slew to (.*?)\.*\s*$')
 CRPIX = re.compile(r'CRPIX=\(([-\d.eE+]+),([-\d.eE+]+)\)')
 CRVAL = re.compile(r'CRVAL=\(([-\d.eE+]+),([-\d.eE+]+)\)')
 GAIA = re.compile(r' Gaia: (\d+)')
@@ -463,6 +469,33 @@ def mount_log_path(obsdir, telescope, night_):
     return os.path.join(obsdir, 'technical_logs', day, '{}_pos.csv'.format(telescope))
 
 
+def acp_log_path(obsdir, telescope, night_):
+    """ACP's log of a night, beside the position log: <obsdir>/technical_logs/<YYYY-MM-DD>/<TEL>_ACP.txt (MaxIm DL
+    nights; only its header since Astra)."""
+    return mount_log_path(obsdir, telescope, night_)[:-len('_pos.csv')] + '_ACP.txt'
+
+
+def acp_slews(path):
+    """[(seconds since 1970, target)] of ACP's 'Start slew to' lines, by the ACP PC's clock, which also stamps the
+    frames. A line carries the night's date and the UT time, so a time before noon is the next day's. [] if the log
+    cannot be read."""
+    out = []
+    try:
+        with open(path, 'rb') as f:
+            for raw in f:
+                if b'Start slew to' not in raw:
+                    continue
+                m = ACP_SLEW.match(raw.decode('ascii', 'replace').rstrip('\r\n'))
+                if not m:
+                    continue
+                y, mo, d, h, mi, s = (int(g) for g in m.groups()[:6])
+                t = dt.datetime(y, mo, d, h, mi, s) + dt.timedelta(days=1 if h < 12 else 0)
+                out.append(((t - EPOCH).total_seconds(), m.group(7).strip()))
+    except (OSError, ValueError):
+        return []
+    return out
+
+
 def _wrap(deg):
     return (deg + 180.0) % 360.0 - 180.0
 
@@ -474,13 +507,19 @@ class MountLog(object):
     Between two lines the mount stood still if every axis moved at less than STILL_RATE of the sidereal rate: the
     instrumental hour-angle and declination axes, the altitude and the azimuth. Tracking, the hour-angle axis turns
     at the sidereal rate whatever the target's declination; stopped, all four stay fixed to 1e-4 deg while the
-    log's RA runs at 15 deg/h. Lines more than LOG_STEP_MAX seconds apart leave the time between them unknown."""
+    log's RA runs at 15 deg/h. Lines more than LOG_STEP_MAX seconds apart leave the time between them unknown.
+
+    The controller's clock is not the camera's. Before Astra the two differed by up to half a minute either way
+    (Europa 2019-04-21: the log 30 s behind ACP's; 2019-05-05: 31 s ahead), which moves a stop's edge by a frame and
+    makes the last frame before ACP turns tracking off look stopped. clock_offset() measures it from the slews both
+    logs record."""
 
     def __init__(self, path):
         limit = STILL_RATE * SIDEREAL_DEG_PER_H / 3600.0
         self._t, self._alt, self._az = [], [], []          # each line: seconds since 1970 (UTC), the mount's alt/az
         self._start, self._end, self._still = [], [], []    # each step between two lines
-        cols, prev = None, None
+        self.slews = []                                     # when each slew began (an axis faster than SLEW_RATE)
+        cols, prev, fast = None, None, False
         with open(path, 'rb') as f:
             for raw in f:
                 if raw.startswith(b'#'):
@@ -508,15 +547,42 @@ class MountLog(object):
                         self._start.append(prev[0])
                         self._end.append(t)
                         self._still.append(move < limit * step)
+                        if move > SLEW_RATE * step and not fast:
+                            self.slews.append(prev[0])
+                        fast = move > SLEW_RATE * step
                 prev = (t, alt, az, ha, dec)
                 self._t.append(t)
                 self._alt.append(alt)
                 self._az.append(az)
 
-    def exposure(self, start, seconds):
-        """{'idle', 'alt', 'az'} of an exposure (start: naive UTC datetime): the share of it the mount stood still,
-        and where the mount pointed half way through. None if the log covers less than LOG_COVER_MIN of it."""
-        t0 = (start - EPOCH).total_seconds()
+    def clock_offset(self, acp_path):
+        """Seconds the position log's clock runs ahead of the ACP PC's, which stamps the frames: the difference that
+        most of ACP's slews (acp_slews()) agree on, to OFFSET_AGREE, with a slew beginning in the log, if
+        OFFSET_VOTES or more do and no other difference has as many. None otherwise (no ACP log, as since Astra, too
+        few slews, or a tie). ACP slews to a target again a minute after acquiring it, to correct its pointing; the
+        log rarely sees so small a move as a slew, so a slew to the target of the slew before, within OFFSET_MATCH,
+        has no vote (Io 2019-05-15: acquisitions at +2 s, their corrections otherwise a tie at -50 s)."""
+        acp, prev = [], (None, None)
+        for t, target in acp_slews(acp_path):
+            if not (target == prev[1] and t - prev[0] <= OFFSET_MATCH):
+                acp.append(t)
+            prev = (t, target)
+        cands = [[x - a for x in self.slews if abs(x - a) <= OFFSET_MATCH] for a in acp]
+        votes = {k: sum(1 for c in cands if any(abs(x - k) <= OFFSET_AGREE for x in c))
+                 for k in range(-int(OFFSET_MATCH), int(OFFSET_MATCH) + 1)}
+        most = max(votes.values()) if votes else 0
+        best = [k for k, n in votes.items() if n == most]
+        if most < OFFSET_VOTES or best[-1] - best[0] > 2 * OFFSET_AGREE:
+            return None
+        mid = _median(best)
+        return _median([min(c, key=lambda x: abs(x - mid)) for c in cands
+                        if any(abs(x - mid) <= OFFSET_AGREE for x in c)])
+
+    def exposure(self, start, seconds, offset=0.0):
+        """{'idle', 'alt', 'az'} of an exposure (start: naive UTC datetime by the frames' clock, which the log's runs
+        `offset` seconds ahead of): the share of it the mount stood still, and where the mount pointed half way
+        through. None if the log covers less than LOG_COVER_MIN of it."""
+        t0 = (start - EPOCH).total_seconds() + (offset or 0.0)
         t1 = t0 + max(seconds or 0.0, 1.0)
         i = bisect.bisect_right(self._end, t0)
         still = known = 0.0
@@ -641,6 +707,8 @@ def _tracking_detail(run):
         detail['source'] = 'mount log'
         detail['altitude'] = round(_median([m['alt'] for m in logged]), 1)
         detail['azimuth'] = round(_median([m['az'] for m in logged]), 1)
+        offset = logged[0].get('clock_offset')
+        detail['clock_offset'] = None if offset is None else round(offset, 1)
     return detail
 
 
@@ -884,18 +952,22 @@ def target_faults(target, frames, processed=None, t7=None, cached=None):
             'solved': solved, 'noisy': noisy, 'episodes': episodes}
 
 
-def night(raw_dir, log_paths=(), processed=None, cache=None, frames=None, mount_log=None):
+def night(raw_dir, log_paths=(), processed=None, cache=None, frames=None, mount_log=None, acp_log=None):
     """The faults of one telescope-night: {target (OBJECT): target_faults()}. raw_dir is the night's raw frame
     directory; log_paths the night's pipeline logs, oldest first; processed {key: path} (processed_frames());
     cache the night's WCS cache table (cache_path()); frames the night's raw_frames(), if already read; mount_log
     the night's position log (mount_log_path()), read only if some light frame's header cannot say whether the
-    mount tracked."""
+    mount tracked, and acp_log ACP's log of the night (acp_log_path()), which sets the log's clock against the
+    frames'."""
     frames = raw_frames(raw_dir) if frames is None else frames
     if mount_log and any(f.light and f.tracking is None for f in frames):
         log = read_mount_log(mount_log)
+        offset = log.clock_offset(acp_log) if log is not None and acp_log else None
         for f in frames:
             if log is not None and f.light and f.tracking is None and f.time:
-                f.mount = log.exposure(f.time, f.exptime)
+                f.mount = log.exposure(f.time, f.exptime, offset)
+                if f.mount is not None:
+                    f.mount['clock_offset'] = offset
     t7 = t7_outcomes(log_paths) if log_paths else {}
     cached = wcs_cache(cache) if cache else {}
     by_target = {}

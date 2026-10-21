@@ -1145,7 +1145,8 @@ def night_faults(args):
             os.path.join(args.obsdir, 'images', args.date), logs,
             processed=telescope_faults.processed_frames([os.path.join(args.datdir, 'output', args.date)]),
             cache=telescope_faults.cache_path(basedir, args.telescope, args.date),
-            mount_log=telescope_faults.mount_log_path(args.obsdir, args.telescope, args.date))
+            mount_log=telescope_faults.mount_log_path(args.obsdir, args.telescope, args.date),
+            acp_log=telescope_faults.acp_log_path(args.obsdir, args.telescope, args.date))
     except Exception as e:
         print('Could not check the night for telescope faults: %s' % e)
         return None
