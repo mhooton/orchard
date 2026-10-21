@@ -22,6 +22,7 @@ SHELL=/bin/bash
 10,40 * * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh alerts
 45 7 * * * /appct/data/speculoos/orchard/src/jobqueue/cron/queue-cron.sh digest
 
-# detector monitoring (added 2026-10-21): readout noise, overscan level and dark current per night from the v2
-# reduction/*.dat files, as plots and CSVs in PipelineOutput/v2/<tel>/monitoring/ (rewritten each run, ~7 min).
+# detector trends (added 2026-10-21; README "Detector trends"): read noise, overscan level, dark current, readout mode
+# and gain, CCD temperature and PHOT_ZP for every v2 night, as plots and CSVs in PipelineOutput/v2/<tel>/monitoring/.
+# About a minute with its diff_values_cache.json there; ~17 min if that cache has to be rebuilt.
 30 06 * * * ulimit -u 2061801; docker exec orchard-server python /opt/orchard/src/monitoring/monitoring.py > "/home/speculoos/monitoring.out" 2>&1
