@@ -326,6 +326,31 @@ def test_make_pdf_with_readout_values(tmp_path):
             assert b'/Creator (orchard ' in f.read()
 
 
+def test_calibration_line_from_the_t1_selection(tmp_path):
+    """T1's <run>_calib_selection.json gives the line under the master frames (red when flagged)."""
+    import json
+    datdir = str(tmp_path)
+    args = _Args(datdir)
+    assert rep.calibration_line(args) == (None, False)          # a night reduced before the register
+    red = os.path.join(datdir, 'output', args.date, 'reduction')
+    os.makedirs(red)
+    record = {'bias': {'night': '20260922', 'delta_days': -2, 'n': 9},
+              'dark': {'night': '20260924', 'delta_days': 0, 'n': 21},
+              'flat': {'I+z': {'night': '20260925', 'delta_days': 1, 'n': 12}},
+              'flags': ['no night in this epoch has 4 usable flats in z'], 'errors': []}
+    with open(os.path.join(red, '1_calib_selection.json'), 'w') as f:
+        json.dump(record, f)
+    line, flagged = rep.calibration_line(args)
+    assert line == ('Calibrations: bias 20260922 (-2 d); dark 20260924; flat I+z 20260925 (+1 d)  [1 warning]')
+    assert flagged
+    os.makedirs(os.path.join(datdir, 'reports', 'temp'))
+    outname = os.path.join(datdir, 'reports', 'Io_20260924.pdf')
+    imgs, vals, jdstart, jdend, nimages, newap, ellip, targs, gaia, flags = _synthetic_inputs(1)
+    rep.make_pdf(imgs, outname, args, [], vals, jdstart, jdend, nimages, newap, flags, ellip,
+                 rep.get_chronological_order(jdstart), targs, gaia)
+    assert _page_count(outname) == 3 + 3
+
+
 # ------------------------------------------------ a space in a target's name
 
 # A space in a target's name is '--' in its directory (createlists.py).  On Ganymede 20250716 ZLP turned

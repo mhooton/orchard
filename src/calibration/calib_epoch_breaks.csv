@@ -1,0 +1,20 @@
+# Hand-maintained breaks in the calibration epochs (calibration/calselect.py): no calibration frame is used
+# across one.  Changes the headers already show need no row: a different camera (unbinned pixel size or shape,
+# e.g. Callisto ANDOR <-> SPIRIT), frame shape, binning, window, orientation (MaxIm FLIPSTAT vs Astra
+# ASTRAROT/ASTRAMIR) and readout mode.  Add a row for a change they do not show.
+#   applies_to: flat  the camera was turned or remounted on the telescope: the flat field changes, bias and
+#                     darks do not
+#               all   a different unit of the same camera model, or a serviced camera
+#   first_night: the first night (YYYYMMDD night label) of the new epoch
+# Rotations: theta_Y of the +Y axis from Gaia solves (mh_scratch/header_audit, 2026-10-16) and the WCS of the
+# register's sampled science frames (python -m calibration.calregister rotations <telescope>; checked against the
+# full register 2026-10-21: every row below is a sustained step there; the other jumps it lists revert the next
+# night - single frames with a bad WCS, or SPIRIT nights without one).
+telescope,first_night,applies_to,reason
+Io,20170618,flat,camera turned: theta_Y 182.3 -> 180.2 deg
+Io,20231211,flat,camera turned: theta_Y 180.3 -> 186.5 deg
+Europa,20231214,flat,camera turned: theta_Y 178.8 -> 174.4 deg
+Ganymede,20231210,flat,camera turned: theta_Y 179.8 -> 189.0 deg
+Callisto,20180221,flat,camera turned: theta_Y 181.7-183.2 -> 185.4 deg
+Callisto,20180925,flat,camera turned: theta_Y 185.4 -> 179.6 deg
+Artemis,20190427,flat,camera turned after the first night: theta_Y 179.8 -> 0.4 deg

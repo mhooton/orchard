@@ -12,6 +12,7 @@ for _thread_var in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'
 
 import argparse
 import glob
+import json
 import matplotlib
 import matplotlib.pyplot as plt
 from astropy.io import fits
@@ -48,6 +49,10 @@ try:
     from utils import orchard_version
 except Exception:
     orchard_version = None
+try:
+    from calibration import calselect
+except Exception:
+    calselect = None
 try:
     from utils import telescope_faults
 except Exception:
@@ -90,6 +95,22 @@ def version_line():
         return orchard_version.line() if orchard_version else ''
     except Exception:
         return ''
+
+
+def calibration_line(args):
+    """(text, flagged) saying which night each master calibration came from (T1's
+    <run>_calib_selection.json), or (None, False) for a night reduced without one."""
+    if calselect is None:
+        return None, False
+    reductdir = args.datdir + "/output/" + args.date + "/reduction"
+    for path in sorted(glob.glob(os.path.join(reductdir, '*_calib_selection.json'))):
+        try:
+            with open(path) as f:
+                record = json.load(f)
+            return calselect.report_line(record), bool(record.get('flags') or record.get('errors'))
+        except Exception:
+            continue
+    return None, False
 
 
 def temp_dir(args):
@@ -1521,6 +1542,12 @@ def make_pdf(imgs, outname, args, schedule, vals, jdstart, jdend, nimages, newap
         else:
             ax.text(0.5, 0.5, 'No Masterflat', size=10, ha="center")
         ax.axis('off')
+
+    # the night each master came from (borrowed ones with their distance in days)
+    cal_line, cal_flagged = calibration_line(args)
+    if cal_line:
+        page.text(0.5, 0.012, cal_line, ha='center', va='bottom', size=7, wrap=True,
+                  color='red' if cal_flagged else 'black')
 
     pdf.savefig(dpi=300)
     plt.close()

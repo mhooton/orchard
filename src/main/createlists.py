@@ -19,6 +19,12 @@ Output structure:
 - {runname}_dark.list - Dark frames
 - {runname}_flat_{filter}.list - Flat fields per filter
 
+Calibration frames come from the calibration register (calibration/calregister.py),
+which T1 first updates with this night's own frames: for each type the nearest
+compatible night on either side (calibration/calselect.py), never another camera,
+never several nights combined.  The choice is logged and written to
+{runname}_calib_selection.json; a night nothing can calibrate stops here.
+
 This is Stage T1 of the pipeline and must complete successfully before
 calibration stages can proceed.
 """
@@ -30,10 +36,10 @@ import sys
 from multiprocessing.dummy import Pool as ThreadPool
 from collections import defaultdict
 from functools import partial
-from datetime import datetime,timedelta
 from reporting.QC import main as QC
 # open_fits_file presents a Rice-compressed frame (.fz) as the plain file, its image and header in HDU 0
 from calibration.pipeutils import open_fits_file
+from calibration import calregister, calselect
 import warnings
 from astropy.io.fits.verify import VerifyWarning
 warnings.filterwarnings('ignore', category=VerifyWarning)
@@ -78,17 +84,17 @@ def get_liste(directory, root, ext):
     return (liste)
 
 
-def classify(files, logroot, runnumber):
+def classify(files, logroot, runnumber, telescope=''):
     pool = ThreadPool()
-    fn = partial(classify_file, logroot=logroot, runnumber=runnumber)
+    fn = partial(classify_file, logroot=logroot, runnumber=runnumber, telescope=telescope)
     results = pool.map(fn, files)
-    keys = ['dithered', 'science', 'dark', 'bias', 'flat', 'native_andor']
+    keys = ['dithered', 'science', 'dark', 'bias', 'flat', 'native_andor', 'meta']
     pool.close()
 
     return {key: sum([entry[key] for entry in results], []) for key in keys}
 
 
-def classify_file(filename, logroot, runnumber):
+def classify_file(filename, logroot, runnumber, telescope=''):
     out = defaultdict(list)
     #print filename
     try:
@@ -113,6 +119,8 @@ def classify_file(filename, logroot, runnumber):
                 dither = hdulist[0].header['DITHER']
             except:
                 dither = 'DISABLED'
+            # what the calibration register and the calibration choice need from the header
+            out['meta'].append((filename, calregister.header_fields(hdulist[0].header, telescope)))
         string = "%20s %10s %30s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), imtype, filename)
         result = write_log(logroot, runnumber, string, 2)
         # print(str.upper(imtype))
@@ -145,10 +153,10 @@ def refuse_native_andor(files):
                  len(files), NATIVE_ANDOR_SHAPE[0], NATIVE_ANDOR_SHAPE[1], files[0]))
 
 
-def sort_liste(liste, logroot, runnumber):
+def sort_liste(liste, logroot, runnumber, telescope='', with_meta=False):
     ### Sort images for bias, darks, flats, and scientific frames"""
     # print liste
-    classification = classify(liste, logroot, runnumber)
+    classification = classify(liste, logroot, runnumber, telescope)
     refuse_native_andor(classification['native_andor'])
     biaslist = classification['bias']
     darklist = classification['dark']
@@ -168,6 +176,8 @@ def sort_liste(liste, logroot, runnumber):
     string = string + "# \n"
     result = write_log(logroot, runnumber, string, 1)
     result = write_log(logroot, runnumber, string, 2)
+    if with_meta:
+        return (biaslist, darklist, flatlist, science, dithered), dict(classification['meta'])
     return (biaslist, darklist, flatlist, science, dithered)
 
 def sort_flatlist(liste):
@@ -298,6 +308,97 @@ def write_logstart(directory, imageroot, ext, run, runnumber):
     result = write_log(run, runnumber, string, 2)
     return (0)
 
+def relative_to(path, root):
+    rel = os.path.relpath(path, root)
+    return rel.replace(os.sep, '/')
+
+
+def science_readmodes(paths, telescope, night, n=5):
+    """Readout modes of up to n science frames spread through the night (from their overscan strips)."""
+    paths = sorted(paths)
+    step = max(1, len(paths) // n)
+    modes = []
+    for p in paths[::step][:n]:
+        info = calregister.read_frame(p, telescope, calregister.night_of(night) or night, stats='always')
+        if not info.get('error') and info.get('readmode'):
+            modes.append(info['readmode'])
+    return modes
+
+
+def dark_matching(telescop, instrument):
+    params = calregister._instrument_config().get('telescopes', {}).get(telescop, {}).get(instrument, {})
+    return bool(params.get('dark_matching_exptime', False))
+
+
+def choose_calibrations(tel, date, imageroot, outputroot, run, liste, biaslist, darklist, flatlist, sciencelist,
+                        meta):
+    """This night's bias, dark and flat lists, from the calibration register.
+
+    The night's own calibration frames are registered first (pixel statistics read here), so they compete with
+    every other night on equal terms and win whenever they are enough.  Returns (biaslist, darklist,
+    {filter: flats}).  A night without science frames keeps its own frames.  Exits (stopping the run) when
+    nothing in the register can calibrate the science frames.
+    """
+    flatdict_own = {}
+    for f in flatlist:
+        flatdict_own.setdefault((meta.get(f) or {}).get('filter') or '', []).append(f)
+    if not sciencelist:
+        print("No science frames: the calibration lists hold this night's own frames only")
+        return biaslist, darklist, flatdict_own
+
+    path = calregister.resolve_register_path(imageroot=imageroot)
+    try:
+        register = calregister.open_existing(path)
+    except calregister.RegisterError as e:
+        sys.exit("ERROR: T1 cannot choose calibrations for {} {}: {}. Build it with "
+                 "'python -m calibration.calregister build' or point {} at one ({}=1 to leave it "
+                 "unchanged).".format(tel, date, e, calregister.REGISTER_ENV, calregister.READONLY_ENV))
+    images_root = os.path.dirname(os.path.abspath(imageroot))
+    night_path = os.path.abspath(imageroot)
+    cal = biaslist + darklist + flatlist
+    science = [dict(meta[f], relpath=relative_to(f, night_path)) for f in sciencelist if f in meta]
+    try:
+        night_row, rows = calregister.register_rows_from_t1(
+            register, tel, date, night_path, [relative_to(f, night_path) for f in cal], science, len(liste))
+        print("Calibration register {}: {} {} {} bias, {} dark, {} flat frames of this night{}".format(
+            path, tel, date, night_row['n_bias'], night_row['n_dark'], night_row['n_flat'],
+            ' (read-only: not saved)' if register.readonly else ' registered'))
+        profile = calselect.science_profile(science)
+        majority = [f for f in sciencelist if (meta.get(f) or {}).get('config') == (profile or {}).get('config')]
+        modes = science_readmodes(majority, tel, date)
+        telescop = (profile or {}).get('telescop')
+        instrument = (profile or {}).get('instrument')
+        record = calselect.select(register, tel, date, images_root, rows, science, modes,
+                                  dark_matching=dark_matching(telescop, instrument),
+                                  tonight_detector=night_row['detector'])
+    finally:
+        register.close()
+
+    print("Calibrations chosen for {} {} (science: {}):".format(
+        tel, date, (record.get('profile') or {}).get('config')))
+    for line in calselect.describe(record):
+        print(line)
+    reddir = os.path.join(outputroot, date, 'reduction')
+    try:
+        print("Calibration choice written to " + calselect.write_record(record, reddir, run))
+    except OSError as e:
+        print("WARNING: could not write the calibration choice: " + str(e))
+    if record['errors']:
+        sys.exit("ERROR: T1 cannot calibrate {} {}: {}".format(tel, date, '; '.join(record['errors'])))
+
+    biaslist = list(record['bias']['frames'])
+    darklist = list(record['dark']['frames'])
+    flatdict = {f: list(e['frames']) for f, e in record['flat'].items()}
+    # this night's usable flats in filters no science frame needs are kept, as before (T5 may use them)
+    usable = {os.path.join(night_path, r['relpath']) for r in rows if r['kind'] == 'flat' and r['usable']}
+    for f, frames in flatdict_own.items():
+        if f not in flatdict:
+            mine = [x for x in frames if x in usable]
+            if mine:
+                flatdict[f] = mine
+    return biaslist, darklist, flatdict
+
+
 def main(args):
     # SRW: strips quotation marks so this script can be submitted
     #  as a queue job
@@ -329,193 +430,18 @@ def main(args):
         print("----------------------------","| Main (2)","| ",liste)
 
     #separate into lists based on whether the image is bias/dark/flat/science
-    (biaslist, darklist, flatlist, sciencelist, ditherlist) = sort_liste(liste, run, runnumber)
+    (biaslist, darklist, flatlist, sciencelist, ditherlist), meta = sort_liste(liste, run, runnumber, tel,
+                                                                               with_meta=True)
     write_log(run, runnumber, "# \n", 1)
     write_log(run, runnumber, "# \n", 2)
 
     fnames, scilists, filters, scifilt = sort_scilist(sciencelist)
-    filtnames, flatlists= sort_flatlist(flatlist)
-    print("Flat filters: ",filters)
     print("Science Image filters: ", scifilt)
 
-    dir = imageroot
-
-    # for the IR camera don't use bias and darks temporarily until the dimension issue is sorted
-    if False:
-    #if 'zYJ' in scifilt.values():
-        biaslist=[]
-        darklist=[]
-        print("WARNING: Infrared Camera, not using BIAS or DARK in calibration")
-    else:
-
-        #if there are no calibration images found on this night then look for them on previous nights
-        if len(biaslist) < 2:
-            new_biaslist = []
-            new_date = date
-            bcount = 0
-            while len(new_biaslist)<2:
-                bcount = bcount + 1
-                if bcount < 100:
-                    print("Not enough bias images found for " + str(new_date) + ". Searching for bias images taken on previous dates.")
-                else:
-                    break
-                date_form = (datetime.strptime(new_date, '%Y%m%d') - timedelta(days=1)).strftime('%Y%m%d')
-                dir = dir.replace(str(new_date),str(date_form))
-                new_date = str(date_form)
-                if os.path.exists(dir):
-                    print("Looking in directory: " + dir)
-                    if ext == "fz":
-                        liste = get_liste(dir, im, ext)
-                        (new_biaslist, new_darklist, new_flatlist, new_sciencelist, new_ditherlist) = sort_liste(liste, run,
-                                                                                                                 runnumber)
-                        if len(new_biaslist)==0:
-                            liste = get_liste(dir, im, "fits")
-                    else:
-                        liste = get_liste(dir, im, ext)
-                    (new_biaslist, new_darklist, new_flatlist, new_sciencelist, new_ditherlist) = sort_liste(liste, run, runnumber)
-            biaslist = new_biaslist
-            # darklist = new_darklist
-
-        dir = imageroot
-
-        if len(darklist) == 0:
-            new_darklist = []
-            new_date = date
-            dcount = 0
-            while len(new_darklist)==0:
-                dcount = dcount + 1
-                if dcount < 100:
-                    print("No dark images found for " + str(new_date) + ". Searching for dark images taken on previous dates.")
-                else:
-                    break
-                date_form = (datetime.strptime(new_date, '%Y%m%d') - timedelta(days=1)).strftime('%Y%m%d')
-                dir = dir.replace(str(new_date),str(date_form))
-                new_date = str(date_form)
-                if os.path.exists(dir):
-                    print("Looking in directory: " + dir)
-                    if ext == "fz":
-                        liste = get_liste(dir, im, ext)
-                        (new_biaslist2, new_darklist, new_flatlist, new_sciencelist, new_ditherlist) = sort_liste(liste,
-                                                                                                                  run,
-                                                                                                                  runnumber)
-                        if len(new_darklist)==0:
-                            liste = get_liste(dir, im, "fits")
-                    else:
-                        liste = get_liste(dir, im, ext)
-                    (new_biaslist2, new_darklist, new_flatlist, new_sciencelist, new_ditherlist) = sort_liste(liste, run, runnumber)
-            # biaslist = new_biaslist
-            darklist = new_darklist
-
-    # if there are no flat images found on this night then look for them on previous nights
-    # in addition if there are no flat images found for the correct filter look for these on
-    # previous nights as well
-
-    # filterlist = []
-    
-
-    
-    flatdict = {}
-    for i in range(len(filtnames)):
-        flatdict[filtnames[i]] = flatlists[i]
-
-    ######### TEST REMOVAL #########
-
-
-    # find if there are any science images with filters which do not have flats
-    # for f in filters:
-    #     dir = imageroot
-    #     print("Searching for flats in " + f)
-    #     if f not in filtnames:
-    #         # new_flatlist = []
-    #         new_date = date
-    #         fcount = 0
-    #         while f not in flatdict.keys():
-    #             fcount = fcount + 1
-    #             if fcount<30:
-    #                 print("No flat images found for filter " + f + " on " + str(new_date) + ". Searching for flat images taken on previous dates.\n")
-    #             date_form = (datetime.strptime(new_date, '%Y%m%d') - timedelta(days=1)).strftime('%Y%m%d')
-    #             dir = dir.replace(str(new_date),str(date_form))
-    #             new_date = str(date_form)
-    #             if os.path.exists(dir):
-    #                 print("Looking in directory: " + dir)
-    #                 if ext == "fz":
-    #                     liste = get_liste(dir, im, ext)
-    #                     (new_biaslist, new_darklist, new_flatlist, new_sciencelist, new_ditherlist) = sort_liste(liste,
-    #                                                                                                              run,
-    #                                                                                                              runnumber)
-    #                     if len(new_flatlist)==0:
-    #                         liste = get_liste(dir, im, "fits")
-    # 
-    #                 else:
-    #                     liste = get_liste(dir, im, ext)
-    #                 (new_biaslist, new_darklist, new_flatlist, new_sciencelist, new_ditherlist) = sort_liste(liste, run, runnumber)
-    #                 new_filtnames, new_flatlists = sort_flatlist(new_flatlist)
-    #                 for i in range(len(new_filtnames)):
-    #                     # print f
-    #                     # print new_filtnames
-    #                     if new_filtnames[i] == f:
-    #                         if new_filtnames[i] not in flatdict.keys():
-    #                             flatdict[new_filtnames[i]] = new_flatlists[i]
-    #                         else:
-    #                             flatdict[new_filtnames[i]].extend(new_flatlists[i])
-
-    ############################
-
-    # find if there are any science images with filters which do not have flats
-    for f in filters:
-        dir = imageroot
-        print("Searching for flats in " + f)
-        if f not in filtnames or len(flatdict[f]) < 4:
-            
-            new_date = date
-            fcount = 0
-            # Continue looping until both f is in flatdict and it has more than 3 entries
-            while f not in list(flatdict.keys()) or len(flatdict[f]) < 4:
-                fcount = fcount + 1
-                if fcount < 30:
-                    print("No sufficient flat images found for filter " + f + " on " + str(
-                        new_date) + ". Searching for flat images taken on previous dates.\n")
-                date_form = (datetime.strptime(new_date, '%Y%m%d') - timedelta(days=1)).strftime('%Y%m%d')
-                dir = dir.replace(str(new_date), str(date_form))
-                new_date = str(date_form)
-                if os.path.exists(dir):
-                    print("Looking in directory: " + dir)
-                    if ext == "fz":
-                        liste = get_liste(dir, im, ext)
-                        (new_biaslist, new_darklist, new_flatlist, new_sciencelist, new_ditherlist) = sort_liste(
-                            liste, run, runnumber)
-                        if len(new_flatlist) == 0:
-                            liste = get_liste(dir, im, "fits")
-                    else:
-                        liste = get_liste(dir, im, ext)
-
-                    (new_biaslist, new_darklist, new_flatlist, new_sciencelist, new_ditherlist) = sort_liste(liste,
-                                                                                                             run,
-                                                                                                             runnumber)
-                    new_filtnames, new_flatlists = sort_flatlist(new_flatlist)
-                    for i in range(len(new_filtnames)):
-                        if new_filtnames[i] == f:
-                            if new_filtnames[i] not in list(flatdict.keys()):
-                                flatdict[new_filtnames[i]] = new_flatlists[i]
-                            else:
-                                flatdict[new_filtnames[i]].extend(new_flatlists[i])
-                
-                
-                
-        # print flatdict
-
-                if fcount > 30:
-                    # if tel != "Europa":
-                    print("WARNING: No flat images found for " + f + " in the past 30 days \n")
-                        # break
-                    # else:
-                    #     print "No flat images found for " + f + " in the past 30 days \n"
-                    #     print "Europa is currently not taking flat images"
-                if fcount > (365*3):
-                    print("WARNING: No flat images found for " + f + " in the past 3 years \n")
-                    break
-
-
+    # calibrations are chosen for the science frames T6 will reduce (targets with an image list)
+    reduced = [f for frames in scilists if len(frames) > 4 for f in frames]
+    biaslist, darklist, flatdict = choose_calibrations(tel, date, imageroot, outputroot, run, liste, biaslist,
+                                                       darklist, flatlist, reduced, meta)
 
     #write list of bias image filenames to file "(run)_bias.list"
     print(biaslist)
@@ -547,7 +473,7 @@ def main(args):
         QC([0,reportroot + "/QC", date, field, tel, run, 'QC2', len(biaslist)])
         QC([0,reportroot + "/QC", date, field, tel, run, 'QC3', len(darklist)])
         try:
-            QC([0,reportroot + "/QC", date, field, tel, run, 'QC4', len(flatdict[scifilt[field]])])
+            QC([0,reportroot + "/QC", date, field, tel, run, 'QC4', len(flatdict[scifilt[field].replace("'", "")])])
         except:
             QC([0,reportroot + "/QC", date, field, tel, run, 'QC4', 0])
     # fnames, ditlists = sort_scilist(ditherlist)

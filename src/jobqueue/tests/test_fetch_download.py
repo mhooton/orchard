@@ -290,6 +290,30 @@ def test_download_only_fetch_lists_the_night_itself_and_queues_no_rerun(cfg, sto
     assert store.jobs() == []                                         # download only: nothing queued
 
 
+def test_a_fetch_that_adds_frames_registers_the_night_in_an_existing_calibration_register(cfg, store,
+                                                                                         monkeypatch):
+    from calibration import calregister
+    monkeypatch.setattr(calregister, 'mount_fstype', lambda path, mounts_file=None: None)
+    night = '20250412'
+    d = os.path.join(cfg['basedir'], 'Observations', 'Europa', 'images', night)
+    put(os.path.join(d, 'SPECU2.2025-04-12T10:00:00.000.fits'), image_bytes(nx=40, ny=30, IMAGETYP='Bias Frame'))
+    monkeypatch.setattr(jobs, '_archive', lambda cfg: Archive([]))
+    added = {'requested': 1, 'downloaded': 1, 'added': 1, 'added_science': 0, 'settled': [], 'failed': {},
+             'retry_later': []}
+    monkeypatch.setattr(jobs, 'fetch_rows', lambda *a, **kw: dict(added))
+    path = calregister.default_register_path(cfg['basedir'])
+    assert jobs.fetch(cfg, store, 'Europa', night, None, 'none') == 0
+    assert not os.path.exists(path)                                   # never creates one
+    calregister.Register(path, create=True, check_local=False).close()
+    assert jobs.fetch(cfg, store, 'Europa', night, None, 'none') == 0
+    reg = calregister.Register(path, readonly=True, check_local=False)
+    assert reg.night('Europa', night)['n_bias'] == 1 and reg.night('Europa', night)['method'] == 'hook'
+    reg.close()
+    cfg['calib_register_hook'] = False
+    monkeypatch.setattr(calregister, 'hook_register_night', lambda *a, **k: pytest.fail('hook ran'))
+    assert jobs.fetch(cfg, store, 'Europa', night, None, 'none') == 0
+
+
 def test_a_frame_filed_under_the_next_night_is_not_fetched_again(tmp_path):
     images = tmp_path / 'images'
     put(images / '20250608' / 'SPECU4.2025-06-08T14:58:00.000.fits', image_bytes())     # a morning dark, next dir
