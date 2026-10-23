@@ -31,6 +31,25 @@ a PR or an issue and delete it here. Started 2026-10-23, when development paused
 - **Distance limits.** Calibrations more than 30 days away are used and flagged. A hard limit per type, or a
   different number, may be wanted once the flags have been watched for a while.
 
+## Telescope faults
+
+- **ACP's pointing re-slews in the clock offset.** `MountLog.clock_offset()` (`src/utils/telescope_faults.py`)
+  gives -42 to -45 s on 38 Artemis nights where the position log's clock in fact runs 1-3 s ahead of ACP's. After
+  an autofocus, FocusMax slews to a focus star and back with no `Start slew to` line in ACP's log. ACP then takes a
+  pointing exposure and logs `[sync] telescope synced`, `Re-slew to target.` and `Start slew to <target>...`
+  (2021-09-10: acquisition 20:48:03, FocusMax's return slew 20:51:59, re-slew 20:52:46). The re-slew moves about an
+  arcminute, which the log does not show as a slew, and comes 4-5 min after the acquisition, outside the 150-s
+  same-target rule. So it pairs with the return slew and votes for -42 to -45 s, and on nights with two or three
+  targets those votes win. The fix: skip a `Start slew to` line that follows `Re-slew to target.` (5,384 of the
+  lines in Artemis's ACP logs do), keep the 150-s rule, and add a test with a synthetic Artemis-like night. Check
+  also the slews after a pointing exposure that did not solve (`Start slew to offset...`, then back to the target;
+  825 lines), which may mispair the same way. Validate in the container: 2021-09-10, 2021-12-13 and 2024-05-13
+  should come out near +2 s; 2021-09-12, 2023-08-15 and 2024-02-11 must stay at +2.0; Europa 2019-04-19 to 04-22
+  at -17 to -35 s and 2019-05-05 at +31 s. The module's offset for every Artemis night is in
+  `mh_scratch/artemis_tracking/census.jsonl`, an independent long-slew estimate in `clock_check.jsonl`, and
+  `slewpairs.py` there shows the pairing. With the corrected offsets the census finds the same stopped frames on
+  every night, so no report is wrong today; the fix keeps T11 right on archive reruns of MaxIm nights.
+
 ## Parked elsewhere
 
 - Issue #31: monitor readout mode, gain and read noise per night and make them visible.
