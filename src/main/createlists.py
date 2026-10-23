@@ -120,8 +120,7 @@ def classify_file(filename, logroot, runnumber, telescope=''):
             except:
                 dither = 'DISABLED'
             # what the calibration register and the calibration choice need from the header
-            header = hdulist[1].header if filename.endswith(".fz") else hdulist[0].header
-            out['meta'].append((filename, calregister.header_fields(header, telescope)))
+            out['meta'].append((filename, calregister.header_fields(hdulist[0].header, telescope)))
         string = "%20s %10s %30s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), imtype, filename)
         result = write_log(logroot, runnumber, string, 2)
         # print(str.upper(imtype))

@@ -215,8 +215,6 @@ class Chooser:
         for r in self._groups(kind).get(nd, []):
             if not r.get('usable') or r.get('config') != self.profile['config']:
                 continue
-            if r['compressed'] and nd != self.night_dir:
-                continue  # T2-T4 cannot read compressed raw frames; a compressed night keeps its own as before
             if kind in ('bias', 'dark') and self.profile.get('readmode') and r.get('readmode') != self.profile[
                     'readmode']:
                 continue
@@ -414,13 +412,14 @@ class Chooser:
 
 
 def resolver(images_root):
-    """Path of a register row's frame on disk (its recorded name, else the same stem uncompressed), or None."""
+    """Path of a register row's frame on disk: its recorded name, else the same stem plain or Rice-compressed
+    (raw frames are packed to X.fits.fz after a night's run since v5.0.0, and T2-T6 read either), or None."""
     def resolve(row):
         base = os.path.join(images_root, row['night_dir'])
         p = os.path.join(base, row['relpath'])
         if os.path.exists(p):
             return p
-        for s in ('.fits', '.fts', '.fit'):
+        for s in ('.fits', '.fts', '.fit', '.fits.fz', '.fts.fz', '.fit.fz'):
             q = os.path.join(base, row['stem'] + s)
             if os.path.exists(q):
                 return q

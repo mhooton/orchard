@@ -413,10 +413,23 @@ def test_spirit_exposure_without_darks_is_flagged_not_dropped():
     assert c.darks() is None and c.errors
 
 
-def test_stale_rows_and_compressed_frames_are_skipped():
+def test_stale_rows_are_skipped_and_compressed_frames_used():
+    # T2-T6 read Rice-compressed raw frames (v5.0.0), so a packed night is as good as any other
     rows = many('20250406', 'bias', 5) + many('20250405', 'bias', 5, compressed=1) + many('20250401', 'bias', 5)
     c = chooser(rows, resolve=lambda r: None if r['night'] == '20250406' else '/x')
-    assert c.bias()['night'] == '20250401' and c.stale == {'20250406'}
+    assert c.bias()['night'] == '20250405' and c.stale == {'20250406'}
+
+
+def test_resolver_follows_a_frame_packed_after_it_was_registered(tmp_path):
+    night = tmp_path / '20250405'
+    night.mkdir()
+    (night / 'SPECU1.x.fits.fz').write_bytes(b'')
+    (night / 'b.fts').write_bytes(b'')
+    resolve = cs.resolver(str(tmp_path))
+    row = {'night_dir': '20250405', 'relpath': 'SPECU1.x.fits', 'stem': 'SPECU1.x'}
+    assert resolve(row) == str(night / 'SPECU1.x.fits.fz')
+    assert resolve({'night_dir': '20250405', 'relpath': 'b.fits', 'stem': 'b'}) == str(night / 'b.fts')
+    assert resolve({'night_dir': '20250405', 'relpath': 'c.fits', 'stem': 'c'}) is None
 
 
 def test_far_choices_are_flagged():
