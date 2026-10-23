@@ -537,7 +537,8 @@ Sorts raw nightly observations into science targets and calibration frames based
 file under the data root): for each type the nearest compatible night on either side, never another
 camera, configuration or readout mode, never several nights combined (`src/calibration/calselect.py`).
 T1 registers its own night first and stops with an error when nothing can calibrate the night. See
-[docs/calibration-register.md](docs/calibration-register.md).
+[docs/calibration-register.md](docs/calibration-register.md). Ideas for later are collected in
+[docs/future-development.md](docs/future-development.md).
 
 ---
 
