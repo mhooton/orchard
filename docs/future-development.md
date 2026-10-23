@@ -31,6 +31,18 @@ a PR or an issue and delete it here. Started 2026-10-23, when development paused
 - **Distance limits.** Calibrations more than 30 days away are used and flagged. A hard limit per type, or a
   different number, may be wanted once the flags have been watched for a while.
 
+## Job queue
+
+- **`q add --kind promote` ignores `--dry-run`.** `cmd_add` (`src/jobqueue/cli.py`) hands `--kind promote` to
+  `cmd_add_promote` before any `--dry-run` check, and `cmd_add_promote` never reads the flag. So
+  `q add --class P2 --kind promote --after 1544-1670 --dry-run` really adds a promote job after each pipeline job it
+  names, and one for the night without `--after`. Found during the 2026-10-19 sweep of v3 into v2. The fix: with
+  `--dry-run`, `cmd_add_promote` prints what it would add, including where a promote job with the same dedupe key
+  (`promote:<tel>:<night>:<job or *>`) is already queued or running, and adds nothing. A test beside
+  `test_q_add_promote_queues_a_pipeline_run_without_T12_and_a_promote_job` in
+  `src/jobqueue/tests/test_promote_queue.py` should check that a dry run leaves the jobs table as it was. Until then,
+  check chains with a read-only query of queue.sqlite (`mh_scratch/promote_v3_20261019/chain_check.py`).
+
 ## Telescope faults
 
 - **ACP's pointing re-slews in the clock offset.** `MountLog.clock_offset()` (`src/utils/telescope_faults.py`)
