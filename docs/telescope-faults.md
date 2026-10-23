@@ -43,9 +43,9 @@ Each telescope's ASTELCO controller writes the mount's position once a second in
 `Observations/<TEL>/technical_logs/<YYYY-MM-DD>/<TEL>_pos.csv`, noon to noon UT, with the columns `jd, date, time,
 ALT, AZ, DEC, RA, DEC(inst.), HA(inst.), Target_Dist, Dome_AZ` (`Target_Dist` from mid-2019). The files come from
 the site every afternoon with the rest of the night's technical logs. They exist for the four SSO telescopes from
-February 2019 (Callisto from 02-13, the others from 02-20) and for Artemis from September 2021 to June 2025. Before
-2019 the SSO site logs hold only ESO's seeing and water-vapour logs. A few files hold only their header (Artemis
-2023-05-15).
+February 2019 (Callisto from 02-13, the others from 02-20) and for Artemis from 2021-08-25 to 2025-06-10. Artemis's
+files hold only their header from 2022-06-24 to 2023-07-28 and on 2022-03-15 to 03-18. Before 2019 the SSO site
+logs hold only ESO's seeing and water-vapour logs.
 
 Tracking, the mount's hour-angle axis turns at the sidereal rate, 0.25 degrees a minute, whatever the target's
 declination, and the altitude and azimuth follow the target. When the mount stops, every axis stands still. The
@@ -189,10 +189,12 @@ Each frame's WCS comes from the first of these that has one:
 ## The census
 
 Run over the archive on 2026-10-20 (headers and solutions) and 2026-10-21 (the position logs), read-only. Every
-episode is listed in `docs/telescope_faults_census.csv` (298 rows: telescope, night, kind, target, UT range, frames,
+episode is listed in `docs/telescope_faults_census.csv` (306 rows: telescope, night, kind, target, UT range, frames,
 minutes, detail). Scripts and raw output are in `mh_scratch/telescope_faults/` (`census_tracking.py`,
-`census_drift.py`) and `mh_scratch/sitelog_tracking/` (`census_sitelog.py`, `census_fix.py`, `crosscheck_track.py`,
-`trail_sample.py`, `*.jsonl`) on appct.
+`census_drift.py`), `mh_scratch/sitelog_tracking/` (`census_sitelog.py`, `census_fix.py`, `crosscheck_track.py`,
+`trail_sample.py`, `*.jsonl`) and, for Artemis, `mh_scratch/artemis_tracking/` (`acp_frames.py`,
+`census_artemis.py`, `clock_check.py`, `final_offsets.py`, `verify_frames.py`, `crosscheck_artemis.py`,
+`trail_artemis.py`, `census_final.jsonl`) on appct.
 
 ### Tracking stops
 
@@ -279,8 +281,91 @@ Three stops were at the altitude limit, here 23.5–24 degrees (Io 2023-05-02 an
 Europa 2022-02-01, a Chilean target).
 Not counted: Europa 2019-09-04 Gaijin-1 (157 frames), a manual observation after ACP's script was stopped at
 06:26 UT, with a trajectory running throughout, so probably deliberate; and four 1-s TEST exposures on engineering
-nights. SSO nights before February 2019, and Artemis, are not in this census: the former have no position log, and
-Artemis's frames are not at ESO.
+nights. SSO nights before February 2019 have no position log. Artemis's frames are not at ESO, so it has a census of
+its own (next section).
+
+### Tracking stops on Artemis
+
+Artemis (Teide, MaxIm DL throughout) has position logs from 2021-08-25 (regularly from 09-01) to 2025-06-10, but
+they hold only their header from 2022-06-24 to 2023-07-28. Its frames are not at ESO, so there is no inventory like
+SSO's, and its raw names (`Sp1356+4342-S001-R001-C012-I+z.fts`) carry no time. ACP's log, beside the position log,
+has what the census needs. Each plan image is an `Imaging to <name>` line, the raw frame's name, followed by
+`(taking N sec. exposure; <filter> filter; ...)` and `(starting exposure)`, by the ACP PC's clock, which also stamps
+`DATE-OBS`. Pointing, focus and calibration exposures have no `Imaging to` line. Checked against the raw headers on 7
+nights from 2021 to 2025 (182 frames read), `DATE-OBS` fell within 0.65 s of ACP's second, and `EXPTIME` and `OBJECT`
+agreed on every frame. Every light frame on disk had its ACP lines on those nights. When a target's plan is
+restarted, ACP reuses the image names, and the later frames overwrite the earlier ones (Cosmos_2539 on 2025-03-20).
+
+The census read the 936 nights with a position log. Artemis took 482,153 light frames on 646 of them, and the log
+covers 475,959. ACP's log lists 481,228 of the frames; on four nights its copy misses part of the night, and the 925
+frames on disk that it lacks were read from their headers instead. The log covers nothing on the 292 nights with
+frames in the header-only spell (218,000 frames) or on 49 nights with no position log at all (37,000 frames, 12 of
+the nights in October 2024). Artemis's nights before 2021-08-25 and after 2025-06-10 have no position log either, so
+T11 says `unknown` for them unless T7 finds trailed frames. On 9 of the covered nights (2024-08-02 to 2025-02-05) ACP
+took 4,609 frames that are not on disk: those nights have no images directory.
+
+**The clock.** Artemis's position log runs 1–3 s ahead of ACP's clock, with no spell like Europa's in 2019.
+`clock_offset()` finds 1.0–3.0 s on 396 of the 646 nights (median 2.0 s). On 212 it has too few slews and returns
+nothing, so T11 reads those nights with the offset 0. On 38 nights (2021–2025, 17 of them in 2024) it returns −42 to
+−45 s, which is wrong. Artemis focuses at the start of each block. FocusMax slews to a focus star and back, which
+the position log shows and ACP's log has no `Start slew to` line for. ACP then takes a pointing exposure and slews
+to the target again, a move of about an arcminute that the log does not show. Its `Start slew to` line therefore
+comes 43 s after FocusMax's return slew. This happens 4–5 minutes after the acquisition, so the 150-s exclusion of
+a second slew to the same target does not catch it, and on nights with two or three targets these pairs outvote
+the acquisitions. The census pairs instead each ACP slew that took 15 s or more, from `Start slew to` to `(slew
+complete)`, with the longest motion the log shows within 150 s of it, and takes the median of the pairs within
+−5 to +10 s, a far pair being a mispairing. That gives +1 to +3 s on all 38 nights, and +1 to +5 s on 151 of the
+212 nights without an offset. The census uses those offsets, and 0 on the other 61. Read with
+`clock_offset()`'s own offsets, as T11 reads them now, every night has the same frames stopped, so the wrong
+offsets change no report here.
+
+| Year | Artemis |
+|---|---|
+| 2021 | 1 / 90 (1 h) |
+| 2022 | 0 / 107 |
+| 2023 | 2 / 74 (4 h) |
+| 2024 | 0 / 242 |
+| 2025 | 1 / 133 |
+
+*Nights with a stop / Artemis nights the log covers (hours of frames lost).*
+
+Four stops on four nights, 691 frames on disk and 5 hours, all at one limit of the mount's hour-angle axis. In the
+646 nights the log shows no other stop, nothing like the drive failures on Callisto and Ganymede. Four single
+frames, none of them saved, are not faults.
+
+- **The hour-angle limit.** All four stops were on targets far north: TOI-2267.02 and .03 at declination +85, and
+  TOI-2096 at +75. Each block began with the target on the far side of the pole, 6.9–8.3 h east of the meridian,
+  and the mount's hour-angle axis past 180 degrees (`HA(inst.)` 236–257 in the log). The axis turned at the
+  sidereal rate until it read 265.0 degrees, the target then 6.3 h east, and stopped there, 0.5–2 h after the
+  acquisition, while ACP kept exposing:
+  - 2021-09-12 TOI-2267.02, 23:39–00:45 UT, 197 frames to the block's end
+  - 2023-10-12 TOI-2267.02, 21:45–00:16 UT, 449 frames to the block's end
+  - 2023-10-31 TOI-2267.03, 20:31–21:51 UT, 38 frames to the block's end
+  - 2025-01-14 TOI-2096 (`_TOI2096` in the frames), 21:14–21:17 UT, 8 frames, until ACP's script was interrupted
+    at 21:18 UT. The 8th frame was cut short and not saved. The next run acquired the target again at 21:23 with the
+    axis on the other side of its range (−65 degrees at the block's end), and the mount tracked to the end.
+
+  On 2021-09-12 and 2025-01-14 the controller logged `ERR_TrajectoryNoPoints` (`Trajectory ran out of points`) as
+  the mount stopped; the 2023 stops left no event. ACP's plans do not know the limit. At declination +85 a stopped
+  mount trails stars by only 1.3 arcsec a second, so the 10-s frames of TOI-2267.02 show streaks of about 40 pixels.
+- **Not faults.** Three single frames at a restart of ACP: 2022-04-09 Sp1256-1257, 2024-12-03 Sp0320+1854 and
+  2025-01-29 TOI-7185.01. ACP's script was interrupted during the exposure (`The script was interrupted before
+  completion`), and tracking stopped until the next run turned it on again; on 2024-12-03 and 2025-01-29 the plan
+  that followed turned it off (`RUN STOPPED AT SPECIFIED QUIT TIME`, `turning tracking off for safety`). MaxIm did not
+  save these frames, and on 2024-12-03 and 2025-01-29 the next run gave the same name to a later frame. The fourth
+  was the last frame of 2023-10-08: 56 s into its 180 s the controller ended its trajectory (`Unexpected end of
+  trajectory execution`, `Tracking position bad`) and the mount went to its park position as the weather turned,
+  which ACP then reported (`Weather is unsafe!`). That frame was not saved either.
+
+Checked as for SSO. `CURRENT.TRACK` in the controller's status log was 0, no trajectory running, from the first
+frame to the last of all four stops. During the single frames the trajectory ended (2023-10-08, 2024-12-03) or none
+ran (2022-04-09), and on 2025-01-29 one started 148 s in, as ACP turned tracking on again. By their `DATE-OBS`,
+691 of the four stops' 692 frames are on disk as the exposures ACP logged (`verify_frames.py`); the other is
+2025-01-14's 8th. In the frames
+(`trail_artemis.py`: the frame before each stop, its first, middle and last frames, and the frame after), the stars'
+axis ratios are 2.9–17 inside the stops and 1.0–1.2 outside. The exception is the frame before the 2025-01-14 stop,
+at 2.5, during which the mount stopped. T11's own path, `night()` over the raw headers, finds the same 197 frames on
+2021-09-12.
 
 ### Pointing drifts
 
