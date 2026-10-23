@@ -9,6 +9,84 @@ K8 fixes have landed.
 Everything is standard-library Python 3.9 that runs inside `orchard-server` on appct. The ESO side reuses
 `download.request_eso.ESODownloader` and, for the nightly download, `download/SSO_download.py` itself.
 
+## Day-to-day operations
+
+What someone looking after orchard needs, without reading the rest of this page. The goal is that the servers are up
+and new nights are downloaded and processed; background reruns that fail can wait.
+
+### What runs by itself
+
+From the speculoos crontab on appct (`src/jobqueue/cron/crontab.live`), UK local time:
+
+| When | What |
+|---|---|
+| every 5 min | watchdog: restarts the dispatcher (and the `orchard-server` container) if either has stopped |
+| :10 and :40 | alerts: opens and resolves incidents, one email each way |
+| 05:00, 06:00, 06:30 | completeness check, survey hours, detector trends (`PipelineOutput/v2/<tel>/monitoring/`) |
+| 07:30 | daily report, `queue/reports/report_<date>.md` |
+| **07:45** | **the digest email**: what was processed in the last 24 h, what remains, open incidents, disk space |
+| every 30 min, 11:00–23:30 | ESO watcher: queues last night's download, pipeline run and promotion at P0 once its frames are at ESO |
+| 21:15 | look-back: re-checks the last 30 nights and fetches frames that arrived late (P1) |
+
+P0 and P1 always start before P2 and P3, so background work never delays a new night.
+
+### The daily check
+
+1. The 07:45 digest arrived. If it did not, that is the first thing to look into.
+2. Each telescope that observed last night appears under *Processed in the last 24 h*, with its pipeline and
+   promote jobs done. Weather and closed domes legitimately produce nothing.
+3. Any open incidents (in the digest, or as alert emails) are explained or reported.
+
+A quiet digest with last night processed means there is nothing to do.
+
+### Commands
+
+Log in through the jump server; appct is only reachable from appcs. The `orchard-server` container is always
+running, and `q` runs everything inside it (`docker exec -i -e ORCHARD_QUEUE_ROOT=/data/SPECULOOSPipeline/queue
+orchard-server python -m jobqueue ...`):
+
+```bash
+ssh -t speculoos@appcs.ra.phy.cam.ac.uk ssh appct
+alias q=/appct/data/speculoos/orchard/src/jobqueue/cron/q
+```
+
+Looking (safe at any time):
+
+```bash
+q status                          # dispatcher, classes, running and queued jobs, recent failures
+q show 3661                       # one job: what it is, its attempts and events
+ls -t /appct/data/SPECULOOSPipeline/queue/logs/jobs/2026-10/ | head            # job logs, a folder per month
+less /appct/data/SPECULOOSPipeline/queue/logs/jobs/2026-10/003661-pipeline-Europa-20261021-a1.log
+q notify incidents                # open incidents, the ones the alert emails are about
+q signatures                      # failed jobs grouped by the reason they failed
+q promote list --needs person     # publishing decisions left for a person
+docker ps                         # orchard-server must say Up
+df -h /appct/data/SPECULOOSPipeline /appct/data/SPECULOOSPipeline/PipelineOutput
+```
+
+Acting, only for nightly data (`--dry-run` first, then the same command without it):
+
+```bash
+q requeue 3661 --dry-run          # a failed nightly job, once; its promote job follows it
+q add --class P1 --telescope Europa --night 20261021 --download --promote --dry-run   # a missed SSO night
+q add --class P1 --telescope Artemis --night 20261021 --promote --dry-run             # Artemis: no ESO download
+```
+
+Any other Python goes through the container too, with container paths (`/data/SPECULOOSPipeline`,
+`/opt/orchard/src`), for example:
+
+```bash
+docker exec orchard-server python /opt/orchard/src/monitoring/monitoring.py
+```
+
+### Never
+
+- `q release deploy` or `q release activate`: they change the code every new job runs (see *Deploying code*).
+- Edit `queue/config.json` or the crontab, or print or edit any `.env` file.
+- Delete or move anything under `PipelineOutput/`, `Observations/` or `queue/`.
+- Queue reprocessing campaigns or run `--for-real` scripts from `mh_scratch/`.
+- Open `queue.sqlite` from appcs: it is NFS there. Only ever through `q` on appct.
+
 ## Why
 
 The completeness audit of 8–9 October 2026 found three things this addresses:

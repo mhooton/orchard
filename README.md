@@ -10,7 +10,7 @@ Orchard is a modernised, dockerised photometry pipeline originally developed for
 
 **Key Features:**
 - Multi-instrument support (ANDOR, SPIRIT NIR)
-- Automated nightly processing via cron jobs
+- Automated nightly processing through the appct job queue
 - Local Gaia DR3 catalogue for fast astrometric calibration
 - Proper motion corrections for multi-year baselines
 - PWV atmospheric correction for cool stars at Paranal
@@ -21,6 +21,21 @@ Orchard is a modernised, dockerised photometry pipeline originally developed for
 - SPECULOOS Southern Observatory: Io, Europa, Ganymede, Callisto (SSO)
 - SPECULOOS Northern Observatory: Artemis
 - SAINT-EX
+
+## Operating orchard day to day
+
+On appct, orchard runs itself through the job queue ([docs/job-queue.md](docs/job-queue.md)):
+
+- **ESO watcher** (every 30 min, 11:00–23:30 UK): queues last night's download, pipeline run and promotion to
+  `v2` as soon as the night's frames are at ESO; Artemis nights are queued when their transfer completes.
+- **Look-back** (21:15): re-checks the last 30 nights and fetches frames that reached ESO late.
+- **Watchdog** (every 5 min): restarts the dispatcher and the `orchard-server` container if they stop.
+- **Alerts** (:10 and :40): one email when a problem starts (failed nightly job, ESO unreachable, a dark
+  telescope, a stalled queue, low disk) and one when it clears.
+- **Digest** (07:45): what was processed in the last 24 h, what is still queued, open incidents, disk space.
+
+Where to look: the digest first, then `q status` on appct. The daily check, the commands with examples and what
+not to touch are in [docs/job-queue.md, "Day-to-day operations"](docs/job-queue.md#day-to-day-operations).
 
 ## Architecture
 
@@ -463,37 +478,45 @@ python water_vapour/water_vapour.py \
 
 #### Monitoring Pipeline Execution
 
-**Real-Time Monitoring:**
+On appct every run is a queue job: `q status` shows what is running and queued, `q show <id>` one job's history,
+and the morning digest summarises the last 24 hours. Each job's own output is kept per attempt and never
+overwritten:
 
 ```bash
-tail -f /data/SPECULOOSPipeline/PipelineOutput/v3/Io/logs/20260128_1_v3.log
+ls -t /appct/data/SPECULOOSPipeline/queue/logs/jobs/2026-10/ | head
+less /appct/data/SPECULOOSPipeline/queue/logs/jobs/2026-10/003661-pipeline-Europa-20261021-a1.log
 ```
 
-**Check Plate Solve Success Rate:**
+The pipeline's log for a night (all stages, overwritten by the next run of that night) is in
+`PipelineOutput/v3/<TEL>/logs/`. Inside the container:
 
 ```bash
-grep "SUCCESS\|FAILED" /data/SPECULOOSPipeline/PipelineOutput/v3/Io/logs/20260128_1_v3.log | \
-  awk '{print $NF}' | sort | uniq -c
+docker exec orchard-server tail -f /data/SPECULOOSPipeline/PipelineOutput/v3/Io/logs/20260128_1_v3.log
 ```
 
-**Identify Problem Frames:**
+Plate-solve success rate and failed frames for a night:
 
 ```bash
-grep "FAILED" /data/SPECULOOSPipeline/PipelineOutput/v3/Io/logs/20260128_1_v3.log
+docker exec orchard-server grep -c SUCCESS /data/SPECULOOSPipeline/PipelineOutput/v3/Io/logs/20260128_1_v3.log
+docker exec orchard-server grep FAILED /data/SPECULOOSPipeline/PipelineOutput/v3/Io/logs/20260128_1_v3.log
 ```
 
 ---
 
 #### Job Queue on appct
 
-`src/jobqueue/` is a priority queue for pipeline runs on appct, with an ESO watcher that queues each night as
-soon as its frames are at ESO and a daily 30-night look-back. It runs inside `orchard-server`:
+Since October 2026, nightly processing on appct is not started by cron lines that run `ZLP_pipeline.sh`
+directly. `src/jobqueue/` is a priority queue (P0 new nights, P1 look-back, P2 and P3 reruns) whose dispatcher
+starts every download, pipeline run, promotion and frame-packing job, pinned to a frozen code release. Run it
+through the wrapper, which does the `docker exec`:
 
 ```bash
-docker exec orchard-server python -m jobqueue status
+/appct/data/speculoos/orchard/src/jobqueue/cron/q status
 ```
 
-Design, shadow mode, the proposed crontab and the switch-over are in [docs/job-queue.md](docs/job-queue.md).
+Queue a night by hand with `q add` rather than running `ZLP_pipeline.sh` in the container, so that it takes the
+queue's locks and appears in the digest. Day-to-day use, the command line, notifications, deployment (`q release
+deploy`) and configuration are in [docs/job-queue.md](docs/job-queue.md).
 
 ---
 
