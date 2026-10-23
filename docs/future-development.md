@@ -50,6 +50,28 @@ a PR or an issue and delete it here. Started 2026-10-23, when development paused
   `slewpairs.py` there shows the pairing. With the corrected offsets the census finds the same stopped frames on
   every night, so no report is wrong today; the fix keeps T11 right on archive reruns of MaxIm nights.
 
+## Target identification
+
+- **Wrong-field nights go looking for a backup.** When the telescope pointed somewhere other than the target, T8
+  reports `PRIMARY_NOT_IN_FOV+COORD_NO_MATCH` and then restores a backup stack catalogue of the target's real
+  field, which can never land on the frames. Callisto 2024-10-28 to 10-31 (Sp0351-0052) pointed at Dec +0.879
+  instead of -0.879, 1.76 deg from the star (all four nights are in `docs/unrecoverable_nights.csv`). The rerun of
+  2024-10-29 (queue job 961) restored Io 2021-11-28's v2 catalogue, and condense crashed on it. Since #38 v2
+  catalogues are refused and that night stops at T8, but a current-format backup would still be restored, and T9
+  would be asked to measure positions 1.76 deg off the frames. The fix: before the backup search, test whether the
+  target's expected position (the coordinate fallback already propagates it with proper motion) lies inside the
+  solved footprint of tonight's stack. If not, stop with a status of its own (`PRIMARY_OUTSIDE_FIELD`, say),
+  search for no backup, and say in the log that the night belongs in the unrecoverable list. A test can use the
+  2024-10-29 stack's WCS (CRVAL 57.771, +0.875) with the target at (57.750, -0.882).
+- **Catching declination sign losses when they happen.** All four Callisto nights of a -00 deg target in 2024 lost
+  the sign. The other telescopes' 2024 nights of such targets are right (Ganymede 7, Io 3). Callisto has observed
+  no -00 deg target since, so whether it still happens is unknown; worth raising with SSO. A check in the daily
+  look-back of each night's header Dec sign against the Sp name (or the target list) would flag a new case the
+  next morning. The header scan (`reports/target_catalogue_stage1.txt`, 8 Oct) has four more Callisto nights
+  whose sign disagrees with the name, none checked or listed yet: Sp1500-0039 on 2018-06-02 (+0.658, another
+  -00 deg target), and three whole-sign flips in Callisto's first weeks: Sp1735+2634 2018-03-26, Sp1646+3434
+  2018-03-27 and Sp1235-1318 2018-04-23.
+
 ## Parked elsewhere
 
 - Issue #31: monitor readout mode, gain and read noise per night and make them visible.
