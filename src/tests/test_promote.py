@@ -457,6 +457,18 @@ def test_copy_no_overwrite_never_replaces(env):
     assert open(b).read() == 'one'
 
 
+def test_copies_are_made_for_names_near_name_max(env, tmp_path):
+    # an ACP-era night's log name runs to 251 characters (Callisto 20181011, targets test01..testPM); the old
+    # temporary name `.<basename>.promote-<pid>` overran NAME_MAX and the promotion failed, 'File name too long'
+    name = 'Callisto_20181011_' + 'x' * 229 + '.log'
+    assert len(name) == 251
+    src = tmp_path / 'src.log'
+    src.write_text('log\n')
+    path, copied = promote.copy_no_overwrite(str(src), str(tmp_path / 'logs' / name))
+    assert copied and os.path.basename(path) == name and open(path).read() == 'log\n'
+    assert os.listdir(tmp_path / 'logs') == [name]                                     # no temporary left
+
+
 def test_run_apply_over_several_nights_runs_one_child_per_night(env):
     start = now() - dt.timedelta(minutes=30)
     env.toy.night(TEL, '20010103', [A], start)

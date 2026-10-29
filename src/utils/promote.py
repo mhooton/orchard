@@ -176,6 +176,15 @@ def same_content(a, b):
         return False
 
 
+def tmp_beside(path):
+    """A temporary name in path's directory, unique to this process, for the copy-link-rename steps below.
+
+    The basename is cut to keep the name within NAME_MAX (255 bytes): an ACP-era night's log name runs to 251
+    characters (Callisto 20181011, targets test01..testPM), and the old `.<basename>.promote-<pid>` was refused
+    with 'File name too long'."""
+    return os.path.join(os.path.dirname(path), '.{}.promote-{}'.format(os.path.basename(path)[:200], os.getpid()))
+
+
 def copy_no_overwrite(src, dst):
     """Copy src to dst without ever replacing a file. An identical file already at dst counts as the copy; a
     different one sends the copy to dst with .2, .3, ... before the extension. Returns (path, copied)."""
@@ -187,7 +196,7 @@ def copy_no_overwrite(src, dst):
                 return path, False
             continue
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = os.path.join(os.path.dirname(path), '.{}.promote-{}'.format(os.path.basename(path), os.getpid()))
+        tmp = tmp_beside(path)
         shutil.copy2(src, tmp)
         try:
             os.link(tmp, path)          # fails if the name was taken meanwhile: never overwrites
@@ -1276,7 +1285,7 @@ class Promoter(object):
             kept = os.path.join(aside_dir, os.path.basename(plain))
             if not os.path.lexists(kept):
                 os.link(plain, kept)
-        tmp = os.path.join(os.path.dirname(plain), '.{}.promote-{}'.format(os.path.basename(plain), os.getpid()))
+        tmp = tmp_beside(plain)
         if os.path.lexists(tmp):
             os.unlink(tmp)
         os.link(copy, tmp)

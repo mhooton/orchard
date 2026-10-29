@@ -149,7 +149,10 @@ def create_targetlist(runtlist, stackdir, outdir, fname_tlist):
 
 
 def get_runtargetlist(runtlist):
-    data = ascii.read(runtlist, header_start=0, data_start=1)
+    # Both columns are names. Left to type inference, a list whose only row is a numeric target (asteroid
+    # 03200, Artemis 20221028) comes back as integers, and find_target_in_list's `i in targ` then raises
+    # TypeError for every later run on that telescope (136 Artemis jobs, 2026-10-26..29).
+    data = ascii.read(runtlist, header_start=0, data_start=1, converters={'Gaia_ID': str, 'SPECULOOS_ID': str})
     return data
 
 
