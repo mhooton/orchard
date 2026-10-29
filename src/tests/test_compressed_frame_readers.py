@@ -189,7 +189,7 @@ def test_sso_download_keeps_a_compressed_frame(tmp_path):
 
 def _function(name):
     text = open(ZLP).read()
-    start = text.index(name + '(){')
+    start = re.search(r'^' + re.escape(name) + r'\(\) ?\{', text, re.M).start()    # `name(){` or `name() {`
     return text[start:text.index('\n}\n', start) + 3]
 
 
@@ -214,6 +214,53 @@ def test_find_ext_takes_plain_frames_over_a_leftover_fz(tmp_path):
     for name in ('SPECU1.a.fits', 'SPECU1.b.fits'):
         (night / name).unlink()
     assert _bash(_function('find_ext') + 'IMGDIRS={}; find_ext'.format(night)).stdout.strip() == 'fz'
+
+
+def test_find_ext_is_empty_not_fatal_when_no_frame_is_at_the_top_level(tmp_path):
+    # Artemis 20261025: a manifest of dusk flats only, under AutoFlat/, and a text file at the top. find_ext set
+    # no extension and the unset variable killed the run under nounset before find_ext2 looked below.
+    night = tmp_path / '20261025'
+    (night / 'AutoFlat').mkdir(parents=True)
+    (night / 'AutoFlat' / 'AutoFlat-PANoon-I+z-Bin1-001-20261025.fits').write_bytes(b'')
+    (night / 'Data_Download.txt').write_bytes(b'')
+    out = _bash(_function('find_ext') + 'IMGDIRS={}; find_ext'.format(night))
+    assert out.returncode == 0 and out.stdout.strip() == '', out.stdout
+    out = _bash(_function('find_ext2') + 'IMGDIRS={}; find_ext2'.format(night))
+    assert out.returncode == 0 and out.stdout.strip() == 'fits', out.stdout
+    (night / 'AutoFlat' / 'AutoFlat-PANoon-I+z-Bin1-001-20261025.fits').unlink()
+    out = _bash(_function('find_ext2') + 'IMGDIRS={}; find_ext2'.format(night))
+    assert out.returncode == 0, out.stdout
+
+
+def test_create_bad_pixel_map_takes_another_targets_list_or_skips_t5(tmp_path):
+    # A requested target with fewer than 5 frames gets no image list from T1, and the missing file aborted the
+    # whole night under errexit (18 wave jobs, 2026-10-24..28). pipebadpixel.py reads one frame of the list for
+    # the detector's parameters, so any target's list serves; with none, T5 is skipped (T6 skips such targets).
+    red = tmp_path / 'output' / '20261024' / 'reduction'
+    red.mkdir(parents=True)
+    for name in ('1_MasterBias.fits', '1_MasterDark.fits', '1_MasterFlat_I+z.fits'):
+        (red / name).write_bytes(b'')
+    fake = tmp_path / 'bin'
+    fake.mkdir()
+    (fake / 'python').write_text('#!/bin/bash\necho "python $*" >> {}\n'.format(tmp_path / 'calls'))
+    (fake / 'python').chmod(0o755)
+    script = ('set -o errexit\n' + _function('create_bad_pixel_map')
+              + 'USE_EXISTING_CALIBRATIONS=0 OUTPUTDIR={} DATE=20261024 RUNNAME=1 SCRIPTDIR=/s report=r TEL=Io '
+                'i=Sp0510+2714\ncreate_bad_pixel_map\n'.format(tmp_path / 'output'))
+    env = {'PATH': str(fake) + os.pathsep + os.environ['PATH']}
+
+    out = _bash(script, env)
+    assert out.returncode == 0 and 'Skipping T5: no image list for any target' in out.stdout, out.stdout
+    assert not (tmp_path / 'calls').exists()
+
+    (red / '1_image_TOI-4201.01.list').write_text('frame.fits\n')
+    out = _bash(script, env)
+    assert out.returncode == 0 and 'END T5' in out.stdout, out.stdout
+    assert 'No image list for Sp0510+2714; building the bad pixel map from 1_image_TOI-4201.01.list' in out.stdout
+    calls = (tmp_path / 'calls').read_text()
+    assert 'python /s/calibration/pipebadpixel.py {} --caldir {} --darknames 1_MasterDark.fits ' \
+           '--flatnames 1_MasterFlat_I+z.fits'.format(red / '1_image_TOI-4201.01.list', red) in calls
+    assert 'python /s/reporting/report.py r 20261024 Sp0510+2714 Io 1 5' in calls
 
 
 def test_zlp_unpacks_a_compressed_night_for_the_run_and_repacks_it(tmp_path):

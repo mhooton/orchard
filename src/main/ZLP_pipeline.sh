@@ -345,7 +345,9 @@ find_ext(){
             fi
         done
     fi
-    echo ${extension}
+    # unset when the night has no frame at this level (a flats-only manifest, Artemis 20261025):
+    # nounset would abort the run before it can look lower down or build the masters
+    echo "${extension:-}"
 }
 
 # find the extension of images in directory - to ensure we have fits/fts files
@@ -360,7 +362,9 @@ find_ext2(){
           filename="${filename%.*}"
     done
 
-    echo ${extension}
+    # unset when the night has no frame at this level (a flats-only manifest, Artemis 20261025):
+    # nounset would abort the run before it can look lower down or build the masters
+    echo "${extension:-}"
 }
 
 create_master_bias() {
@@ -479,6 +483,24 @@ create_bad_pixel_map() {
 
     # Use target name directly since files are created with underscores
     IMAGELIST=${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_image_${i}.list
+    # pipebadpixel.py reads one frame of the list for the detector's parameters, so any target's list serves.
+    # A requested target with fewer than 5 frames gets no list from T1, and the missing file aborted the whole
+    # night under errexit (18 wave jobs, 2026-10-24..28): take another target's list, or skip T5 when no target
+    # has one (T6 then reports each missing list and skips that target).
+    if [ ! -f "${IMAGELIST}" ]; then
+        local other
+        for other in ${OUTPUTDIR}/${DATE}/reduction/${RUNNAME}_image_*.list; do
+            if [ -f "${other}" ]; then
+                IMAGELIST="${other}"
+                break
+            fi
+        done
+        if [ ! -f "${IMAGELIST}" ]; then
+            echo "Skipping T5: no image list for any target in ${OUTPUTDIR}/${DATE}/reduction"
+            return
+        fi
+        echo "No image list for ${i}; building the bad pixel map from $(basename "${IMAGELIST}")"
+    fi
 
     CMD="python ${SCRIPTDIR}/calibration/pipebadpixel.py ${IMAGELIST} --caldir ${OUTPUTDIR}/${DATE}/reduction --darknames $MASTERDARK --flatnames $MASTERFLAT --bpmname ${RUNNAME}_BadPixelMap.fits --biasname ${RUNNAME}_MasterBias.fits"
     echo ${CMD}
