@@ -124,14 +124,21 @@ class FITSImage(object):
         return fits.ImageHDU(self.data, name=self.name)
 
 def get_jd(fname):
+    """(fname, JD-OBS), or (fname, None) for a file that cannot be read.  imcore_list can die on a frame
+    (SIGSEGV on seven dawn frames of Callisto 20181025) and leave a zero-byte .phot; one such file stopped
+    the night's condense, and with it every later target."""
     # to print out all headers:
     #print(fits.getheader(fname))
-    return fname, fits.getheader(fname)['jd-obs']  #fits.getheader(fname)['mjd']
+    try:
+        return fname, fits.getheader(fname)['jd-obs']  #fits.getheader(fname)['mjd']
+    except OSError as e:
+        logger.warning(f"Excluding {fname} from processing: {e}")
+        return fname, None
 
 def sort_by_jd(files):
     pool = ThreadPool()
     mapping = pool.map(get_jd, files)
-    return [row[0] for row in sorted(mapping, key=lambda row: row[1])]
+    return [row[0] for row in sorted((m for m in mapping if m[1] is not None), key=lambda row: row[1])]
 
 
 def check_wcs_headers(source_header, filename):

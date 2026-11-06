@@ -571,6 +571,67 @@ def test_createlists_readonly_register_is_left_unchanged(callisto_archive, monke
     reg.close()
 
 
+def europa(path, imagetyp, level, cards=None, **kw):
+    return write_frame(path, imagetyp, level, telescop='', astra=dict({'ASTRAROT': 90}, **(cards or {})),
+                       flip=None, **kw)
+
+
+@pytest.fixture
+def windowed_night(tmp_path):
+    """Europa 20261029: 8 frames of a 300x300 2x2-binned window on a programme star and 6 full frames of the
+    survey target.  The night's bias, darks and I+z flats are full frames; no night has windowed ones."""
+    root = tmp_path / 'root'
+    night = root / 'Observations/Europa/images/20261029'
+    for i in range(5):
+        europa(str(night / 'SPECU2.2026-10-30T09:45:{:02d}.000.fits'.format(i)), 'Bias Frame', 0.0, exptime=0.0)
+    for i in range(4):
+        europa(str(night / 'SPECU2.2026-10-30T09:46:{:02d}.000.fits'.format(i)), 'Dark Frame', 5.0)
+        europa(str(night / 'SPECU2.2026-10-29T23:26:{:02d}.000.fits'.format(i)), 'FLAT', 30000.0)
+    for i in range(8):
+        europa(str(night / 'SPECU2.2026-10-29T23:56:{:02d}.000.fits'.format(i)), 'Light Frame', 500.0,
+               shape=(300, 300), binning=2, filt='V', exptime=3.0, obj='UCAC4_239-1466',
+               cards={'XORGSUBF': 744, 'YORGSUBF': 724})
+    for i in range(6):
+        europa(str(night / 'SPECU2.2026-10-30T00:17:{:02d}.000.fits'.format(i)), 'Light Frame', 500.0,
+               obj='Sp2347+2702')
+    cr.Register(cr.default_register_path(str(root)), create=True, check_local=False).close()
+    out = root / 'PipelineOutput/v3/Europa'
+    (out / 'output/20261029/reduction').mkdir(parents=True)
+    (out / 'reports').mkdir(parents=True)
+    return root
+
+
+def test_science_profile_passes_over_skipped_configurations():
+    science = [{'config': 'W', 'filter': 'V'}] * 3 + [{'config': 'F', 'filter': 'I+z'}] * 2
+    assert cs.science_profile(science)['config'] == 'W'
+    p = cs.science_profile(science, skip=['W'])
+    assert (p['config'], p['n'], p['filters'], p['other_configs']) == ('F', 2, {'I+z': 2}, {'W': 3})
+    assert cs.science_profile(science, skip=['W', 'F']) is None
+
+
+def test_createlists_passes_over_a_configuration_nothing_can_calibrate(windowed_night, monkeypatch):
+    monkeypatch.setattr(cr, 'mount_fstype', lambda path, mounts_file=None: None)
+    monkeypatch.delenv(cr.REGISTER_ENV, raising=False)
+    red, lists = run_t1(windowed_night, night='20261029', tel='Europa')
+    with open(os.path.join(red, '1_calib_selection.json')) as f:
+        rec = json.load(f)
+    # the window has more frames, but only the full frames can be calibrated: T1 goes on with those
+    assert rec['profile']['config'].startswith('2048x2088 b1x1') and not rec['errors']
+    assert [len(lists[k]) for k in ('1_bias.list', '1_dark.list', '1_flat_I+z.list')] == [5, 4, 4]
+    window = [c for c in rec['profile']['other_configs'] if c.startswith('300x300 b2x2 org744,724')]
+    assert len(window) == 1 and rec['profile']['other_configs'][window[0]] == 8
+    assert any(f.startswith('nothing can calibrate the 8 science frame(s) in ' + window[0]) and 'bias' in f
+               and rec['profile']['config'] in f for f in rec['flags'])
+    # the image lists are as before: T6 fails the windowed target and the run goes on with the other
+    assert len(lists['1_image_Sp2347+2702.list']) == 6 and len(lists['1_image_UCAC4_239-1466.list']) == 8
+    # with no bias anywhere no configuration can be calibrated: T1 stops, giving the majority's reasons
+    for p in (windowed_night / 'Observations/Europa/images/20261029').glob('SPECU2.2026-10-30T09:45:*'):
+        p.unlink()
+    with pytest.raises(SystemExit) as e:
+        run_t1(windowed_night, night='20261029', tel='Europa')
+    assert 'ERROR: T1 cannot calibrate Europa 20261029' in str(e.value) and '300x300 b2x2' in str(e.value)
+
+
 # ------------------------------------------------------------------------------------- calcompare
 
 def test_old_lists_are_read_whatever_prefix_they_used(tmp_path):

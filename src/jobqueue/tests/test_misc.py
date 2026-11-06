@@ -31,6 +31,15 @@ def test_signature_is_the_last_exception_normalised():
     assert not is_transient(sig, TRACE, 1, DEFAULTS)       # the per-frame [TIMEOUT] line is not the cause
 
 
+def test_pwv_trace_lines_are_not_the_failure_signature():
+    trace = ('PWV Failed: output array is read-only\n'
+             'PWV trace:   File "/opt/orchard/src/diff_photometry/SPlightcurve.py", line 3316, in main\n'
+             'PWV trace: ValueError: output array is read-only\n')
+    assert extract(trace + 'T8 failed for target Sp0000-0000 — skipping T9, T10\n', 1) == \
+        'T8 failed for target <target> — skipping T9, T10'
+    assert extract(trace, 1) == 'PWV Failed: output array is read-only'      # as before the trace was logged
+
+
 def test_signature_falls_back_to_error_lines_and_exit_code():
     assert extract('all good\nERROR: wcsfit failed for 12 frames\ndone\n', 2) == 'ERROR: wcsfit failed for # frames'
     assert extract('nothing useful\n', 3) == 'exit 3'

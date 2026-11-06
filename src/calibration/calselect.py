@@ -112,16 +112,21 @@ class Epochs:
 
 # ------------------------------------------------------------------------------------- the science frames
 
-def science_profile(science, readmodes=None):
+def science_profile(science, readmodes=None, skip=()):
     """What the calibrations must match: the science frames' majority configuration, its detector, filters,
-    exposure keys, median CCD temperature, instrument and readout mode."""
+    exposure keys, median CCD temperature, instrument and readout mode.  `skip` names configurations to pass
+    over (T1 skips the ones nothing can calibrate): the majority is taken among the rest, and the skipped
+    ones stay listed with the other configurations."""
     good = [s for s in science if not s.get('error') and s.get('config')]
     if not good:
         return None
     counts = {}
     for s in good:
         counts[s['config']] = counts.get(s['config'], 0) + 1
-    config = max(sorted(counts), key=lambda c: counts[c])
+    eligible = [c for c in sorted(counts) if c not in skip]
+    if not eligible:
+        return None
+    config = max(eligible, key=lambda c: counts[c])
     mine = [s for s in good if s['config'] == config]
     temps = [s['ccd_temp'] for s in mine if s.get('ccd_temp') is not None]
     modes = {}
@@ -428,10 +433,11 @@ def resolver(images_root):
 
 
 def select(register, telescope, night_dir, images_root, tonight_rows, science, science_readmodes,
-           dark_matching=False, tonight_detector=None, breaks=None, log=print):
+           dark_matching=False, tonight_detector=None, breaks=None, log=print, skip_configs=()):
     """Choose the night's bias, dark and flat frames.  Returns the selection record (see the module docstring);
-    record['errors'] non-empty means the night cannot be calibrated."""
-    profile = science_profile(science, science_readmodes)
+    record['errors'] non-empty means the night cannot be calibrated.  The calibrations follow the science
+    frames' majority configuration, or the majority of those not in skip_configs."""
+    profile = science_profile(science, science_readmodes, skip=skip_configs)
     record = {'telescope': telescope, 'night': night_dir, 'register': getattr(register, 'path', None),
               'rules_version': cr.RULES_VERSION,
               'minimum': {'bias': MIN_BIAS.get((science_profile(science) or {}).get('instrument'), MIN_BIAS_DEFAULT),

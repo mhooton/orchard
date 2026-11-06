@@ -691,6 +691,10 @@ LC_OUTCOME = {
     'off': 'WARNING: Effective Temperature is too low for reliable PWV correction: 1900K\n'
            'PWV Failed: No T_eff for target\n',
     'other': 'Performing PWV Correction\nPWV Failed: output array is read-only\n',
+    # since v5.1.2 SPlightcurve.py logs where an unexplained failure happened
+    'traced': ('Performing PWV Correction\nPWV Failed: output array is read-only\n'
+               'PWV trace:   File "/opt/orchard/src/diff_photometry/SPlightcurve.py", line 3316, in main\n'
+               'PWV trace: ValueError: output array is read-only\n'),
     'none': 'Traceback (most recent call last):\nValueError: no stars\n',
 }
 
@@ -733,6 +737,8 @@ def test_pwv_outcome_of_each_light_curve(cfg):
     assert scan('off', 'off')[1] == 'neutral' and scan('none')[1] == 'neutral'
     c, v = scan('other', 'other')
     assert (c['reason'], v) == ('output array is read-only', 'neutral')
+    c, v = scan('traced', 'ok')                       # the trace lines are not outcomes of their own
+    assert (c['n_lc'], c['n_other'], c['n_ok'], c['reason']) == (2, 1, 1, 'output array is read-only')
     assert scan()[0]['n_lc'] == 0
 
 
