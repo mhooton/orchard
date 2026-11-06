@@ -337,7 +337,7 @@ def choose_calibrations(tel, date, imageroot, outputroot, run, liste, biaslist, 
     The night's own calibration frames are registered first (pixel statistics read here), so they compete with
     every other night on equal terms and win whenever they are enough.  Returns (biaslist, darklist,
     {filter: flats}).  A night without science frames keeps its own frames.  Exits (stopping the run) when
-    nothing in the register can calibrate the science frames.
+    nothing in the register can calibrate the science frames in any of their configurations.
     """
     flatdict_own = {}
     for f in flatlist:
@@ -363,14 +363,35 @@ def choose_calibrations(tel, date, imageroot, outputroot, run, liste, biaslist, 
         print("Calibration register {}: {} {} {} bias, {} dark, {} flat frames of this night{}".format(
             path, tel, date, night_row['n_bias'], night_row['n_dark'], night_row['n_flat'],
             ' (read-only: not saved)' if register.readonly else ' registered'))
-        profile = calselect.science_profile(science)
-        majority = [f for f in sciencelist if (meta.get(f) or {}).get('config') == (profile or {}).get('config')]
-        modes = science_readmodes(majority, tel, date)
-        telescop = (profile or {}).get('telescop')
-        instrument = (profile or {}).get('instrument')
-        record = calselect.select(register, tel, date, images_root, rows, science, modes,
-                                  dark_matching=dark_matching(telescop, instrument),
-                                  tonight_detector=night_row['detector'])
+        # The calibrations follow one configuration of the science frames: the one most frames have, unless
+        # nothing can calibrate it and another one can be calibrated.  On Europa 20261029 the 187 frames of a
+        # 300x300 window (a high-cadence programme) outnumbered the survey target's 65 full frames; no night
+        # has windowed calibrations, and T1 refused the whole night.  Frames of the other configurations get
+        # no calibrations, as before: T6 fails their target and the run goes on.
+        skip, refused, first = [], [], None
+        while True:
+            profile = calselect.science_profile(science, skip=skip)
+            majority = [f for f in sciencelist
+                        if (meta.get(f) or {}).get('config') == (profile or {}).get('config')]
+            modes = science_readmodes(majority, tel, date)
+            telescop = (profile or {}).get('telescop')
+            instrument = (profile or {}).get('instrument')
+            record = calselect.select(register, tel, date, images_root, rows, science, modes,
+                                      dark_matching=dark_matching(telescop, instrument),
+                                      tonight_detector=night_row['detector'], skip_configs=skip)
+            first = first or record
+            untried = [c for c in ((record.get('profile') or {}).get('other_configs') or {}) if c not in skip]
+            if not record['errors'] or not untried:
+                break
+            refused.append((profile['config'], profile['n'], '; '.join(record['errors'])))
+            skip.append(profile['config'])
+        if record['errors']:
+            record = first      # no configuration can be calibrated: the reasons reported are the majority's
+        else:
+            for config, n, why in refused:
+                record['flags'].append(
+                    'nothing can calibrate the {} science frame(s) in {} ({}): the calibrations are chosen for '
+                    '{} instead'.format(n, config, why, record['profile']['config']))
     finally:
         register.close()
 

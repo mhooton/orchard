@@ -3317,6 +3317,12 @@ def main(date, targ_gaia, ap, filt, outfits, goutfits, globallc, binning, versio
                 if bw == False: target_lcurve.nlc_pwv_bw_mask = normalise(target_lcurve.nlc_pwv_bw_mask)
             except Exception as e:
                 print ("PWV Failed:",e)
+                # Where it failed: 'output array is read-only' (Callisto and Ganymede, about 1% of the light
+                # curves since 2026-10-09) has no known site.  The prefix keeps these lines out of the job's
+                # failure signature (jobqueue/signatures.py) and of the PWV tally (jobqueue/pwvlog.py).
+                if not str(e).startswith("no LHATPRO PWV data"):
+                    for line in traceback.format_exc().splitlines()[1:]:
+                        print("PWV trace: " + line)
         else:
             print("PWV Failed: No T_eff for target")
 
