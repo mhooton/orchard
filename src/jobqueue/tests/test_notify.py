@@ -51,10 +51,12 @@ def blocks(cfg, tel, night, rows):
                 target, minutes))
 
 
-def watch(store, tel, night, state, rows=0, transfer=None, targets=(), last_poll=None):
+def watch(store, tel, night, state, rows=0, transfer=None, targets=(), last_poll=None, by_type=None):
+    if by_type is None:
+        by_type = {'OBJECT': rows} if rows else {}
     store.watch_put({'telescope': tel, 'night': night, 'state': state, 'eso_rows': rows, 'transfer_count': transfer,
                      'polls_unchanged': 0, 'noted': 0, 'last_poll': last_poll,
-                     'data': {'targets': list(targets), 'by_type': {'OBJECT': rows} if rows else {}}})
+                     'data': {'targets': list(targets), 'by_type': by_type}})
 
 
 def job(store, tel, night, kind='pipeline', cls='P0', state='done', signature=None, note=None, campaign=None,
@@ -155,6 +157,27 @@ def test_digest_lines_for_each_kind_of_night(clean, store):
     # the failure also got its own alert
     alerts = [read(p) for p in files if '_alert-' in p]
     assert [a['Subject'] for a in alerts] == ['[orchard] Ganymede, night of 16 Oct 2026: pipeline job failed']
+
+
+def test_chilean_night_whose_calibrations_ran_is_not_flagged(clean, store):
+    """A Chilean night's calibrations still reach ESO, so the watcher queues the night and the pipeline runs on
+    them (Europa 3-7 Nov 2026). With no survey frames at ESO that is the Chilean night, not a night that lost its
+    light curves; a Chilean night that did get survey frames and no light curve is still flagged."""
+    cfg = clean
+    for tel, by_type in (('Europa', {'BIAS': 19, 'DARK': 50, 'FLAT': 26}),
+                         ('Ganymede', {'BIAS': 19, 'DARK': 36, 'OBJECT': 40})):
+        frames(cfg, tel, NIGHT, 95)
+        watch(store, tel, NIGHT, 'enqueued', rows=95, by_type=by_type)
+        job(store, tel, NIGHT, 'download')
+        job(store, tel, NIGHT)
+        blocks(cfg, tel, NIGHT, [('Ch_G29-38', 359.0)])
+
+    notifier(cfg, store).digest()
+    msg = [read(p) for p in outbox(cfg) if '_digest-' in p][0]
+    body = msg.get_content()
+    assert msg['Subject'] == '[orchard] Night of 16 Oct 2026: 1 needs attention'
+    assert '  Europa    95 calibration frames · Chilean night (6.0 h planned for Chile; not ours to download)' in body
+    assert '✗ Ganymede  95 frames, 1.6 h · pipeline finished, no light curves · done' in body
 
 
 def test_digest_names_the_frames_the_telescope_lost(clean, store):

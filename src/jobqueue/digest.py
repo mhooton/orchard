@@ -11,7 +11,9 @@ ESO yesterday afternoon and went through the pipeline then.
 
 A night with no survey frames is attributed, not explained:
   - SPOCK's Archive_night_blocks name Chilean-time blocks ch_...; a night planned mostly for Chile has no survey
-    frames by design (the downloader only asks ESO for 60.A-9009), so it is never a gap.
+    frames by design (the downloader only asks ESO for 60.A-9009), so it is never a gap. Its calibrations still
+    reach ESO and go through the pipeline, so a finished run with no light curve is Chilean, not a problem, when
+    ESO had no survey OBJECT frames for the night.
   - The four SSO telescopes share the weather. One that is dark while two others observe is down itself; when
     none observes it is the weather (or the site), and nobody here can act on it.
 """
@@ -149,6 +151,11 @@ class Context:
         total = p.get('survey', 0.0) + p.get('chilean', 0.0)
         return total > 0 and p['chilean'] / total >= float(self.n['chilean_min_fraction'])
 
+    def survey_frames(self, tel, night):
+        """ESO's count of survey science (OBJECT) frames at the watcher's last poll; None if it has no count."""
+        by_type = ((self.watch(tel, night) or {}).get('data') or {}).get('by_type')
+        return by_type.get('OBJECT', 0) if by_type else None
+
     def observed(self, tel, night):
         """True if the telescope took survey frames that night, False if not, None while the watcher still
         waits for them at ESO. The watcher's ESO counts first; older nights from light curves and frames on
@@ -179,6 +186,13 @@ def _frames_text(s):
     if s['span_h']:
         text += ', {:.1f} h'.format(s['span_h'])
     return text
+
+
+def _chilean_parts(ctx, tel, night, s):
+    """A Chilean night's line. What is on disk is calibrations, whose first-to-last span is not observing time."""
+    parts = ['{:,} calibration frames'.format(s['frames'])] if s['frames'] else []
+    return parts + ['Chilean night ({:.1f} h planned for Chile; not ours to download)'.format(
+        ctx.plan(tel, night)['chilean'] / 60.0)]
 
 
 def night_status(ctx, tel, night):
@@ -220,6 +234,8 @@ def night_status(ctx, tel, night):
             # ESO object names and Gaia-ID output directories are different namespaces: compare counts only
             n_t = max(len(targets), len(lcs))
             parts.append('light curves for {} of {} target{}{}'.format(len(lcs), n_t, '' if n_t == 1 else 's', when))
+        elif ctx.chilean(tel, night) and ctx.survey_frames(tel, night) == 0:
+            state, parts = 'chilean', _chilean_parts(ctx, tel, night, s)    # the pipeline ran on calibrations
         else:
             state, s['attention'] = 'no-lc', True
             parts.append('pipeline finished, no light curves' + when)
@@ -234,9 +250,7 @@ def night_status(ctx, tel, night):
         else:
             parts.append('waiting for frames at ESO' if sso else 'waiting for the night to arrive')
     elif not ctx.observed(tel, night) and ctx.chilean(tel, night):
-        state = 'chilean'
-        parts.append('Chilean night ({:.1f} h planned for Chile; not ours to download)'.format(
-            ctx.plan(tel, night)['chilean'] / 60.0))
+        state, parts = 'chilean', _chilean_parts(ctx, tel, night, s)
     elif not ctx.observed(tel, night):
         state = 'no-data'
         if sso:
