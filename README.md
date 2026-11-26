@@ -148,7 +148,11 @@ Telescope and instrument parameters are defined in `src/calibration/instrument_c
         }
       },
       "spirit": {
-        "gain": 5.09,
+        "gain": 4.77,
+        "gain_epochs": [
+          {"from": "2022-01-01T12:00:00", "gain": 5.06},
+          {"from": "2024-01-01T12:00:00", "gain": 4.77}
+        ],
         "saturation_threshold": 11000,
         "naxis2": 1280,
         "dark_matching_exptime": true,
@@ -206,6 +210,29 @@ October 2026):
 T2 writes the night's measurements to `reduction/readout.json`.
 `python -m calibration.readout <reduction dir>` prints them for any night without writing
 anything. Instruments without an overscan (SPIRIT, MOANA) keep the configured values.
+
+### Dated gains (`gain_epochs`)
+
+An instrument whose gain is known to have changed lists it by date, and
+`get_instrument_parameters()` gives each frame the gain of the epoch its `DATE-OBS`
+falls in (`JD-OBS`/`JD` if there is no `DATE-OBS`). Each epoch runs from its `"from"`
+(UTC) to the next one; boundaries sit at midday UTC so a night is never split. A frame
+with no usable date, or earlier than every epoch, keeps the plain `"gain"`, which is set
+to the latest epoch. T2 (read noise), T3/T5 (dark current) and T6 (`GAIN` in the frames)
+all take this value, so a night has to be reduced again from T1 to pick up a change.
+
+SPIRIT on Callisto (measured November 2026 from consecutive twilight-flat pairs of 2 s
+or less, so the dark current's own shot noise does not pull the gain down; longer pairs
+read up to 4% low):
+
+| Spell | Gain (e⁻/ADU) | Read noise | Nights measured |
+|-------|---------------|------------|-----------------|
+| 2022-01 to 2023-03 (MaxIm; −60 °C, −55 °C from 2023-02-13) | 5.06 (night to night 4.99–5.12) | 16.1 ADU, 82 e⁻ | 83 |
+| 2025-02 onwards (Astra; −50 °C, −60 °C 2025-03-17 to 04-27) | 4.77 (4.72–4.80) | 15.7 ADU, 75 e⁻ | 65 |
+
+The change is between the two spells, not with the set point: spell-2 nights at −60 °C
+give the same 4.78 as those at −50 °C. Before 2025-12-17 the configuration gave SPIRIT
+1.1 (from 2025-12-05) and, in older code, 1.0029: 116 nights reduced in 2025 carry those.
 
 `src/monitoring/monitoring.py` collects each night's mode, gain and bias level from `readout.json`
 every night (see [Detector trends](#detector-trends)) and lists mode changes and nights that disagree

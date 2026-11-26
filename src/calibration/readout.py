@@ -32,8 +32,9 @@ reduction directory; T6 (pipered.py) writes each frame's GAIN, RDNOISE, RON,
 SATURATE, READMODE, GAINSRC and OSNOISE into the calibrated frame.
 
 Instruments without a configured overscan (SPIRIT, MOANA) keep the config
-gain and saturation and the pipeline's original read-noise estimate; their
-READMODE is DEFAULT.
+gain (for the frame's date, when the config lists "gain_epochs") and
+saturation and the pipeline's original read-noise estimate; their READMODE is
+DEFAULT.
 
     python -m calibration.readout <reduction dir> [--night YYYYMMDD]
 measures a night and prints the record without writing anything.
