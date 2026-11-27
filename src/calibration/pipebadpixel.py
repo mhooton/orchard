@@ -68,6 +68,68 @@ def detect_flatbad_pixels(master_flat, flat_threshold):
 
     return flatbad_map
 
+def exposure_fit_rate(dark_dict, bad_pixel_map=None):
+    """
+    Dark current in ADU/s from a night's exposure-matched master darks, free of the offset they carry.
+
+    A master dark is stored per second, (dark - bias) / t.  A SPIRIT dark sits at an offset c from the master
+    bias (no overscan removes it; median 21 ADU, -12 to +180 over 595 nights 2022-2026), so the median of each master is
+    r + c/t: on Callisto 20251212 the 2 s master read 39.0 ADU/s, the 120 s one 24.2.  The total signal,
+    median x t = c + r t, is a straight line in t whose slope is the dark current r.  The slope is the
+    Theil-Sen estimate (median of the pairwise slopes), so one bad master does not move it (20220715's 68 s
+    master read 17.4 ADU/s against 9.5 at 60 s).
+
+    Parameters
+    ----------
+    dark_dict : dict
+        create_dark_dict()'s {exposure (s): master dark (ADU/s)}; a 'combined' entry is ignored.
+    bad_pixel_map : 2D bool array, optional
+        True = bad; those pixels are left out of each median.
+
+    Returns
+    -------
+    (rate, note) : rate in ADU/s and a line saying how it was found, or None when the night has fewer than two
+    exposure-matched masters (the caller keeps the single master's median).  A slope that is not finite and
+    positive gives the longest master's median instead.
+    """
+    exposures = sorted(k for k in dark_dict if isinstance(k, (int, float)) and not isinstance(k, bool))
+    if len(exposures) < 2:
+        return None
+
+    medians = []
+    for exposure in exposures:
+        dark = np.asarray(dark_dict[exposure], dtype=float)
+        if bad_pixel_map is not None and np.shape(bad_pixel_map) == dark.shape:
+            dark = dark[~np.asarray(bad_pixel_map, dtype=bool)]
+        medians.append(float(np.nanmedian(dark)))
+
+    t = np.array(exposures, dtype=float)
+    total = np.array(medians) * t
+    slopes = [(total[j] - total[i]) / (t[j] - t[i])
+              for i in range(len(t)) for j in range(i + 1, len(t)) if t[j] != t[i]]
+    rate = float(np.median(slopes)) if slopes else float('nan')
+
+    if not np.isfinite(rate) or rate <= 0:
+        return medians[-1], (f"longest master ({exposures[-1]} s), the fit over {len(exposures)} exposures "
+                             f"gave {rate:.3f} ADU/s")
+    offset = float(np.median(total - rate * t))
+    return rate, (f"slope over {len(exposures)} exposures {exposures[0]}-{exposures[-1]} s, offset {offset:.1f} ADU; "
+                  f"the {exposures[0]} s master alone reads {medians[0]:.2f} ADU/s")
+
+
+def uncleaned_dark_current(gain, dark_dict, dark_for_detection):
+    """Dark current in e-/s without a bad pixel map: the exposure fit when the night has one, else the
+    median of the master dark (the combined master on the Andors, unchanged)."""
+    fit = exposure_fit_rate(dark_dict)
+    if fit is not None:
+        darkc = float(gain) * fit[0]
+        print(f"Dark current (fitted, uncleaned): {darkc:.4f} e-/s ({fit[1]})")
+    else:
+        darkc = float(gain) * np.median(dark_for_detection)
+        print(f"Dark current (uncleaned): {darkc:.4f} e-/s")
+    return darkc
+
+
 def bad_pixel_maps(inlist, caldir, darknames, flatnames, bpmname, biasname):
     """
     Find bad pixels in the dark image based on a given threshold
@@ -96,7 +158,8 @@ def bad_pixel_maps(inlist, caldir, darknames, flatnames, bpmname, biasname):
     # Load master darks (needed for both BPM creation and dark current calculation)
     dark_dict = create_dark_dict(darknames)
 
-    # Select appropriate dark for detection/calculation (shortest exposure or combined)
+    # Dark for hot/cold pixel detection (shortest exposure or combined); also the dark current's source when the
+    # night has a single master (with two or more exposure-matched masters, see exposure_fit_rate)
     numeric_keys = [exp for exp in dark_dict.keys() if isinstance(exp, (int, float))]
     if len(numeric_keys) > 0:
         min_exposure = min(numeric_keys)
@@ -220,22 +283,24 @@ def bad_pixel_maps(inlist, caldir, darknames, flatnames, bpmname, biasname):
             fits.writeto(caldir + bpmname, bad_pixel_map.astype(int), header=orchard_version.stamp(fits.Header()),
                          overwrite=True)
 
-            # Calculate dark current with bad pixel correction
-            from calibration.pipeutils import clean_bad_pixels
-            cleaned_dark = clean_bad_pixels(dark_for_detection, bad_pixel_map)
-            darkc = float(gain) * np.nanmedian(cleaned_dark)
-            print(f"Dark current (cleaned): {darkc:.4f} e-/s")
+            # Calculate dark current with bad pixel correction: the slope over the exposure-matched masters
+            # when there are two or more (exposure_fit_rate), else the single master's cleaned median
+            fit = exposure_fit_rate(dark_dict, bad_pixel_map)
+            if fit is not None:
+                darkc = float(gain) * fit[0]
+                print(f"Dark current (fitted, bad pixels masked): {darkc:.4f} e-/s ({fit[1]})")
+            else:
+                from calibration.pipeutils import clean_bad_pixels
+                cleaned_dark = clean_bad_pixels(dark_for_detection, bad_pixel_map)
+                darkc = float(gain) * np.nanmedian(cleaned_dark)
+                print(f"Dark current (cleaned): {darkc:.4f} e-/s")
 
         else:
             print("No bad pixel correction requested. Skipping bad pixel correction.")
-            # Calculate dark current without bad pixel correction
-            darkc = float(gain) * np.median(dark_for_detection)
-            print(f"Dark current (uncleaned): {darkc:.4f} e-/s")
+            darkc = uncleaned_dark_current(gain, dark_dict, dark_for_detection)
     else:
         print("No bad pixel correction requested. Skipping bad pixel correction.")
-        # Calculate dark current without bad pixel correction
-        darkc = float(gain) * np.median(dark_for_detection)
-        print(f"Dark current (uncleaned): {darkc:.4f} e-/s")
+        darkc = uncleaned_dark_current(gain, dark_dict, dark_for_detection)
 
         # Write dark current to file
     with open(caldir + "darkcurrent.dat", "w") as f:
