@@ -2,9 +2,10 @@
 Unit tests for dated gains ("gain_epochs" in instrument_config.json).
 
 SPIRIT has no overscan, so readout.py cannot measure its readout per night and every stage
-(T2 read noise, T3/T5 dark current, T6 GAIN) takes the configured gain.  That gain changed
-between 2022 and 2023, so the config lists it by date and get_instrument_parameters() picks
-the epoch from the frame's own DATE-OBS.
+(T2 read noise, T3/T5 dark current, T6 GAIN) takes the configured gain.  That gain differs
+between SPIRIT's two spells on Callisto (5.06 e-/ADU in 2022-23, 4.77 since 2025; not an effect
+of the set point), so the config lists it by date and get_instrument_parameters() picks the
+epoch from the frame's own DATE-OBS.
 
 Run:  pytest src/tests/test_dated_gain.py -q
 """
