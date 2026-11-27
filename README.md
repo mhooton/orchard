@@ -644,7 +644,8 @@ Creates master dark frames to correct for thermal current. Supports two modes de
 - `{run}_MasterDark_{exptime}s.fits` (matched mode)
 - `darkcurrent.dat` (in e⁻/s)
 
-**Quality Metrics:** Typical dark current: 0.1-0.5 e⁻/s for ANDOR, 5-50 e⁻/s for SPIRIT
+**Quality Metrics:** Typical dark current: 0.1-0.5 e⁻/s for ANDOR; for SPIRIT about 85 e⁻/s at −60 °C, 110 at
+−55 °C and 110-135 at −50 °C (measured 2026-11 over 2022-2026). The `darkcurrent.dat` value comes from T5, below.
 
 ---
 
@@ -687,12 +688,23 @@ Identifies and maps bad pixels for interpolation during reduction. Currently onl
 2. Detect hot/cold pixels via sigma thresholding
 3. Detect flatbad pixels from normalised master flat
 4. Combine all maps (logical OR)
-5. Calculate cleaned dark current
+5. Calculate the dark current (e⁻/s, the night's gain × a rate in ADU/s):
+   - **two or more exposure-matched masters (SPIRIT):** the slope of median × t against t over the masters,
+     bad pixels left out (`exposure_fit_rate`). Each master is stored per second, (dark − bias) / t, and a SPIRIT
+     dark sits at an offset of roughly −50 to +180 ADU from the master bias (no overscan removes it), so a master's
+     median is r + offset / t and the shortest one overstates r. Until v5.3.0 T5 took the shortest master: a median
+     17% high over 66 sampled nights, up to 2.7× (Callisto 20251212: 186 e⁻/s from the 2 s master against a
+     fitted 114). The slope is a Theil–Sen estimate, so one bad master does not move it; a slope that is not
+     positive gives the longest master's median.
+   - **one master (every Andor night, one combined master):** its median, cleaned of bad pixels when the map is made.
+
+   The value goes into `DARKCUR` in the frames, the `DARK` column of the light-curve products, the T11 report and
+   the portal. The light-curve noise model does not use it.
 
 **Output:**
 - `{run}_BadPixelMap.fits` (boolean mask)
 - `hot_pixel_map.fits`, `cold_pixel_map.fits`, `flatbad_pixel_map.fits`
-- Updated `darkcurrent.dat` (with bad pixels masked)
+- Updated `darkcurrent.dat` (in e⁻/s)
 
 **Statistics:** Typical bad pixel fractions: <0.1% for ANDOR, 1-3% for SPIRIT
 
