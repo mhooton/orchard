@@ -116,7 +116,11 @@
         }
       },
       "spirit": {
-        "gain": 5.09,
+        "gain": 4.77,
+        "gain_epochs": [
+          {"from": "2022-01-01T12:00:00", "gain": 5.06},
+          {"from": "2024-01-01T12:00:00", "gain": 4.77}
+        ],
         "saturation_threshold": 11000,
         "naxis2": 1280,
         "dark_matching_exptime": true,

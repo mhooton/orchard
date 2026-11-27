@@ -151,6 +151,63 @@ def detect_instrument(hdul, trimmed=False):
         print(f"Warning: Could not detect instrument from header: {e}")
         return 'andor'
 
+def frame_obs_time(hdr):
+    """The frame's start time as a naive UTC datetime, or None.
+
+    DATE-OBS (ISO, as MaxIm and Astra write it) first, then JD-OBS / JD.
+    """
+    import datetime
+    value = hdr.get('DATE-OBS')
+    if value:
+        text = str(value).strip().rstrip('Z')
+        for fmt in ('%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d'):
+            try:
+                return datetime.datetime.strptime(text[:26], fmt)
+            except ValueError:
+                continue
+    for key in ('JD-OBS', 'JD'):
+        try:
+            jd = float(hdr.get(key))
+        except (TypeError, ValueError):
+            continue
+        if 2400000.5 < jd < 2500000.5:
+            return datetime.datetime(1858, 11, 17) + datetime.timedelta(days=jd - 2400000.5)
+    return None
+
+
+def resolve_dated_gain(params, hdr):
+    """Instrument parameters with 'gain' taken from 'gain_epochs' for the frame's date.
+
+    An instrument whose gain changed at known dates lists them in
+    instrument_config.json as
+        "gain_epochs": [{"from": "2022-01-01T12:00:00", "gain": 5.05}, ...]
+    in time order; each epoch holds from its "from" (UTC) until the next one.
+    Epoch boundaries sit at midday UTC, between observing nights, so a night
+    is never split.  A frame with no usable date, or one earlier than every
+    epoch, keeps the plain "gain".  Parameters without epochs are returned
+    unchanged (the same object); with epochs, a copy is returned.
+    """
+    epochs = params.get('gain_epochs') if isinstance(params, dict) else None
+    if not epochs:
+        return params
+    import datetime
+    when = frame_obs_time(hdr)
+    if when is None:
+        return params
+    gain = None
+    for epoch in epochs:
+        start = datetime.datetime.strptime(epoch['from'], '%Y-%m-%dT%H:%M:%S')
+        if when >= start:
+            gain = epoch['gain']
+        else:
+            break
+    if gain is None:
+        return params
+    resolved = dict(params)
+    resolved['gain'] = gain
+    return resolved
+
+
 def get_instrument_parameters(hdul, trimmed=False):
     """
     Get instrument parameters from config file given a FITS HDUList
@@ -176,7 +233,7 @@ def get_instrument_parameters(hdul, trimmed=False):
 
             # Get instrument parameters
             if instrument in telescope_config:
-                return telescope_config[instrument]
+                return resolve_dated_gain(telescope_config[instrument], hdr)
             else:
                 raise ValueError(f"Instrument '{instrument}' not found for telescope '{telescop}'")
         else:
