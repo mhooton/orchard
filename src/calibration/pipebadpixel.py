@@ -73,7 +73,7 @@ def exposure_fit_rate(dark_dict, bad_pixel_map=None):
     Dark current in ADU/s from a night's exposure-matched master darks, free of the offset they carry.
 
     A master dark is stored per second, (dark - bias) / t.  A SPIRIT dark sits at an offset c from the master
-    bias (no overscan removes it; about -50 to +180 ADU over 2022-2026), so the median of each master is
+    bias (no overscan removes it; median 21 ADU, -12 to +180 over 595 nights 2022-2026), so the median of each master is
     r + c/t: on Callisto 20251212 the 2 s master read 39.0 ADU/s, the 120 s one 24.2.  The total signal,
     median x t = c + r t, is a straight line in t whose slope is the dark current r.  The slope is the
     Theil-Sen estimate (median of the pairwise slopes), so one bad master does not move it (20220715's 68 s

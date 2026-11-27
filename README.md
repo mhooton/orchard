@@ -691,10 +691,10 @@ Identifies and maps bad pixels for interpolation during reduction. Currently onl
 5. Calculate the dark current (e⁻/s, the night's gain × a rate in ADU/s):
    - **two or more exposure-matched masters (SPIRIT):** the slope of median × t against t over the masters,
      bad pixels left out (`exposure_fit_rate`). Each master is stored per second, (dark − bias) / t, and a SPIRIT
-     dark sits at an offset of roughly −50 to +180 ADU from the master bias (no overscan removes it), so a master's
-     median is r + offset / t and the shortest one overstates r. Until v5.3.0 T5 took the shortest master: a median
-     17% high over 66 sampled nights, up to 2.7× (Callisto 20251212: 186 e⁻/s from the 2 s master against a
-     fitted 114). The slope is a Theil–Sen estimate, so one bad master does not move it; a slope that is not
+     dark sits at an offset from the master bias (no overscan removes it; median 21 ADU, 14–31 for most nights,
+     −12 to +180 over all 595 SPIRIT nights in v2), so a master's median is r + offset / t and the shortest one
+     overstates r. Until v5.3.0 T5 took the shortest master: a median 14% high over those 595 nights, at least
+     1.5× on 22% of them and up to 2.7× (Callisto 20251212: 186 e⁻/s from the 2 s master against a fitted 114). The slope is a Theil–Sen estimate, so one bad master does not move it; a slope that is not
      positive gives the longest master's median.
    - **one master (every Andor night, one combined master):** its median, cleaned of bad pixels when the map is made.
 
